@@ -110,6 +110,49 @@ All three independent request/phone/install signatures and actual current
 context are checked before showing verified active consent. That display loses
 current permission at its original deadline. It remains public consent evidence,
 not a phone-local durable handle, Ready state or permission for a message. The
-existing composer is not unlocked by this controller. Integrated server/browser/
+legacy composer is not unlocked by this controller. Integrated server/browser/
 foreground phone, durable install correlation and message execution still need
 qualification before enabling messaging.
+
+## Reviewing a message and recovering its original attempt
+
+The separate **Message this approved conversation** section appears when its
+controller is available. Preparing a message requires verified, currently active
+conversation consent and the original retained browser signing key. The section
+does not make an unavailable phone or incomplete setup ready.
+
+1. Enter **Conversation message text** and choose **Maximum SMS segments** from
+   one to six. This limit is part of the signed review; it does not guarantee
+   that the text will fit or that the carrier will deliver it.
+2. Select **Review conversation message**. Check the exact text, recipient,
+   segment limit and displayed confirmation deadline.
+3. Select **Send reviewed message** once while that review is valid. Editing
+   either input or selecting **Cancel message review** withdraws the local
+   approval. A later send requires a new explicit review.
+
+If the connection drops, the page reloads or confirmation is interrupted, return
+to the same conversation in the same browser and recover its saved setup. Open
+**Saved message attempts**, select **Show saved attempts**, then use **Check
+original message** for the original uncertain or accepted attempt. **Next saved
+page** continues more retained history. These checks do not sign or send again.
+A fresh sign-in as the original user can inspect the original receipt; it does
+not restore the old review or its signing approval.
+
+| Displayed result | Meaning and next step |
+| --- | --- |
+| Outcome uncertain | Keep the original attempt and check it. Another submission for that conversation stays blocked until the original submission is resolved. |
+| Accepted; delivery pending | The service accepted the original message. This is not a carrier delivery receipt. |
+| Not submitted; original attempt retained | The signing or preparation history remains saved. It is not a completed service submission and cannot be resumed as a fresh signing invocation. |
+
+Stopping conversation consent withdraws local approval immediately and retains
+attempt history. A missing response does not prove that the service stopped or
+that no message was submitted. Neither Stop, a timeout nor reopening the page
+authorizes an automatic replacement or retry.
+
+The message journal retains ciphertext, public commitments and submission
+receipts. It does not retain the plaintext editor, content-encryption key,
+password or authentication factor. Keep this browser's saved site data when
+recovering an interrupted attempt; another browser or cleared storage cannot
+reconstruct that local journal. These recovery controls are component behavior;
+the combined server, native setup and physical-phone flow still require
+qualification before deployment.
