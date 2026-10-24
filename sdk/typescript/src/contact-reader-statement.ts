@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 /** Dormant historical signed-statement integrity. No installed access or custody. */
+import {canonicalContactOrigin01} from './contact-origin.js';
 import {canonicalSignature02, verifiedAccountArchiveStatementRecords02, type Manifest02} from './draft02-manifest.js';
 const encoder = new TextEncoder(), max = (1n << 63n) - 1n;
 const names = ['authorizationId','accountId','origin','trustGeneration','manifestVersion','readerGeneration',
@@ -36,11 +37,7 @@ function fixed(value: unknown,n: number): Uint8Array {
 function u64(n: unknown): Uint8Array {
   if(typeof n!=='bigint'||n<1n||n>max)fail();const b=new Uint8Array(8);new DataView(b.buffer).setBigUint64(0,n);return b;
 }
-function origin(value: unknown): Uint8Array {
-  if(typeof value!=='string'||value.length<9||value.length>512||/[^\x21-\x7e]/.test(value))fail();
-  let url:URL;try{url=new URL(value);}catch{return fail();}
-  if(url.protocol!=='https:'||url.origin!==value||url.username||url.password||url.pathname!=='/'||url.search||url.hash)fail();return encoder.encode(value);
-}
+function origin(value: unknown): Uint8Array {return encoder.encode(canonicalContactOrigin01(value));}
 function capture(input: unknown): ContactReaderStatementUnsigned01 {
   const s=data(input,names);for(const k of ['authorizationId','accountId'])s[k]=fixed(s[k],16);
   for(const k of ['rootFingerprint','manifestDigest','readerId'])s[k]=fixed(s[k],32);

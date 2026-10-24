@@ -4,8 +4,9 @@ import {readFile,writeFile,lstat,realpath,readdir,mkdir} from 'node:fs/promises'
 import path from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
-export const files=Object.freeze(['draft02-manifest.js','draft02-trust-store.js','contact-reader-statement.js']);
-const required=['verifiedAccountArchiveStatementRecords02','Draft02TrustStore','verifyContactReaderStatement01'];
+export const files=Object.freeze(['draft02-manifest.js','draft02-trust-store.js','contact-reader-statement.js','contact-origin.js','contact-idna16.js','contact-idna16-table0.js','contact-idna16-table1.js']);
+const required=['verifiedAccountArchiveStatementRecords02','Draft02TrustStore','verifyContactReaderStatement01','canonicalContactOrigin01','contactDomainASCII16','contactIdna16Table0','contactIdna16Table1'];
+const dependencies=[[],['./draft02-manifest.js'],['./contact-origin.js','./draft02-manifest.js'],['./contact-idna16.js'],['./contact-idna16-table0.js','./contact-idna16-table1.js'],[],[]];
 export function checkModule(name,bytes){
  if(!files.includes(name)||!(bytes instanceof Uint8Array)||bytes.length<1||bytes.length>131072)throw Error('Account trust module refused');
  const source=new TextDecoder('utf-8',{fatal:true}).decode(bytes);
@@ -13,7 +14,8 @@ export function checkModule(name,bytes){
  if(/\bimport\s*\(|\bexport\s+[^;]*\bfrom\s*['"]/.test(code))throw Error('Account trust graph refused');
  const imports=[...code.matchAll(/\bimport\s+[^;]*?\bfrom\s*['"]([^'"]+)['"]\s*;/g)].map(m=>m[1]);
  const importTokens=[...code.matchAll(/\bimport\b/g)].length;
- if(importTokens!==imports.length||imports.length!==(name===files[0]?0:1)||imports.some(v=>v!=='./draft02-manifest.js')||!source.includes(required[files.indexOf(name)]))throw Error('Account trust graph refused');
+ const expected=dependencies[files.indexOf(name)];
+ if(importTokens!==imports.length||imports.length!==expected.length||expected.some(v=>imports.filter(i=>i===v).length!==1)||!source.includes(required[files.indexOf(name)]))throw Error('Account trust graph refused');
  return source;
 }
 async function safeDirectory(directory){
