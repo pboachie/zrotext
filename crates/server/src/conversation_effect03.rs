@@ -4,6 +4,8 @@
 //! permission or invocation permit. The authenticated adapters remain separate.
 use crate::sealed_manifest03::{self as crypto, Check};
 
+pub mod wire;
+
 const SUBMIT: &[u8] = b"ZTSE/conversation/submit-command03/v1\0";
 const OUTCOME: &[u8] = b"ZTSE/conversation/outcome-command03/v1\0";
 const CLOSURE: &[u8] = b"ZTSE/conversation/no-submit-record03/v1\0";
