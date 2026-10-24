@@ -15,6 +15,7 @@ import java.util.UUID
 data class Profile03ElectionRecord(
     val challengeId: String, val accountId: String, val deviceId: String, val lineId: String,
     val oldBindingId: String, val newBindingId: String, val oldGeneration: Long, val newGeneration: Long,
+    /** originHash is the signed HTTPS protocol digest at E500 offset400, not socket routing. */
     val rootFingerprint: String, val readerKeyId: String, val originHash: String,
     val connectionEpoch: Long, val deploymentEpoch: Long,
     val coreB64url: String, val state: String = "reserved",

@@ -49,7 +49,7 @@ class Profile03ManifestRuntimeTest {
                     f.original.store, f.original.reader, f.original.devicePoint, f.original.origin) { checkNotNull(clock.nowMs()) }
                 f.selected
             }
-            runtime = Profile03ManifestRuntime(f.f.line.db, original, storage, clock, { live }, { f.original.devicePoint },
+            runtime = Profile03ManifestRuntime(f.f.origins, f.f.line.db, original, storage, clock, { live }, { f.original.devicePoint },
                 { sent.add(JSONObject(it)); true }, { withdrawals++ }, {}, { _, _ -> selected++ }, { elapsed })
         }
         private fun sample() {

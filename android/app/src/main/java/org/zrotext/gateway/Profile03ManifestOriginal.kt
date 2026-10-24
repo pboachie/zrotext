@@ -13,14 +13,16 @@ internal fun interface Profile03ManifestOriginalReader {
 /** Actual existing stores/keys and authenticated socket lifetime. This completes historical
  * evidence only, including the SAME retained signed election after a lost acceptance response.
  * It neither creates keys nor reconstructs a physical selection, consent or current handle. */
-internal class Profile03ManifestOriginal(private val origin: String, private val db: SmsJournalDatabase,
+internal class Profile03ManifestOriginal(private val origins: Profile03Origins, private val db: SmsJournalDatabase,
     private val trust: Draft02TrustStore, private val readers: () -> DevicePayloadKeyStore,
     private val signer: DeviceSigningKeyStore, private val clock: Profile03SessionTime,
     private val socketCurrent: () -> Boolean) : Profile03ManifestOriginalReader {
+    private val origin = origins.protocolOrigin
     override fun read(evidence: Map<String, Any>, lineId: UUID, expectedBinding: UUID,
         session: SealedDispatchExecutor.Session): Profile03ManifestChain.Original {
         fun now() = checkNotNull(clock.nowMs()).also {
             check(socketCurrent() && clock.snapshot()?.first?.session === session && it > 0)
+            origins.requireSession(session)
         }
         now()
         require(evidence.keys == Profile03RetainedElection.EVIDENCE_KEYS)
@@ -28,7 +30,7 @@ internal class Profile03ManifestOriginal(private val origin: String, private val
         val challenge = ByteBuffer.wrap(bundle, 56, 16).let { UUID(it.long, it.long) }
         val retained = checkNotNull(db.profile03Elections().find(challenge.toString())).also { it.requireShape() }
         require(retained.accountId == session.accountId.toString() && retained.deviceId == session.deviceId.toString() &&
-            retained.lineId == lineId.toString() && retained.newBindingId == expectedBinding.toString() && retained.originHash == session.originHash &&
+            retained.lineId == lineId.toString() && retained.newBindingId == expectedBinding.toString() && retained.originHash == origins.protocolHash &&
             db.profile03Elections().closedUnaccepted(retained.challengeId) == null && retained.state in setOf("signed", "installed"))
         val line = checkNotNull(db.attempts().currentLineBinding())
         require(line.accountId == retained.accountId && line.deviceId == retained.deviceId && line.lineId == retained.lineId &&

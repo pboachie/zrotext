@@ -10,7 +10,7 @@ import org.json.JSONObject
 /** Actual additive history/readback socket orchestration. Only nonce-matched reads on this
  * full leased connection enter the original verifier. Stored readback rows never recreate a
  * live handle, and reader availability remains separate from physical/content permission. */
-internal class Profile03ManifestRuntime(private val db: SmsJournalDatabase, private val originals: Profile03ManifestOriginalReader,
+internal class Profile03ManifestRuntime(private val origins: Profile03Origins, private val db: SmsJournalDatabase, private val originals: Profile03ManifestOriginalReader,
     private val store: Profile03ManifestStore, private val time: Profile03SessionTime, private val current: () -> Boolean,
     private val enrollmentPoint: () -> ByteArray, private val send: (String) -> Boolean,
     private val withdrawEffects: () -> Unit, private val status: (String) -> Unit,
@@ -40,9 +40,10 @@ internal class Profile03ManifestRuntime(private val db: SmsJournalDatabase, priv
     private var lastRequest = -1L
     private var requests = 0
     @Volatile private var paused = false
-    private fun session() = checkNotNull(time.snapshot()).first.session.also { check(!closed && current()) }
+    private fun session() = checkNotNull(time.snapshot()).first.session.also { check(!closed && current()); origins.requireSession(it) }
     private fun now(expected: SealedDispatchExecutor.Session) = checkNotNull(time.nowMs()).also {
         check(!closed && current() && time.snapshot()?.first?.session === expected && it > 0)
+        origins.requireSession(expected)
     }
     private fun withdraw() {
         epoch.incrementAndGet(); installed = null
@@ -74,7 +75,7 @@ internal class Profile03ManifestRuntime(private val db: SmsJournalDatabase, priv
         val retained = db.profile03Elections().installed(line.accountId, line.lineId)
             ?: db.profile03Elections().signedOpening(line.accountId, line.lineId) ?: return@synchronized
         val active = session(); now(active)
-        check(line.accountId == active.accountId.toString() && line.deviceId == active.deviceId.toString() && retained.originHash == active.originHash)
+        check(line.accountId == active.accountId.toString() && line.deviceId == active.deviceId.toString() && retained.originHash == origins.protocolHash)
         val local = saved
         val kind = when {
             local == null -> Kind.ORIGINAL

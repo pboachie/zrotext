@@ -24,7 +24,7 @@ class Profile03EnrollmentRoleSeparationTest {
             f.authority.requireSelectedReader(f.device, f.lineId, readerId, point, f.now, f.now + 100)
             val comparison = f.election.requireCurrent(f.authority, f.currentSelection, f.now)
             val request = f.intent.verifyReceipt(f.intentSignature, f.authority, comparison, f.admittedAt, f.now,
-                3, Profile03ExecutionFixture.unhex(f.session.originHash), 1, 200_000)
+                3, f.origins.protocolDigest(), 1, 200_000)
             assertArrayEquals(Profile03ExecutionFixture.point(f.signer), f.authority.context(request, f.now).signerPoint)
         }
     }

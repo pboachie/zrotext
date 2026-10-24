@@ -14,7 +14,7 @@ internal class Profile03ManifestTestFixture : AutoCloseable {
     val verified = original.verify()
     val scope = Profile03ManifestSuccessor.Scope(f.line.account, f.line.device, f.line.line, f.newBinding, f.challenge, 2,
         f.fingerprint, original.accepted.electionCommitment, original.accepted.electionBundleSha256,
-        Profile03ExecutionFixture.unhex(f.session.originHash), listOf(original.devicePoint, original.ownerPoint))
+        f.origins.protocolDigest(), listOf(original.devicePoint, original.ownerPoint))
     val base = Profile03ManifestHistory.Checkpoint(verified.authority, original.accepted.acceptedAtMs,
         scope.base(verified.authority, original.accepted.acceptedAtMs))
     val identity = Draft02OutboundPreparation.hex(Profile03ExecutionFixture.sha(checkNotNull(original.installed.acceptedEvidenceSha256).toByteArray(Charsets.US_ASCII) +
@@ -35,7 +35,7 @@ internal class Profile03ManifestTestFixture : AutoCloseable {
                 .put(ReviewedIntent03.uuid(f.newBinding)).put(ReviewedIntent03.uuid(f.challenge)).put(ReviewedIntent03.uuid(opening))
                 .putLong(2).putLong(1).putLong(1).putLong(prior.version).putLong(prior.version + 1).putLong(issued).putLong(issued + 300_000)
                 .put(f.fingerprint).put(original.accepted.electionCommitment).put(original.accepted.electionBundleSha256)
-                .put(Profile03ExecutionFixture.unhex(f.session.originHash))
+                .put(f.origins.protocolDigest())
                 .put(Profile03ExecutionFixture.sha(ReviewedIntent03.framed("ZTSE/line/payload-profile/owner-session/v1", f.account +
                     ReviewedIntent03.uuid(f.ownerUser) + ReviewedIntent03.uuid(f.ownerSession))))
                 .put(prior.digest).put(Profile03ExecutionFixture.sha(manifest)).put(Profile03ExecutionFixture.keyId(f.signer, true))

@@ -13,7 +13,7 @@ import java.nio.ByteBuffer
 class ReviewedIntent03Test {
     private fun verify(f: Profile03ExecutionFixture, intent: ReviewedIntent03 = f.intent,
         signature: ByteArray = f.intentSignature, admitted: Long = f.admittedAt, now: Long = f.now,
-        epoch: Long = 3, origin: ByteArray = Profile03ExecutionFixture.unhex(f.session.originHash)) =
+        epoch: Long = 3, origin: ByteArray = f.origins.protocolDigest()) =
         intent.verifyReceipt(signature, f.authority, f.election.requireCurrent(f.authority, f.currentSelection, now),
             admitted, now, epoch, origin, 1, 200_000)
 

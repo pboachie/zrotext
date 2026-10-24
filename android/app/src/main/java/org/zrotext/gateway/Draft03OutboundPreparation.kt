@@ -14,6 +14,7 @@ internal object Draft03OutboundPreparation {
      * The same Room record and independently installed v2 SIM lease are checked here on every use.
      */
     class Current(
+        val origins: Profile03Origins,
         val election: Draft03PayloadElectionProof, val authority: Draft03ManifestAuthority,
         val selection: Draft03PayloadElectionProof.CurrentAuthority03,
         val installation: Profile03ElectionRecord, val baseBinding: LocalLineBinding,
@@ -83,12 +84,13 @@ internal object Draft03OutboundPreparation {
         fun fresh(): Current {
             now()
             val c = checkNotNull(current())
+            c.origins.requireSession(session)
             c.intervalRamCurrent()
             val row = c.installation
             row.requireShape()
             check(row.state == "installed" && row.accountId == session.accountId.toString() &&
                 row.deviceId == session.deviceId.toString() && row.lineId == grant.lineId.toString() &&
-                row.originHash == session.originHash && row.newGeneration == grant.bindingGeneration &&
+                row.originHash == c.origins.protocolHash && row.newGeneration == grant.bindingGeneration &&
                 row.readerKeyId == hex(grant.readerKeyId) && row.rootFingerprint == hex(grant.rootFingerprint))
             val accepted = c.election.acceptedRecord()
             check(row.acceptedEvidenceSha256 == acceptedIdentity(accepted) &&
@@ -113,7 +115,7 @@ internal object Draft03OutboundPreparation {
             c.intent.requireGrant(grant)
             check(c.intent.ownerUserId == c.ownerUserId && c.intent.ownerSessionId == c.ownerSessionId)
             val request = c.intent.verifyReceipt(c.signature(), c.authority, comparison, c.acceptedMs, instant,
-                c.selectionEpoch, unhex(session.originHash), c.intervalStartsMs, c.intervalExpiresMs)
+                c.selectionEpoch, c.origins.protocolDigest(), c.intervalStartsMs, c.intervalExpiresMs)
             verified?.parts(c.authority, request, instant)
             val identity = hash(row.acceptedEvidenceSha256.toByteArray(Charsets.US_ASCII) + c.intent.bytes() +
                 c.signature() + ByteBuffer.allocate(8).putLong(c.acceptedMs).array())
