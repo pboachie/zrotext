@@ -61,7 +61,6 @@ pub use zrotext_root_material::root_backup;
 pub mod conversation_interval03;
 pub mod hosted_runtime_identity;
 pub(crate) mod manifest_install03;
-pub mod hosted_runtime_identity;
 pub mod runtime_db;
 pub mod sealed_body;
 pub mod sealed_connector_registry;
