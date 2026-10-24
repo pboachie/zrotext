@@ -529,6 +529,28 @@ pub(crate) async fn fixture_connection(url: &str) -> Result<PooledClient, Connec
     acquire(&ClassPool::new(1, false), url).await
 }
 
+/// Disposable network-fixture cleanup only. Never cancels a checked-out
+/// client or touches another fixture's URL, credentials or pool entries.
+#[cfg(test)]
+pub(crate) fn discard_fixture_idle(url: &str) {
+    for pool in [&POOLS.requests, &POOLS.devices, &POOLS.workers] {
+        let removed = {
+            let mut idle = pool.idle();
+            let mut removed = Vec::new();
+            let mut index = 0;
+            while index < idle.len() {
+                if &*idle[index].url == url {
+                    removed.push(idle.remove(index));
+                } else {
+                    index += 1;
+                }
+            }
+            removed
+        };
+        drop(removed);
+    }
+}
+
 #[cfg(test)]
 #[path = "runtime_db/reset_tests.rs"]
 mod reset_tests;

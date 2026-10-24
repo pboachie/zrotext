@@ -3,12 +3,141 @@
 //! hardware is claimed; temporary private keys exist only in this test process.
 use super::*;
 use crate::{auth, enrollment, sealed_payload_election03::test_database::Fixture};
+use futures_util::{SinkExt, StreamExt};
 use p256::{
     ecdsa::{Signature, SigningKey, signature::Signer},
     elliptic_curve::Generate,
     pkcs8::EncodePublicKey,
 };
 use sha2::{Digest, Sha256};
+
+#[derive(Debug)]
+enum StreamStep {
+    UnconfiguredChallenge,
+    UnconfiguredSession,
+    UnconfiguredRefusal,
+    ConfiguredChallenge,
+    ConfiguredSession,
+    ConfiguredOpening,
+}
+
+async fn ordinary_stream_open(
+    f: &Fixture,
+    state: &DeviceSocketState,
+    key: &SigningKey,
+    device: Uuid,
+    mut body: serde_json::Value,
+    configured: bool,
+) -> Option<serde_json::Value> {
+    use tokio_tungstenite::tungstenite::Message as Wire;
+    type Stream = tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >;
+    async fn json(socket: &mut Stream, step: StreamStep) -> serde_json::Value {
+        let frame = timeout(Duration::from_secs(5), socket.next())
+            .await
+            .unwrap_or_else(|_| panic!("ordinary stream {step:?} timed out"))
+            .unwrap()
+            .unwrap();
+        let Wire::Text(text) = frame else {
+            panic!("expected a bounded JSON frame")
+        };
+        assert!(text.len() <= MAX_FRAME_BYTES);
+        serde_json::from_str(text.as_ref()).unwrap()
+    }
+    let mut actual = state.clone();
+    actual.database_url = f.runtime_socket_url();
+    assert!(!actual.dispatch_runtime_enabled && !actual.sealed_dispatch_enabled);
+    assert!(!actual.sms_line_activation_enabled && !actual.line_readiness_enabled);
+    let route = if configured {
+        router_with_protection_origin_and_account_share(actual, "wss://example.test", 1).unwrap()
+    } else {
+        router_with_account_share(actual, 1)
+    };
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, route).await.unwrap() });
+    let (mut socket, response) =
+        tokio_tungstenite::connect_async(format!("ws://{address}/v1/device-stream"))
+            .await
+            .unwrap();
+    assert!(!response.headers().contains_key("sec-websocket-protocol"));
+    socket
+        .send(Wire::Text(
+            serde_json::json!({"v":1,"type":"hello","device_id":device})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    let received = json(
+        &mut socket,
+        if configured {
+            StreamStep::ConfiguredChallenge
+        } else {
+            StreamStep::UnconfiguredChallenge
+        },
+    )
+    .await;
+    assert_eq!(received["type"], "challenge");
+    let challenge = enrollment::DeviceChallenge {
+        id: Uuid::parse_str(received["challenge_id"].as_str().unwrap()).unwrap(),
+        account_id: Uuid::parse_str(received["account_id"].as_str().unwrap()).unwrap(),
+        device_id: device,
+        nonce: raw(&received["nonce"]).try_into().unwrap(),
+    };
+    let signature: Signature = key.sign(&enrollment::device_challenge_bytes(&challenge));
+    socket.send(Wire::Text(serde_json::json!({"v":1,"type":"proof","challenge_id":challenge.id,"account_id":challenge.account_id,"device_id":device,"nonce":received["nonce"],"signature_der":URL_SAFE_NO_PAD.encode(signature.to_der().as_bytes())}).to_string().into())).await.unwrap();
+    let session = json(
+        &mut socket,
+        if configured {
+            StreamStep::ConfiguredSession
+        } else {
+            StreamStep::UnconfiguredSession
+        },
+    )
+    .await;
+    assert_eq!(session["type"], "session");
+    body["connection_epoch"] = session["connection_epoch"].clone();
+    socket
+        .send(Wire::Text(body.to_string().into()))
+        .await
+        .unwrap();
+    let reply = if configured {
+        let reply = json(&mut socket, StreamStep::ConfiguredOpening).await;
+        assert_eq!(reply["type"], "protection_origin_opened");
+        assert_eq!(reply["connection_epoch"], session["connection_epoch"]);
+        assert_eq!(
+            raw(&reply["opening"]["origin_digest"]),
+            protection_origin_digest("wss://example.test").unwrap()
+        );
+        Some(reply)
+    } else {
+        let frame = timeout(Duration::from_secs(5), socket.next())
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "ordinary stream {:?} timed out",
+                    StreamStep::UnconfiguredRefusal
+                )
+            })
+            .unwrap()
+            .unwrap();
+        let Wire::Close(Some(close)) = frame else {
+            panic!("unconfigured ordinary route must refuse setup")
+        };
+        assert_eq!(u16::from(close.code), close_code::POLICY);
+        None
+    };
+    let _ = socket.close(None).await;
+    drop(socket);
+    server.abort();
+    let _ = server.await;
+    f.drain_runtime_sockets().await;
+    reply
+}
 
 async fn request(
     db: &mut tokio_postgres::Client,
@@ -181,9 +310,55 @@ async fn approved_pairing_and_real_socket_proof_can_install_metadata_before_any_
     let setup = Uuid::new_v4();
     let opening = Uuid::new_v4();
     let command = Uuid::new_v4();
+    let body = serde_json::json!({"v":1,"type":"protection_origin_open","connection_epoch":actor.session().connection_epoch,"setup_id":setup,"opening_id":opening,"command_id":command});
+    assert!(
+        ordinary_stream_open(&f, &state, &device_key, device, body.clone(), false)
+            .await
+            .is_none()
+    );
+    assert_eq!(
+        f.reader
+            .query_one("SELECT count(*) FROM public.device_protection_origins", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+    let network_opened = ordinary_stream_open(&f, &state, &device_key, device, body, true)
+        .await
+        .unwrap();
+    // A fresh genuine proof/claim follows the closed network session; the
+    // earlier detached handle is never promoted to the new connection.
+    let challenge = enrollment::issue_socket_challenge(
+        &state.enrollment_hasher,
+        signup.account_id,
+        device,
+        enrollment::unix_now_ms(),
+    );
+    let signature: Signature = device_key.sign(&enrollment::device_challenge_bytes(&challenge));
+    let verified = enrollment::authenticate_socket_actor(
+        &f.reader,
+        &state.enrollment_hasher,
+        &challenge,
+        signature.to_der().as_bytes(),
+        enrollment::unix_now_ms(),
+    )
+    .await
+    .unwrap();
+    let actor = actor::claim(
+        &mut f.reader,
+        verified,
+        &state,
+        line_activation_v2::LineProtocol::Legacy,
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let epoch = actor.session().connection_epoch;
+    assert!(epoch > network_opened["connection_epoch"].as_i64().unwrap());
     let body = serde_json::json!({"v":1,"type":"protection_origin_open","connection_epoch":epoch,"setup_id":setup,"opening_id":opening,"command_id":command});
     let opened = request(&mut f.reader, &state, actor, &origin, body.clone()).await;
+    assert_eq!(network_opened["opening"], opened["opening"]);
     // Actual committed opening precedes all synthetic provider result generation.
     assert_eq!(
         f.reader

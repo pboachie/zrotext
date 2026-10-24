@@ -34,6 +34,15 @@ The [public synthetic proof vector](../protocol/v1/vectors/device-protection-ori
 checks the 329-byte association, 393-byte core and 521-byte two-signature packet.
 It proves no Android provider custody or current server permission.
 
+The server can mount these metadata controls with the trusted
+`DEVICE_STREAM_WSS_ORIGIN` setting and existing account/enrollment routes.
+It uses the selected canonical WSS endpoint independently of browser HTTP or
+request headers. If conversations are also configured, both WSS settings must
+have the same canonical digest. An unset ordinary endpoint keeps setup refused.
+This composition retains the ordinary 4096-byte cap and supplies no conversation,
+line/profile negotiation, content or dispatch permission. Schema118 and the
+actual current original enrolled actor remain required for every control.
+
 A proof's original acceptance window is at most thirty seconds and is also
 bounded by the actual device lease and hosted backend expiry when applicable.
 An exact retry returns its original challenge without renewing that window.

@@ -1,5 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
+#[test]
+fn configured_origins_refuse_whitespace_instead_of_relying_on_url_normalization() {
+    for origin in [
+        " wss://example.test",
+        "wss://example.test ",
+        "\twss://example.test",
+        "wss://exam\nple.test",
+        "wss://example.test\r",
+        "\u{a0}wss://example.test",
+    ] {
+        assert!(protection_origin_digest(origin).is_err());
+        assert!(conversation_origin_check(origin).is_err());
+    }
+}
 fn ids() -> [String; 3] {
     [
         Uuid::from_u128(1).to_string(),
