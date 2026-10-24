@@ -269,7 +269,7 @@ async fn closure_after_reconnect(accept_before_reconnect: bool, lose_first_ack: 
     let proof = json!({"v":1,"type":"payload_profile_no_submit_proof03",
         "connection_epoch":socket.session().connection_epoch,"proof_request_id":proof_request,
         "closure_id":closure,"challenge_id":challenge["challenge_id"],
-        "core":B.encode(core),"signature":B.encode(signature.normalize_s().unwrap_or(signature).to_bytes())});
+        "core":B.encode(core),"signature":B.encode(signature.normalize_s().to_bytes())});
     if !accept_before_reconnect {
         let current = reconnect(&mut c).await;
         let before = retained(&c).await;
