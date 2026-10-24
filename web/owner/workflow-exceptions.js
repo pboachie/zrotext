@@ -56,7 +56,7 @@
         refuse();
       }
       if (text.startsWith("null", at)) { at += 4; return null; }
-      const match = /^(0|[1-9][0-9]{0,2})/.exec(text.slice(at));
+      const match = /^(0|[1-9][0-9]{0,2})/.exec(text.slice(at, at + 4));
       if (!match) refuse(); at += match[0].length; return Number(match[0]);
     }
     const result = value(0); ws(); if (at !== text.length) refuse(); return result;
