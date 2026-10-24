@@ -4,7 +4,7 @@
 use crate::test_database::Driver;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -16,6 +16,7 @@ use tokio_postgres::{Client, Config, NoTls, config::Host};
 
 // Reviewed metadata batches plus the unchanged per-transaction entry. This is
 // a fixed source contract, never a dynamically learned baseline.
+const FINISH_UPDATE: &str = "70c1e95139e71cd29d8d2f02484293ef8bd692277f9e92a01aef2b6246bde0ea";
 const NATIVE: [(&str, usize); 15] = [
     (
         "36a86777b1416371c6c75bfd18873a7969a6aac004b01159f99ef492c73e336c",
@@ -268,9 +269,21 @@ pub struct Proxy {
     driver: Driver,
     task: tokio::task::JoinHandle<()>,
     capture: Arc<Mutex<Capture>>,
+    update_gate: Option<Arc<Mutex<UpdateGate>>>,
 }
 impl Proxy {
     pub async fn start(config: &Config) -> Self {
+        Self::start_inner(config, None).await
+    }
+    /// Delays only a correlated, genuine backend UPDATE 1 command completion.
+    pub async fn with_update_completion_gate(config: &Config) -> Self {
+        Self::start_inner(
+            config,
+            Some(Arc::new(Mutex::new(UpdateGate::new(FINISH_UPDATE)))),
+        )
+        .await
+    }
+    async fn start_inner(config: &Config, update_gate: Option<Arc<Mutex<UpdateGate>>>) -> Self {
         assert_eq!(config.get_hosts().len(), 1, "one explicit fixture endpoint");
         assert!(config.get_ports().len() <= 1);
         let port = config.get_ports().first().copied().unwrap_or(5432);
@@ -294,6 +307,7 @@ impl Proxy {
         let address = listener.local_addr().unwrap();
         let capture = Arc::new(Mutex::new(Capture::default()));
         let recorded = capture.clone();
+        let gated = update_gate.clone();
         let task = tokio::spawn(async move {
             let (mut client, _) = listener.accept().await.unwrap();
             let mut server = upstream;
@@ -304,13 +318,25 @@ impl Proxy {
                     read = client.read(&mut from_client) => {
                         let n = read.unwrap();
                         if n == 0 { break; }
-                        recorded.lock().unwrap().feed(&from_client[..n]);
+                        let frames = {
+                            let mut capture = recorded.lock().unwrap();
+                            let before = capture.frames.len();
+                            capture.feed(&from_client[..n]);
+                            capture.frames[before..].to_vec()
+                        };
+                        if let Some(gate) = &gated { gate.lock().unwrap().frontend(&frames).unwrap(); }
                         if server.write_all(&from_client[..n]).await.is_err() { break; }
                     }
                     read = server.read(&mut from_server) => {
                         let n = read.unwrap();
                         if n == 0 { break; }
-                        if client.write_all(&from_server[..n]).await.is_err() { break; }
+                        if let Some(gate) = &gated {
+                            let frames = { gate.lock().unwrap().backend(&from_server[..n]).unwrap() };
+                            for (bytes, target) in frames {
+                                if target { tokio::time::sleep(Duration::from_secs(6)).await; }
+                                client.write_all(&bytes).await.unwrap();
+                            }
+                        } else if client.write_all(&from_server[..n]).await.is_err() { break; }
                     }
                 }
             }
@@ -325,6 +351,7 @@ impl Proxy {
             driver,
             task,
             capture,
+            update_gate,
         };
         let initial = value.capture.lock().unwrap().snapshot();
         assert_eq!(initial.first(), Some(&Frame::Startup));
@@ -345,6 +372,26 @@ impl Proxy {
             .filter(|f| **f == Frame::Sync)
             .count()
     }
+    pub fn completed_update_count(&self) -> usize {
+        self.update_gate.as_ref().unwrap().lock().unwrap().hits
+    }
+    pub async fn finish_gated(self) {
+        drop(self.client);
+        tokio::time::timeout(Duration::from_secs(5), self.driver)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), self.task)
+            .await
+            .unwrap()
+            .unwrap();
+        let frames = self.capture.lock().unwrap().snapshot();
+        assert_eq!(frames.last(), Some(&Frame::Terminate));
+        let gate = self.update_gate.as_ref().unwrap().lock().unwrap();
+        assert_eq!(gate.hits, 1, "actual correlated UPDATE 1 reached the gate");
+        assert!(gate.bytes.is_empty() && gate.commands.is_empty());
+    }
     pub async fn finish(self, after: usize, raw_control: bool) {
         drop(self.client);
         tokio::time::timeout(Duration::from_secs(5), self.driver)
@@ -362,6 +409,95 @@ impl Proxy {
         } else {
             assert_eq!(frames[after..], [Frame::Terminate]);
         }
+    }
+}
+// This finite gate is only for finish's after-write deadline regression.
+// Frontend executions determine backend command ownership; no response value
+// is invented or changed, and the actual command tag must be UPDATE 1.
+struct UpdateGate {
+    target: String,
+    statements: BTreeMap<String, String>,
+    portals: BTreeMap<String, String>,
+    commands: VecDeque<bool>,
+    bytes: Vec<u8>,
+    hits: usize,
+}
+impl UpdateGate {
+    fn new(target: &str) -> Self {
+        Self {
+            target: target.to_owned(),
+            statements: BTreeMap::new(),
+            portals: BTreeMap::new(),
+            commands: VecDeque::new(),
+            bytes: Vec::new(),
+            hits: 0,
+        }
+    }
+    fn frontend(&mut self, frames: &[Frame]) -> Result<(), &'static str> {
+        for frame in frames {
+            match frame {
+                Frame::Parse(name, sql, _) => {
+                    self.statements.insert(name.clone(), sql.clone());
+                }
+                Frame::Bind(portal, statement, _) => {
+                    let sql = self
+                        .statements
+                        .get(statement)
+                        .ok_or("unmapped gated statement")?;
+                    self.portals.insert(portal.clone(), sql.clone());
+                }
+                Frame::Execute(portal) => {
+                    let sql = self.portals.get(portal).ok_or("unmapped gated portal")?;
+                    self.commands.push_back(sql == &self.target);
+                }
+                Frame::Query(_) => self.commands.push_back(false),
+                Frame::Close(b'S', name) => {
+                    self.statements.remove(name).ok_or("unmapped gated close")?;
+                }
+                Frame::Close(_, _) => return Err("unexpected gated portal close"),
+                _ => {}
+            }
+        }
+        if self.commands.len() > 4096 {
+            return Err("gated command cap");
+        }
+        Ok(())
+    }
+    fn backend(&mut self, bytes: &[u8]) -> Result<Vec<(Vec<u8>, bool)>, &'static str> {
+        self.bytes.extend_from_slice(bytes);
+        if self.bytes.len() > 1_048_576 {
+            return Err("backend frame cap");
+        }
+        let mut frames = Vec::new();
+        while self.bytes.len() >= 5 {
+            let len = u32::from_be_bytes(self.bytes[1..5].try_into().unwrap()) as usize;
+            if !(4..=1_048_575).contains(&len) {
+                return Err("backend frame length");
+            }
+            let end = len + 1;
+            if self.bytes.len() < end {
+                break;
+            }
+            let target = match self.bytes[0] {
+                b'C' => {
+                    let target = self
+                        .commands
+                        .pop_front()
+                        .ok_or("unmapped command completion")?;
+                    if target {
+                        if self.hits != 0 || &self.bytes[5..end] != b"UPDATE 1\0" {
+                            return Err("target update did not change exactly one row");
+                        }
+                        self.hits += 1;
+                    }
+                    target
+                }
+                b'E' | b'I' => return Err("gated command failed or was empty"),
+                _ => false,
+            };
+            frames.push((self.bytes.drain(..end).collect(), target));
+        }
+        Ok(frames)
     }
 }
 fn check_transaction(frames: &[Frame], business: &[&str]) -> Result<usize, &'static str> {
@@ -633,4 +769,43 @@ fn raw_query_control_exposes_prepare_execute_and_named_close() {
     assert_eq!(check_raw_control(&exact), Ok(()));
     exact[6] = Frame::Close(b'S', String::from("other"));
     assert!(check_raw_control(&exact).is_err());
+}
+
+#[test]
+fn update_completion_gate_requires_matching_execution_and_actual_one_row_tag() {
+    let mut gate = UpdateGate::new(FINISH_UPDATE);
+    gate.frontend(&[
+        Frame::Query(String::from("START TRANSACTION")),
+        Frame::Parse(String::from("s1"), FINISH_UPDATE.to_owned(), 0),
+        Frame::Bind(String::new(), String::from("s1"), 6),
+        Frame::Execute(String::new()),
+    ])
+    .unwrap();
+    let begin = encoded(b'C', b"BEGIN\0");
+    assert!(!gate.backend(&begin).unwrap()[0].1);
+    let completion = encoded(b'C', b"UPDATE 1\0");
+    assert!(gate.backend(&completion[..4]).unwrap().is_empty());
+    let ready = gate.backend(&completion[4..]).unwrap();
+    assert_eq!(ready, vec![(completion, true)]);
+    assert_eq!(gate.hits, 1);
+    assert!(gate.commands.is_empty());
+    let mut zero = UpdateGate::new(FINISH_UPDATE);
+    zero.frontend(&[
+        Frame::Parse(String::from("s2"), FINISH_UPDATE.to_owned(), 0),
+        Frame::Bind(String::new(), String::from("s2"), 6),
+        Frame::Execute(String::new()),
+    ])
+    .unwrap();
+    assert!(zero.backend(&encoded(b'C', b"UPDATE 0\0")).is_err());
+    let mut other = UpdateGate::new(FINISH_UPDATE);
+    other
+        .frontend(&[
+            Frame::Parse(String::from("s3"), String::from("different SQL"), 0),
+            Frame::Bind(String::new(), String::from("s3"), 6),
+            Frame::Execute(String::new()),
+        ])
+        .unwrap();
+    assert!(!other.backend(&encoded(b'C', b"UPDATE 1\0")).unwrap()[0].1);
+    assert_eq!(other.hits, 0);
+    assert!(other.backend(&encoded(b'C', b"UPDATE 1\0")).is_err());
 }

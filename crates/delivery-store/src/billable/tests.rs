@@ -207,6 +207,84 @@ impl Db {
             customer,
         }
     }
+    // Controlled WORKER PROJECTION input only. These owner-DML rows are not
+    // evidence of Store admission, callback, native/HMAC or provider success.
+    async fn seed_fractional_worker_input(&mut self) -> (Uuid, std::time::SystemTime, String) {
+        let account = self.account;
+        let device = self.device;
+        let customer = self.customer.clone();
+        let message = Uuid::new_v4();
+        let synthetic_event = Uuid::new_v4();
+        let synthetic_attempt = Uuid::new_v4();
+        let identifier = format!("zt-usage-v1-{:x}", Sha256::digest(message.as_bytes()));
+        let fixture = self.current.as_mut().unwrap();
+        let tx = fixture.owner.transaction().await.unwrap();
+        let absent: bool = tx.query_one(
+            "SELECT NOT EXISTS(SELECT FROM messages WHERE account_id=$1 AND id=$2) AND NOT EXISTS(SELECT FROM usage_ledger WHERE account_id=$1 AND message_id=$2) AND NOT EXISTS(SELECT FROM billing_usage_bindings WHERE account_id=$1 AND message_id=$2) AND NOT EXISTS(SELECT FROM billing_usage_finalized WHERE account_id=$1 AND message_id=$2) AND NOT EXISTS(SELECT FROM billing_usage_outbox WHERE account_id=$1 AND message_id=$2) AND NOT EXISTS(SELECT FROM usage_periods WHERE account_id=$1)",
+            &[&account, &message],
+        ).await.unwrap().get(0);
+        assert!(
+            absent,
+            "the projection input has no prior reservation or history"
+        );
+        let policy: bool = tx.query_one(
+            "SELECT EXISTS(SELECT FROM usage_quota_policies q JOIN billing_usage_test_policies p USING(account_id) JOIN billing_customers c USING(account_id) WHERE q.account_id=$1 AND q.metric='outbound_message' AND q.limit_units=100 AND q.source='stripe_test' AND NOT q.invoice_bound_test AND p.policy_version=1 AND p.active AND p.mode='test' AND p.stripe_customer_id=$2 AND c.stripe_customer_id=$2)",
+            &[&account, &customer],
+        ).await.unwrap().get(0);
+        assert!(policy);
+        let seed: std::time::SystemTime = tx
+            .query_one(
+                "SELECT date_trunc('second',transaction_timestamp())+interval '900 milliseconds'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(tx.execute(
+            "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) VALUES($1,$2,$3,'+15551234567',$4,'synthetic_alpha',$5,$6,'submitted',transaction_timestamp()+interval '1 hour')",
+            &[&message, &account, &device, &vec![5u8; 32], &b"synthetic worker projection".as_slice(), &vec![7u8; 32]],
+        ).await.unwrap(), 1);
+        assert_eq!(tx.execute(
+            "INSERT INTO usage_periods(account_id,metric,period_start,period_end,limit_units,reserved_units,refunded_units) VALUES($1,'outbound_message',date_trunc('month',$2::timestamptz AT TIME ZONE 'UTC')::date,(date_trunc('month',$2::timestamptz AT TIME ZONE 'UTC')+interval '1 month')::date,100,1,0)",
+            &[&account, &seed],
+        ).await.unwrap(), 1);
+        // The actual unchanged capture trigger creates the immutable binding.
+        assert_eq!(tx.execute(
+            "INSERT INTO usage_ledger(account_id,message_id,metric,period_start,entry_kind,units,created_at) SELECT $1,$2,'outbound_message',period_start,'reserve',1,$3::timestamptz FROM usage_periods WHERE account_id=$1 AND metric='outbound_message'",
+            &[&account, &message, &seed],
+        ).await.unwrap(), 1);
+        let captured = tx.query_one(
+            "SELECT l.created_at,b.report_at,b.policy_version=1 AND b.period_start=u.period_start AND b.period_end=u.period_end AND u.limit_units=100 AND u.reserved_units=1 AND u.refunded_units=0,(SELECT count(*) FROM usage_ledger WHERE account_id=$1 AND message_id=$2),(SELECT count(*) FROM billing_usage_bindings WHERE account_id=$1 AND message_id=$2) FROM usage_ledger l JOIN billing_usage_bindings b USING(account_id,message_id) JOIN usage_periods u ON u.account_id=l.account_id AND u.metric=l.metric AND u.period_start=l.period_start WHERE l.account_id=$1 AND l.message_id=$2 AND l.entry_kind='reserve'",
+            &[&account, &message],
+        ).await.unwrap();
+        assert_eq!(captured.get::<_, std::time::SystemTime>(0), seed);
+        assert_eq!(captured.get::<_, std::time::SystemTime>(1), seed);
+        assert!(captured.get::<_, bool>(2));
+        assert_eq!(captured.get::<_, i64>(3), 1);
+        assert_eq!(captured.get::<_, i64>(4), 1);
+        assert_eq!(
+            seed.duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_micros(),
+            900_000
+        );
+        // Inert synthetic worker identity inputs, not accepted event/attempt
+        // rows or a claim that the production finalizer generated this outbox.
+        assert_eq!(tx.execute(
+            "INSERT INTO billing_usage_finalized(account_id,message_id,success_event_id,success_attempt_id) VALUES($1,$2,$3,$4)",
+            &[&account, &message, &synthetic_event, &synthetic_attempt],
+        ).await.unwrap(), 1);
+        assert_eq!(tx.execute(
+            "INSERT INTO billing_usage_outbox(account_id,message_id,identifier) VALUES($1,$2,$3)",
+            &[&account, &message, &identifier],
+        ).await.unwrap(), 1);
+        tx.commit().await.unwrap();
+        fixture.verify().await;
+        crate::hosted_runtime_identity::require(&self.client)
+            .await
+            .unwrap();
+        (message, seed, identifier)
+    }
     fn owner(&self) -> &Client {
         self.current
             .as_ref()
@@ -533,7 +611,6 @@ async fn crashed_lease_is_reclaimed_without_new_identity_and_stale_completion_ca
 async fn success_outbox_failure_rolls_back_callback_and_default_off_cannot_call_transport() {
     let mut db = Db::for_store().await;
     let (message, event) = db.submit(0).await;
-    db.owner().batch_execute("CREATE FUNCTION reject_usage_test() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic crash before commit'; END $$; CREATE TRIGGER reject_usage_test BEFORE INSERT ON billing_usage_outbox FOR EACH ROW EXECUTE FUNCTION reject_usage_test()").await.unwrap();
     let callback = RadioEvent {
         event_id: Uuid::new_v4(),
         evidence: Evidence::SentCallbackOk,
@@ -541,11 +618,74 @@ async fn success_outbox_failure_rolls_back_callback_and_default_off_cannot_call_
         segment_count: Some(1),
         ..event
     };
-    assert!(
-        DeliveryStore::new(&mut db.client)
+    crate::hosted_runtime_identity::require(&db.client)
+        .await
+        .unwrap();
+    let config = db.current.as_ref().unwrap().config.clone();
+    let mut worker = crate::test_database::RuntimeConnection::connect(&config).await;
+    let pid: i32 = worker
+        .client
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let cancel = worker.client.cancel_token();
+    let lock = db
+        .current
+        .as_mut()
+        .unwrap()
+        .owner
+        .transaction()
+        .await
+        .unwrap();
+    lock.batch_execute("LOCK TABLE public.billing_usage_outbox IN SHARE MODE")
+        .await
+        .unwrap();
+    let task = tokio::spawn(async move {
+        let result = DeliveryStore::new(&mut worker.client)
             .record_radio_event(callback)
-            .await
-            .is_err()
+            .await;
+        worker.finish().await;
+        result
+    });
+    let mut reached = false;
+    for _ in 0..500 {
+        reached = lock.query_one(
+            "SELECT EXISTS(SELECT FROM pg_locks WHERE pid=$1 AND locktype='relation' AND relation='public.billing_usage_outbox'::regclass AND mode='RowExclusiveLock' AND NOT granted)",
+            &[&pid],
+        ).await.unwrap().get(0);
+        if reached || task.is_finished() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // The one cancellation also drains a missed-target failure; only the exact
+    // lock witness below permits this test to claim the intended fault.
+    cancel.cancel_query(tokio_postgres::NoTls).await.unwrap();
+    let result = task.await.unwrap();
+    lock.rollback().await.unwrap();
+    assert!(
+        reached,
+        "callback reached the exact outbox INSERT table-lock request"
+    );
+    let Err(StoreError::Database(error)) = result else {
+        panic!("expected database query cancellation at outbox write")
+    };
+    assert_eq!(
+        error.code(),
+        Some(&tokio_postgres::error::SqlState::QUERY_CANCELED)
+    );
+    crate::hosted_runtime_identity::require(&db.client)
+        .await
+        .unwrap();
+    db.current.as_ref().unwrap().verify().await;
+    let absent: bool = db.owner().query_one(
+        "SELECT NOT EXISTS(SELECT FROM message_events WHERE id=$1) AND NOT EXISTS(SELECT FROM billing_usage_finalized WHERE account_id=$2 AND message_id=$3) AND NOT EXISTS(SELECT FROM billing_usage_outbox WHERE account_id=$2 AND message_id=$3)",
+        &[&callback.event_id, &db.account, &message],
+    ).await.unwrap().get(0);
+    assert!(
+        absent,
+        "cancelled callback/finalization/outbox writes all rolled back"
     );
     let state: String = db
         .owner()
@@ -561,7 +701,6 @@ async fn success_outbox_failure_rolls_back_callback_and_default_off_cannot_call_
             .finalized,
         0
     );
-    db.owner().batch_execute("DROP TRIGGER reject_usage_test ON billing_usage_outbox; DROP FUNCTION reject_usage_test()").await.unwrap();
     DeliveryStore::new(&mut db.client)
         .record_radio_event(callback)
         .await
@@ -1128,28 +1267,18 @@ async fn completion_stalled_during_the_write_rolls_back_expired_acknowledgement(
     };
     let lease = claim.lease;
     let identifier = claim.request.identifier.clone();
+    let mut proxy = crate::tests::test_wire::Proxy::with_update_completion_gate(
+        &db.current.as_ref().unwrap().config,
+    )
+    .await;
     db.owner()
         .batch_execute(
             "UPDATE billing_usage_outbox SET lease_until=clock_timestamp()+interval '5 seconds'",
         )
         .await
         .unwrap();
-    db.owner().batch_execute("CREATE SEQUENCE usage_write_reached; CREATE FUNCTION delay_usage_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM nextval('usage_write_reached'); PERFORM pg_sleep(6); RETURN NEW; END $$; CREATE TRIGGER delay_usage_write BEFORE UPDATE ON billing_usage_outbox FOR EACH ROW EXECUTE FUNCTION delay_usage_write()").await.unwrap();
-    // The invoker trigger uses only this newly created synthetic sequence.
-    db.owner()
-        .batch_execute(&format!(
-            "GRANT USAGE ON SEQUENCE public.usage_write_reached TO {}",
-            postgres_protocol::escape::escape_identifier(
-                &db.current.as_ref().unwrap().runtime_role
-            )
-        ))
-        .await
-        .unwrap();
-    crate::hosted_runtime_identity::require(&db.client)
-        .await
-        .unwrap();
     let result = finish(
-        &mut db.client,
+        &mut proxy.client,
         claim,
         MeterResponse::Acknowledged {
             identifier,
@@ -1158,14 +1287,15 @@ async fn completion_stalled_during_the_write_rolls_back_expired_acknowledgement(
     )
     .await
     .unwrap();
-    assert!(
-        db.owner()
-            .query_one("SELECT is_called FROM usage_write_reached", &[])
-            .await
-            .unwrap()
-            .get::<_, bool>(0),
-        "completion reached the live-lease write"
+    assert_eq!(
+        proxy.completed_update_count(),
+        1,
+        "completion reached an actual UPDATE 1 before the six-second response hold"
     );
+    proxy.finish_gated().await;
+    crate::hosted_runtime_identity::require(&db.client)
+        .await
+        .unwrap();
     assert_eq!(result, WorkResult::Stale);
     let row = db
         .owner()
@@ -1185,24 +1315,61 @@ async fn completion_stalled_during_the_write_rolls_back_expired_acknowledgement(
 #[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; isolated schema, no provider or radio calls"]
 async fn report_timestamp_preserves_the_original_utc_second_without_rounding_forward() {
     let mut db = Db::for_store().await;
-    // A deterministic fractional reservation time, within the allowed clock window.
-    db.owner().batch_execute("ALTER TABLE usage_ledger ALTER COLUMN created_at SET DEFAULT (date_trunc('second',clock_timestamp())+interval '900 milliseconds')").await.unwrap();
-    db.submit(1).await;
-    let expected: i64 = db
-        .owner()
-        .query_one(
-            "SELECT floor(extract(epoch FROM report_at))::bigint FROM billing_usage_bindings",
-            &[],
-        )
-        .await
-        .unwrap()
-        .get(0);
+    let (message, _) = db.submit(1).await;
+    let row = db.owner().query_one(
+        "SELECT l.created_at,b.report_at,o.identifier FROM usage_ledger l JOIN billing_usage_bindings b USING(account_id,message_id) JOIN billing_usage_outbox o USING(account_id,message_id) WHERE l.account_id=$1 AND l.message_id=$2 AND l.entry_kind='reserve'",
+        &[&db.account, &message],
+    ).await.unwrap();
+    let created_at: std::time::SystemTime = row.get(0);
+    assert_eq!(created_at, row.get::<_, std::time::SystemTime>(1));
+    let identifier: String = row.get(2);
+    let expected = i64::try_from(
+        created_at
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap();
     let ClaimResult::Claim(claim) = claim_one(&mut db.client).await.unwrap() else {
         panic!("missing claim")
     };
+    assert_eq!(claim.message, message);
+    assert_eq!(claim.request.identifier, identifier);
     assert_eq!(
         claim.request.timestamp, expected,
         "provider timestamp must never move the reservation into a later UTC second"
     );
+    db.close().await;
+}
+
+/// Explicit synthetic worker input, separate from genuine Store capture above.
+#[tokio::test]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; real public schema, synthetic worker input only"]
+async fn worker_projection_preserves_fractional_reservation_second() {
+    let mut db = Db::for_store().await;
+    let (message, original, identifier) = db.seed_fractional_worker_input().await;
+    let duration = original.duration_since(std::time::UNIX_EPOCH).unwrap();
+    assert_eq!(duration.subsec_micros(), 900_000);
+    let expected = i64::try_from(duration.as_secs()).unwrap();
+    let ClaimResult::Claim(claim) = claim_one(&mut db.client).await.unwrap() else {
+        panic!("missing synthetic worker projection claim")
+    };
+    assert_eq!(claim.account, db.account);
+    assert_eq!(claim.message, message);
+    assert_eq!(claim.request.identifier, identifier);
+    assert_eq!(claim.request.idempotency_key, identifier);
+    assert_eq!(claim.request.customer_id, db.customer);
+    assert_eq!(claim.request.event_name, "synthetic_execution");
+    assert_eq!(claim.request.units, 1);
+    assert_eq!(claim.request.timestamp, expected);
+    assert_ne!(claim.request.timestamp, expected + 1);
+    let retained = db.owner().query_one(
+        "SELECT l.created_at,b.report_at,o.identifier,b.policy_version FROM usage_ledger l JOIN billing_usage_bindings b USING(account_id,message_id) JOIN billing_usage_outbox o USING(account_id,message_id) WHERE l.account_id=$1 AND l.message_id=$2 AND l.entry_kind='reserve'",
+        &[&db.account, &message],
+    ).await.unwrap();
+    assert_eq!(retained.get::<_, std::time::SystemTime>(0), original);
+    assert_eq!(retained.get::<_, std::time::SystemTime>(1), original);
+    assert_eq!(retained.get::<_, String>(2), identifier);
+    assert_eq!(retained.get::<_, i64>(3), 1);
     db.close().await;
 }

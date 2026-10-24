@@ -2607,7 +2607,7 @@ async fn recent_grant_precheck_is_one_bounded_index_probe() {
 }
 
 #[path = "test_wire.rs"]
-mod test_wire;
+pub(crate) mod test_wire;
 
 /// The admission transaction must pay exactly one round trip per statement:
 /// six extended-protocol statements for a fresh unmetered accept, and the
