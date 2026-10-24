@@ -38,9 +38,12 @@ fn parse(status: bool, raw: &[u8]) -> Result<Input, StatusCode> {
     } else {
         let b: Send = serde_json::from_slice(raw).map_err(|_| StatusCode::BAD_REQUEST)?;
         request::version(b.v)?;
+        let intent = request::binary(&b.reviewed_intent, 592, 803)?;
+        crate::reviewed_intent03::v2::Intent03V2::decode(&intent)
+            .map_err(|_| StatusCode::BAD_REQUEST)?;
         Ok(Input::Send {
             envelope: request::binary(&b.envelope, 557, 34213)?,
-            intent: request::binary(&b.reviewed_intent, 624, 835)?,
+            intent,
             signature: request::binary(&b.reviewed_signature, 64, 64)?,
         })
     }
@@ -49,7 +52,7 @@ pub async fn router(state: ProfileHttpState) -> Result<Router, &'static str> {
     let db = crate::runtime_db::connect(&state.database_url)
         .await
         .map_err(|_| "reviewed database unavailable")?;
-    crate::conversation_reviewed_send03_storage::require(&*db)
+    crate::conversation_reviewed_send03_storage::require_v2(&*db)
         .await
         .map_err(|_| "reviewed schema unavailable")?;
     Ok(Router::new()
@@ -93,7 +96,7 @@ async fn handle(
         .start()
         .await
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-    crate::conversation_reviewed_send03_storage::require(&tx)
+    crate::conversation_reviewed_send03_storage::require_v2(&tx)
         .await
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     let mut owner =
@@ -143,7 +146,12 @@ mod tests {
     use uuid::Uuid;
     #[test]
     fn reviewed_bodies_cannot_import_owner_ceiling_or_alternative_profile_authority() {
-        let raw=serde_json::json!({"v":1,"envelope":B.encode([1;557]),"reviewed_intent":B.encode([2;624]),"reviewed_signature":B.encode([3;64])}).to_string();
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../protocol/v1/vectors/reviewed-intent03-v2.json"
+        ))
+        .unwrap();
+        let bytes = crate::sealed_manifest03::tests::hex(&fixture["cases"][0]["intent_hex"]);
+        let raw=serde_json::json!({"v":1,"envelope":B.encode([1;557]),"reviewed_intent":B.encode(&bytes),"reviewed_signature":B.encode([3;64])}).to_string();
         assert!(parse(false, raw.as_bytes()).is_ok());
         for changed in [
             format!("{{\"sms_ceiling\":6,{}", &raw[1..]),
@@ -152,6 +160,13 @@ mod tests {
         ] {
             assert!(parse(false, changed.as_bytes()).is_err());
         }
+        let historical: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../protocol/v1/vectors/reviewed-intent03.json"
+        ))
+        .unwrap();
+        let legacy = crate::sealed_manifest03::tests::hex(&historical["cases"][0]["intent_hex"]);
+        let raw = serde_json::json!({"v":1,"envelope":B.encode([1;557]),"reviewed_intent":B.encode(legacy),"reviewed_signature":B.encode([3;64])}).to_string();
+        assert!(parse(false, raw.as_bytes()).is_err());
         let raw=serde_json::json!({"v":1,"message_id":Uuid::from_u128(1),"interval_id":Uuid::from_u128(2),"envelope_sha256":B.encode([1;32]),"reviewed_intent_sha256":B.encode([2;32]),"reviewed_signature_sha256":B.encode([3;32])}).to_string();
         assert!(parse(true, raw.as_bytes()).is_ok());
         assert!(

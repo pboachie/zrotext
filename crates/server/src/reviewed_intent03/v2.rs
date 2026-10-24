@@ -12,12 +12,12 @@ const DOMAIN: &[u8] = b"zrotext/conversation/reviewed-send03/v2\0";
 /// to authenticate independently; none of them establish current permission.
 pub struct Intent03V2 {
     bytes: Vec<u8>,
-    ids: [[u8; 16]; 8],
-    numbers: [u64; 8],
-    digests: [[u8; 32]; 10],
-    peer: Vec<u8>,
-    recipients: Vec<(u8, [u8; 32])>,
-    ceiling: u8,
+    pub(super) ids: [[u8; 16]; 8],
+    pub(super) numbers: [u64; 8],
+    pub(super) digests: [[u8; 32]; 10],
+    pub(super) peer: Vec<u8>,
+    pub(super) recipients: Vec<(u8, [u8; 32])>,
+    pub(super) ceiling: u8,
 }
 impl std::fmt::Debug for Intent03V2 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -241,5 +241,80 @@ pub fn verify_signature(
     })
 }
 
+/// Full cryptographic candidate composed with separately held actual readers.
+/// The actual admission transaction still must commit its typed original row,
+/// real billing reserve, message and job before this becomes an accepted send.
+pub(crate) struct VerifiedReview03V2 {
+    intent: Intent03V2,
+    signature: [u8; 64],
+    envelope: crate::sealed_envelope03::VerifiedEnvelope03,
+}
+impl VerifiedReview03V2 {
+    pub(crate) fn intent(&self) -> &Intent03V2 {
+        &self.intent
+    }
+    pub(crate) fn signature(&self) -> &[u8; 64] {
+        &self.signature
+    }
+    pub(crate) fn envelope(&self) -> &crate::sealed_envelope03::VerifiedEnvelope03 {
+        &self.envelope
+    }
+    pub(crate) fn expires_ms(&self) -> u64 {
+        self.intent.message_expires_ms()
+    }
+}
+pub(crate) fn verify(
+    intent: Intent03V2,
+    signature: &[u8],
+    envelope: &[u8],
+    expected: &super::ExpectedReview03<'_>,
+    now: u64,
+) -> Check<VerifiedReview03V2> {
+    verify_timed(intent, signature, envelope, expected, now, None)
+}
+pub(crate) fn verify_retained(
+    intent: Intent03V2,
+    signature: &[u8],
+    envelope: &[u8],
+    expected: &super::ExpectedReview03<'_>,
+    now: u64,
+    original: super::RetainedTiming03,
+) -> Check<VerifiedReview03V2> {
+    super::validate_original(expected, &original, now)?;
+    verify_timed(intent, signature, envelope, expected, now, Some(original))
+}
+fn verify_timed(
+    intent: Intent03V2,
+    signature: &[u8],
+    envelope: &[u8],
+    expected: &super::ExpectedReview03<'_>,
+    now: u64,
+    original: Option<super::RetainedTiming03>,
+) -> Check<VerifiedReview03V2> {
+    let transcript = intent.transcript();
+    let (envelope, signature) = super::verify_parts(
+        super::ReviewParts03 {
+            ids: &intent.ids,
+            numbers: &intent.numbers,
+            digests: &intent.digests,
+            peer: &intent.peer,
+            recipients: &intent.recipients,
+        },
+        signature,
+        envelope,
+        expected,
+        now,
+        original,
+        &transcript,
+    )?;
+    Ok(VerifiedReview03V2 {
+        intent,
+        signature,
+        envelope,
+    })
+}
+
+#[cfg(test)]
+mod current_tests;
 #[cfg(test)]
 mod tests;

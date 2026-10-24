@@ -21,9 +21,29 @@ and are consumed byte-for-byte by the SDK and server. Their real signatures
 cover canonical component bytes; the fixture explicitly contains no accepted
 database, encrypted message, hardware custody or current authority proof.
 
-The separately reviewed storage and effect composition must require V2 for new
-admission, grants and execution. Historical V1 status does not requeue, renew,
-translate or resign old work. Removing a legacy stored body hash does not
-promise retroactive confidentiality for V1 records whose immutable review
-hashes remain. These component APIs do not mount an HTTP route, enable sending
-or alter any existing message or database row.
+The optional server admission and grant/fetch composition selects the immutable
+stored intent version and requires V2 for every new effect. It requires the
+separate `conversation_reviewed_send03_storage::require_v2` installation
+capability; an older admission, grant or native identity schema is insufficient.
+The current readers still independently verify actual original owner/session,
+installed interval, physical lease, root and manifest ancestry, exact ciphertext,
+recipient mappings, current billing and the original signed segment ceiling.
+
+Historical V1 status does not requeue, renew, translate or resign old work. Live
+V1 originals and their body digest remain historical; permitted content erasure
+requires the storage layer's genuine coupled one-way redaction. V2 stores no body
+digest. Already-redacted114 V1 tombstones may retain their original32-byte body
+digest as passive metadata; the reader discards it and never reconstructs
+originals or permission. A future genuine V1 redaction clears that field in the
+same coupled transition. Removing a legacy stored body hash does not promise retroactive
+confidentiality for V1 records whose immutable review hashes remain.
+
+`profile03-fetch-permission-v2.schema.json` keeps the ten outer and forty current
+fields and the `message_manifest_permission03` discriminator. It requires an
+explicit V2 reviewed intent and refers to the unchanged current/interval shapes;
+the old V1 packet schema remains separate. Structural validation proves no
+signature, database acceptance, freshness or custody.
+
+This optional source is not mounted by the default application. A corrected
+storage installation and genuine integrated qualification are required before
+enabling it; these APIs do not enable sending or change existing message rows.
