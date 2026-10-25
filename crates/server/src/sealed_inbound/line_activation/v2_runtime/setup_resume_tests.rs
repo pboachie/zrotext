@@ -224,5 +224,6 @@ async fn setup_resume_is_account_fenced_and_reports_original_line_session_withou
             .status(),
         StatusCode::UNAUTHORIZED
     );
+    drop(db);
     c.cleanup().await;
 }

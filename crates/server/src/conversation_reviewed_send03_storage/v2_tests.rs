@@ -19,7 +19,7 @@ fn decode(value: &str) -> Vec<u8> {
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE on a disposable PostgreSQL cluster"]
 async fn explicit_v2_parser_reads_shared_boundaries_without_a_plaintext_digest() {
     let fixture = super::tests::fixture().await;
-    require_v2(&fixture.db).await.unwrap();
+    require_v2(&fixture.runtime).await.unwrap();
     let vectors: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../protocol/v1/vectors/reviewed-intent03-v2.json"
     ))
@@ -143,7 +143,7 @@ async fn original_v1_can_be_parsed_for_history_but_cannot_request_new_admission(
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE on a disposable PostgreSQL cluster"]
 async fn v2_capability_refuses_missing_or_substituted_format_and_column_contracts() {
     let mut fixture = super::tests::fixture().await;
-    require_v2(&fixture.db).await.unwrap();
+    require_v2(&fixture.runtime).await.unwrap();
     for sql in [
         "DROP FUNCTION public.conversation_reviewed_send03_v2_ready()",
         "CREATE OR REPLACE FUNCTION public.conversation_reviewed_send03_v2_ready() RETURNS boolean LANGUAGE sql STABLE SET search_path TO pg_catalog AS 'SELECT true'",
@@ -158,7 +158,7 @@ async fn v2_capability_refuses_missing_or_substituted_format_and_column_contract
         tx.batch_execute(sql).await.unwrap();
         assert!(optional(&tx).await.is_err(), "{sql}");
         tx.rollback().await.unwrap();
-        require_v2(&fixture.db).await.unwrap();
+        require_v2(&fixture.runtime).await.unwrap();
     }
     fixture.finish().await;
 }

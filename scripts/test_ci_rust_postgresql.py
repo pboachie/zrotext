@@ -57,16 +57,19 @@ class InventoryTests(unittest.TestCase):
         for lane in ci.LANES:
             records = {}
             for key, target in targets.items():
-                owned = ci.lane_for(target["description"]["package"]) == lane
-                features = ["conversation-simulator-tests"] if suite == "conversation" and target["description"]["package"] == "zrotext-server" else []
+                package = target["description"]["package"]
+                tests = ["server_case_a", "server_case_b", "server_case_c", "server_case_d"] if package == "zrotext-server" else ["database_case"]
+                assigned = ci.assigned_tests(package, tests, lane)
+                executed = lane in ci.lanes_for(package) and (package != "zrotext-server" or bool(assigned))
+                features = ["conversation-simulator-tests"] if suite == "conversation" and package == "zrotext-server" else []
                 records[key] = {"description": target["description"], "features": features,
-                                "tests": ["database_case"], "executed": owned,
-                                "passed": ["database_case"] if owned else []}
-            receipt = {"version": 1, "source": identity, "suite": suite, "lane": lane,
+                                "tests": tests, "assigned": assigned, "executed": executed,
+                                "passed": assigned}
+            receipt = {"version": 2, "source": identity, "suite": suite, "lane": lane,
                        "workspace": inventory, "records": records,
                        "doctests": suite == "default" and lane == "remaining"}
             receipt["inventory_digest"] = ci.digest({"workspace": inventory, "targets": {
-                key: {k: v for k, v in item.items() if k not in ("executed", "passed")}
+                key: {k: v for k, v in item.items() if k not in ("assigned", "executed", "passed")}
                 for key, item in records.items()}})
             receipts.append(receipt)
         return receipts, identity, inventory, targets
@@ -75,7 +78,7 @@ class InventoryTests(unittest.TestCase):
         self.add_package("new-workspace-package", ["rlib", "cdylib"])
         inventory, targets = self.inventory()
         added = next(p for p in inventory if p["name"] == "new-workspace-package")
-        self.assertEqual(added["lane"], "remaining")
+        self.assertEqual(added["lanes"], ["remaining"])
         self.assertEqual(len(targets), 4)
 
     def test_binary_only_packages_stay_explicit_in_library_inventory(self):
@@ -125,12 +128,16 @@ class InventoryTests(unittest.TestCase):
         mutations = [lambda r: r.pop(), lambda r: r.append(copy.deepcopy(r[0])),
                      lambda r: r[0].update(lane=r[1]["lane"]),
                      lambda r: r[0].update(source={**identity, "attempt": "2"}),
+                     lambda r: r[0].update(source={**identity, "run": "8"}),
+                     lambda r: r[0].update(source={**identity, "commit": "c" * 40}),
+                     lambda r: r[0].update(source={**identity, "tree": "d" * 40}),
                      lambda r: r[0].update(suite="conversation"),
                      lambda r: r[0].update(version=True),
+                     lambda r: r[0].update(version=1),
                      lambda r: r[0].update(inventory_digest="0" * 64),
                      lambda r: r[0]["workspace"].pop(),
                      lambda r: r[0]["records"].pop(next(iter(targets))),
-                     lambda r: r[2].update(doctests=False)]
+                     lambda r: r[-1].update(doctests=False)]
         for mutate in mutations:
             receipts = copy.deepcopy(valid)
             mutate(receipts)
@@ -157,10 +164,52 @@ class InventoryTests(unittest.TestCase):
         other = next(item for item in receipt["records"].values() if not item["executed"])
         other["tests"].append("unaccounted_case")
         receipt["inventory_digest"] = ci.digest({"workspace": inventory, "targets": {
-            key: {k: v for k, v in item.items() if k not in ("executed", "passed")}
+            key: {k: v for k, v in item.items() if k not in ("assigned", "executed", "passed")}
             for key, item in receipt["records"].items()}})
         with self.assertRaises(ValueError):
             ci.verify_receipts(receipts, "default", identity, inventory, targets)
+
+    def test_server_shards_prove_a_disjoint_union_and_reject_tampered_assignment(self):
+        for suite in ci.SUITES:
+            receipts, identity, inventory, targets = self.receipts(suite)
+            server = next(key for key, target in targets.items() if target["description"]["package"] == "zrotext-server")
+            shards = [r["records"][server] for r in receipts if r["lane"] in ci.SERVER_LANES]
+            self.assertTrue(all(len(r["passed"]) == 2 for r in shards))
+            self.assertFalse(set(shards[0]["passed"]) & set(shards[1]["passed"]))
+            self.assertEqual(sorted(shards[0]["passed"] + shards[1]["passed"]), shards[0]["tests"])
+            for mutation in ("omission", "duplicate", "wrong-shard", "invented", "empty-lane"):
+                broken = copy.deepcopy(receipts)
+                first, second = [r["records"][server] for r in broken if r["lane"] in ci.SERVER_LANES]
+                if mutation == "omission":
+                    first["passed"] = first["passed"][1:]
+                elif mutation == "duplicate":
+                    first["passed"] = first["passed"] * 2
+                elif mutation == "wrong-shard":
+                    first["assigned"], second["assigned"] = second["assigned"], first["assigned"]
+                    first["passed"], second["passed"] = second["passed"], first["passed"]
+                elif mutation == "invented":
+                    first["passed"] = [*first["passed"], "unlisted_case"]
+                else:
+                    first.update(assigned=[], passed=[], executed=False)
+                with self.subTest(suite=suite, mutation=mutation), self.assertRaises(ValueError):
+                    ci.verify_receipts(broken, suite, identity, inventory, targets)
+
+    def test_an_entire_server_lane_without_tests_refuses_even_consistent_records(self):
+        receipts, _, _, targets = self.receipts()
+        records = next(r["records"] for r in receipts if r["lane"] == "server-1")
+        server = next(r for r in records.values() if r["description"]["package"] == "zrotext-server")
+        server.update(tests=["server_case_a"], assigned=[], passed=[], executed=False)
+        with self.assertRaisesRegex(ValueError, "zero tests"):
+            ci.validate_records(records, targets, "default", "server-1")
+
+    def test_aggregate_checks_union_even_if_per_lane_validation_regresses(self):
+        receipts, identity, inventory, targets = self.receipts()
+        server = next(key for key, target in targets.items() if target["description"]["package"] == "zrotext-server")
+        for names in ([], receipts[1]["records"][server]["passed"] * 2):
+            broken = copy.deepcopy(receipts)
+            broken[1]["records"][server]["passed"] = names
+            with mock.patch.object(ci, "validate_records"), self.assertRaisesRegex(ValueError, "disjoint complete union"):
+                ci.verify_receipts(broken, "default", identity, inventory, targets)
 
     def test_artifact_inventory_is_exact_and_uses_cargo_paths_not_globs(self):
         _, targets = self.inventory()
@@ -184,6 +233,21 @@ class InventoryTests(unittest.TestCase):
 
 
 class HarnessAndStatusTests(unittest.TestCase):
+    def test_sharding_is_stable_and_native_arguments_preserve_exclusions(self):
+        self.assertEqual(ci.LANES, ("delivery-store", "server-0", "server-1", "remaining"))
+        names = ["server_case_a", "server_case_b", "server_case_c", "server_case_d"]
+        expected = {"server-0": ["server_case_a", "server_case_d"], "server-1": ["server_case_b", "server_case_c"]}
+        for lane, assigned in expected.items():
+            self.assertEqual(ci.assigned_tests("zrotext-server", names, lane), assigned)
+            self.assertEqual(ci.assigned_tests("zrotext-server", list(reversed(names)), lane), list(reversed(assigned)))
+            self.assertEqual([n for n in ci.assigned_tests("zrotext-server", [*names, "new_test"], lane) if n in names], assigned)
+        for suite in ci.SUITES:
+            args = ci.selection(suite)
+            self.assertEqual(ci.server_arguments(args, names), [*args, "--exact", "--", *names])
+            self.assertEqual(ci.server_arguments(args, names, listing=True), [*args, "--exact", "--list", "--", *names])
+            with self.assertRaises(ValueError):
+                ci.server_arguments(args, [])
+
     def test_listing_and_passed_identities_must_match_exactly(self):
         self.assertEqual(ci.listed_tests("a: test\nb: test\n\n2 tests, 0 benchmarks\n"), ["a", "b"])
         self.assertEqual(ci.listed_tests("0 tests, 0 benchmarks\n"), [])
@@ -218,9 +282,29 @@ class HarnessAndStatusTests(unittest.TestCase):
                 ci.prerequisite_status("default", needs)
         valid["changes"]["outputs"]["rust"] = "false"
         self.assertFalse(ci.prerequisite_status("default", valid))
+        for name in valid:
+            needs = copy.deepcopy(valid)
+            needs[name]["result"] = "skipped"
+            with self.assertRaises(ValueError):
+                ci.prerequisite_status("default", needs)
         del valid["rust-postgresql"]
         with self.assertRaises(ValueError):
             ci.prerequisite_status("default", valid)
+
+    def test_conversation_aggregator_requires_every_prerequisite(self):
+        valid = {"conversation-workspace": {"result": "success"},
+                 "conversation-postgresql-lanes": {"result": "success"}}
+        self.assertTrue(ci.prerequisite_status("conversation", valid))
+        for name in valid:
+            for result in ("failure", "cancelled", "skipped", None):
+                needs = copy.deepcopy(valid)
+                needs[name]["result"] = result
+                with self.assertRaises(ValueError):
+                    ci.prerequisite_status("conversation", needs)
+            needs = copy.deepcopy(valid)
+            del needs[name]
+            with self.assertRaises(ValueError):
+                ci.prerequisite_status("conversation", needs)
 
     def test_only_the_original_feature_and_exclusion_matrices_are_used(self):
         self.assertEqual(ci.cargo_tests("default"), ["cargo", "test", "--locked", "--workspace", "--lib", "--bins", "--test", "*"])
@@ -268,7 +352,7 @@ else:
 ''')
         self.executable.chmod(0o700)
         self.arguments = [*ci.selection("default"), "--format=pretty", "--color=never"]
-        self.state = {"root": str(self.root), "suite": "default", "lane": "server", "arguments": self.arguments,
+        self.state = {"root": str(self.root), "suite": "default", "lane": "server-1", "arguments": self.arguments,
                       "results": str(self.results), "artifacts": {"one": {"executable": str(self.executable),
                       "manifest": "package/Cargo.toml", "description": {"package": "zrotext-server"}, "features": []}}}
         self.state_path = self.root / "state.json"
@@ -288,6 +372,7 @@ else:
         result = ci.read_json(self.results / "one.json")
         self.assertTrue(result["executed"])
         self.assertEqual(result["tests"], ["case"])
+        self.assertEqual(result["assigned"], ["case"])
         self.assertEqual(result["passed"], ["case"])
         with self.assertRaises(FileExistsError):
             self.call()
@@ -299,6 +384,21 @@ else:
         self.assertFalse(result["executed"])
         self.assertEqual(result["tests"], ["case"])
         self.assertEqual(result["passed"], [])
+
+    def test_empty_server_target_subset_never_invokes_an_unfiltered_harness(self):
+        self.state["lane"] = "server-0"
+        with mock.patch.object(ci, "execute_harness", side_effect=AssertionError("Empty subset executed")):
+            self.call()
+        result = ci.read_json(self.results / "one.json")
+        self.assertEqual(result["tests"], ["case"])
+        self.assertEqual(result["assigned"], [])
+        self.assertFalse(result["executed"])
+
+    def test_mismatched_native_multifilter_listing_refuses_before_execution(self):
+        self.executable.write_text(self.executable.read_text().replace('print("case: test")', 'print("other: test" if "--exact" in sys.argv else "case: test")'))
+        with mock.patch.object(ci, "execute_harness", side_effect=AssertionError("Bad selection executed")), self.assertRaisesRegex(ValueError, "filters differ"):
+            self.call()
+        self.assertFalse((self.results / "one.json").exists())
 
     def test_unknown_executable_wrong_arguments_and_wrong_cwd_refuse(self):
         for arguments in ([str(self.root / "unknown"), *self.arguments], [str(self.executable), "--ignored"]):
@@ -426,8 +526,8 @@ class WorkflowSourceTests(unittest.TestCase):
     def test_fixed_lane_bounds_and_all_previous_core_gates_remain(self):
         core = job("ci.yml", "rust-workspace")
         matrix = job("ci.yml", "rust-postgresql")
-        self.assertIn("lane: [delivery-store, server]", matrix)
-        self.assertIn("max-parallel: 2", matrix)
+        self.assertIn("lane: [delivery-store, server-0, server-1]", matrix)
+        self.assertIn("max-parallel: 3", matrix)
         self.assertIn("fail-fast: false", matrix)
         for source in (core, matrix):
             self.assertIn("timeout-minutes: 45", source)
@@ -454,9 +554,10 @@ class WorkflowSourceTests(unittest.TestCase):
                      "--features conversation-simulator-tests --bins --test '*' -- --ignored",
                      "--features conversation-simulator-tests --doc -- --ignored"):
             self.assertIn(gate, workspace)
-        for gate in ("lane: [delivery-store, server, remaining]", "max-parallel: 3", "fail-fast: false",
+        for gate in ("lane: [delivery-store, server-0, server-1, remaining]", "max-parallel: 3", "fail-fast: false",
                      "timeout-minutes: 60", "--suite conversation --lane '${{ matrix.lane }}'"):
             self.assertIn(gate, lanes)
+        self.assertIn("needs: [conversation-workspace]", lanes)
         self.assertIn("needs: [conversation-workspace, conversation-postgresql-lanes]", aggregate)
         self.assertIn("if: ${{ always() }}", aggregate)
         self.assertIn("verify --suite conversation", aggregate)
@@ -490,6 +591,19 @@ fn cargo_runtime_is_preserved() {
     assert!(libraries.contains("inherited-library-sentinel"));
 }
 '''
+        server_test = test + '''#[test] #[ignore]
+fn server_case_a() { assert!(std::env::var_os("CI_SHARD_FORCE_FAILURE").is_none()); }
+#[test] #[ignore] fn server_case_a_extra() {}
+#[test] #[ignore] fn server_case_b() {}
+#[test] #[ignore] fn server_case_c() {}
+#[test] #[ignore] fn server_case_d() {}
+#[test] #[ignore] fn real_stripe_excluded() { panic!("original Stripe exclusion escaped"); }
+#[test] fn ordinary_not_selected() { panic!("nonignored selection escaped"); }
+#[test] #[ignore] #[cfg(feature="conversation-simulator-tests")]
+fn loopback_journal_bridge_excluded() { panic!("original loopback exclusion escaped"); }
+#[test] #[ignore] #[cfg(feature="conversation-simulator-tests")]
+fn ordinary_setup_server_browser_fixture_excluded() { panic!("original browser exclusion escaped"); }
+'''
         for name in names:
             package = root / name
             (package / "src").mkdir(parents=True)
@@ -498,14 +612,14 @@ fn cargo_runtime_is_preserved() {
                 manifest += '[features]\nunified=[]\n'
             if name == "zrotext-server":
                 manifest += '[features]\nconversation-simulator-tests=[]\n[dependencies]\nzrotext-delivery-store={path="../zrotext-delivery-store",features=["unified"]}\n'
-                (package / "src/main.rs").write_text('fn main() {}\n' + test)
+                (package / "src/main.rs").write_text('fn main() {}\n' + server_test)
                 (package / "tests").mkdir()
-                (package / "tests/integration.rs").write_text(test)
+                (package / "tests/integration.rs").write_text(server_test)
             (package / "Cargo.toml").write_text(manifest)
             if name == "zrotext-empty":
                 (package / "src/main.rs").write_text('fn main() {}\n')
             else:
-                source = test
+                source = server_test if name == "zrotext-server" else test
                 if name == "zrotext-server":
                     source += '#[test]\n#[ignore]\n#[cfg(feature="conversation-simulator-tests")]\nfn simulator_feature_runs() {}\n'
                 if name == "zrotext-delivery-store":
@@ -534,8 +648,39 @@ fn cargo_runtime_is_preserved() {
                     receipts.append(ci.read_json(path))
                 inventory, targets = ci.workspace_inventory(ci.read_metadata(root), root, suite)
                 ci.verify_receipts(receipts, suite, ci.source_identity(root), inventory, targets)
+                server_receipts = [r for r in receipts if r["lane"] in ci.SERVER_LANES]
+                for key, target in targets.items():
+                    if target["description"]["package"] != "zrotext-server":
+                        continue
+                    first, second = [r["records"][key] for r in server_receipts]
+                    if not all(len(r["passed"]) >= 2 for r in (first, second)):
+                        raise AssertionError("Native smoke did not execute multiple exact filters per shard")
+                    if "server_case_a" not in first["passed"] or "server_case_a_extra" not in second["passed"]:
+                        raise AssertionError("Native exact selection did not separate overlapping names")
+                    if any("excluded" in name for name in first["tests"]):
+                        raise AssertionError("Original exclusion escaped into the full server inventory")
+                broken = copy.deepcopy(receipts)
+                key = next(k for k, t in targets.items() if t["description"]["package"] == "zrotext-server")
+                broken[1]["records"][key]["passed"].pop()
+                try:
+                    ci.verify_receipts(broken, suite, ci.source_identity(root), inventory, targets)
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("Incomplete real native shard receipt was accepted")
             if (root / "doctest-proof").read_bytes() != b"executed":
                 raise AssertionError("Default ignored doctest did not actually execute")
+            refusal = runner_temp / "failed-server-shard.json"
+            print("Expecting the following synthetic server shard failure; no receipt may be written.", flush=True)
+            with mock.patch.dict(os.environ, {"CI_SHARD_FORCE_FAILURE": "1"}):
+                try:
+                    ci.run_lane(root, "default", "server-0", refusal)
+                except subprocess.CalledProcessError:
+                    pass
+                else:
+                    raise AssertionError("Failing native server shard was accepted")
+            if refusal.exists():
+                raise AssertionError("Failed native server shard published a success receipt")
             # A real failing doctest must fail the residual lane and publish no
             # receipt. This fixture is disposable and contains no database code.
             path = root / "zrotext-migrator/src/lib.rs"
@@ -554,7 +699,7 @@ fn cargo_runtime_is_preserved() {
                 raise AssertionError("Failing doctest was accepted")
             if refusal.exists():
                 raise AssertionError("Failed doctest published a success receipt")
-        print("Native Cargo runner, both feature matrices and real doctest pass/refusal checks passed.")
+        print("Native Cargo runner, exact multi-test shards, both feature matrices and real shard/doctest pass/refusal checks passed.")
 
 
 if __name__ == "__main__":

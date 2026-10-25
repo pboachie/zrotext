@@ -192,8 +192,8 @@ cargo test --locked --workspace -- --ignored --skip real_stripe_ --test-threads=
 
 The `real_stripe_` exclusion is deliberate: those two ignored tests contact Stripe TEST and need separate explicit setup. The ordinary command plus the PostgreSQL command run the same Rust test sets as CI. Stop the container with Ctrl+C when finished.
 
-CI divides the ignored tests into three disjoint package lanes: delivery store,
-server, and every other workspace member. Each lane has its own disposable
+CI divides the ignored tests into four disjoint lanes: delivery store, two server
+test-name shards, and every other workspace member. Each lane has its own disposable
 PostgreSQL service and retains four test threads. The required `rust` check is
 an aggregator, not just the residual workspace job: it requires all lanes and
 the original lint, nonignored, migration, TLS, canary and simulator gates.
@@ -204,9 +204,16 @@ filter and successful no-op prerequisites; failed or skipped prerequisites refus
 its ignored harnesses through a command-local native Cargo runner. Cargo retains
 feature unification, package working directories and runtime library paths. Every
 workspace package and eligible target is discovered from current metadata; each
-lane inventories all harnesses and executes its assigned packages. Nonempty lane
-coverage, exact passed-test identities and matching source-bound inventories are
-required. Unsupported target selection or pre-existing runner overrides refuse
+lane inventories all harnesses. Nonserver packages stay together; server tests
+are assigned by the parity of the first SHA-256 byte of each UTF-8 test name.
+This stable rule is independent of enumeration order and newly added tests.
+The original exclusion flags first establish the full selected inventory. Each
+server shard re-lists its exact native libtest multi-filter command and requires
+that selection to equal its assigned names before executing it. Empty target
+subsets are recorded but never invoked with an empty filter (which would run all
+tests). Nonempty lane coverage, exact passed-test identities, matching source-bound
+inventories and a disjoint complete union for every target are required.
+Unsupported target selection or pre-existing runner overrides refuse
 rather than silently narrowing coverage. The residual default lane separately
 executes the full ignored Cargo doctest command, without the custom runner;
 compiled harness inventory is not treated as doctest execution evidence.
@@ -214,9 +221,14 @@ compiled harness inventory is not treated as doctest execution evidence.
 The conversation workflow preserves its separate `conversation-simulator-tests`
 feature selection, complete nonignored tests, ignored binary/integration targets,
 ignored doctests, and external consumer fixtures. Its ignored libraries use the
-same three package lanes and a strict prerequisite aggregator. The two workflows
-allow at most three Rust test runners each, without increasing runner sizes or job
-budgets. Lane receipts contain only structural test identities, not fixture logs.
+same four lanes and a strict prerequisite aggregator. The default workflow permits
+three matrix runners plus its residual core runner; the conversation workflow
+permits at most three lane runners after its workspace prerequisite. Together
+these paths permit at most seven active Rust test runners, without increasing
+runner sizes, account quotas or the existing 45/60-minute job budgets. Test-name
+sharding does not guarantee balanced runtimes or completion within those budgets;
+only hosted results establish that. Lane receipts contain only structural test
+identities, not fixture logs.
 Receipts are bound to one workflow attempt: after a failure, rerun the complete
 workflow rather than only failed jobs, so every prerequisite produces fresh proof.
 The dependency cache remains read-only for pull requests. To exercise the runner

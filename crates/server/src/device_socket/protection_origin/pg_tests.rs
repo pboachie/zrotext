@@ -34,7 +34,14 @@ async fn ordinary_stream_open(
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >;
     async fn json(socket: &mut Stream, step: StreamStep) -> serde_json::Value {
-        let frame = timeout(Duration::from_secs(5), socket.next())
+        // Opening spans multiple separately authorized transactions and their
+        // catalog checks. This bounds cumulative fixture work, not production
+        // latency; all other frame waits and production deadlines stay unchanged.
+        let wait = match step {
+            StreamStep::ConfiguredOpening => Duration::from_secs(35),
+            _ => Duration::from_secs(5),
+        };
+        let frame = timeout(wait, socket.next())
             .await
             .unwrap_or_else(|_| panic!("ordinary stream {step:?} timed out"))
             .unwrap()

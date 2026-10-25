@@ -18,7 +18,8 @@ import sys
 import tempfile
 import tomllib
 
-LANES = ("delivery-store", "server", "remaining")
+SERVER_LANES = ("server-0", "server-1")
+LANES = ("delivery-store", *SERVER_LANES, "remaining")
 SUITES = ("default", "conversation")
 LIB_KINDS = {"lib", "rlib", "cdylib", "dylib", "staticlib", "proc-macro"}
 STATE_ENV = "ZT_CI_POSTGRESQL_DISPATCH_STATE"
@@ -131,8 +132,27 @@ def source_identity(root):
     return {"commit": commit, "tree": tree, "run": run, "attempt": attempt}
 
 
-def lane_for(package):
-    return {"zrotext-delivery-store": "delivery-store", "zrotext-server": "server"}.get(package, "remaining")
+def lanes_for(package):
+    if package == "zrotext-server":
+        return list(SERVER_LANES)
+    return ["delivery-store" if package == "zrotext-delivery-store" else "remaining"]
+
+
+def assigned_tests(package, tests, lane):
+    require(lane in LANES, "Unknown lane")
+    if lane not in lanes_for(package):
+        return []
+    if package == "zrotext-server":
+        # Unlike Python's randomized hash(), this assignment is identical in
+        # every job and independent of enumeration order or newly added tests.
+        return [name for name in tests if SERVER_LANES[hashlib.sha256(name.encode("utf-8")).digest()[0] % 2] == lane]
+    return tests
+
+
+def server_arguments(arguments, tests, *, listing=False):
+    # An empty filter list would run the entire harness. Never issue it.
+    require(tests, "Cannot execute an empty server shard target")
+    return [*arguments, "--exact", *(["--list"] if listing else []), "--", *tests]
 
 
 def selection(suite):
@@ -203,7 +223,7 @@ def workspace_inventory(metadata, root, suite):
                 targets[key] = {"description": description, "package_id": package["id"],
                                 "manifest": relative(manifest_path, root)}
         inventory.append({"name": package["name"], "manifest": relative(manifest_path, root),
-                          "lane": lane_for(package["name"]), "targets": sorted(descriptions, key=lambda t: digest(t))})
+                          "lanes": lanes_for(package["name"]), "targets": sorted(descriptions, key=lambda t: digest(t))})
     return sorted(inventory, key=lambda p: p["name"]), targets
 
 
@@ -316,35 +336,49 @@ def dispatch(argv):
     with (directory / (key + ".started")).open("x", encoding="utf-8") as claim:
         claim.write("started\n")
     tests = listed_tests(capture([argv[0], *state["arguments"], "--list"], Path.cwd()))
-    owned = lane_for(artifact["description"]["package"]) == state["lane"]
+    package = artifact["description"]["package"]
+    assigned = assigned_tests(package, tests, state["lane"])
+    owned = state["lane"] in lanes_for(package)
+    executed = owned and (package != "zrotext-server" or bool(assigned))
     passed = []
-    if owned:
-        passed = passed_tests(execute_harness(argv), tests)
+    if executed:
+        command = argv
+        if package == "zrotext-server":
+            # --exact also changes libtest's skip matching. Keep the unchanged
+            # exclusions in both commands, and prove the exact OR-filter list
+            # selects only the subset of the original full excluded inventory.
+            selected = listed_tests(capture([argv[0], *server_arguments(state["arguments"], assigned, listing=True)], Path.cwd()))
+            require(selected == assigned, "Native server filters differ from assigned test inventory")
+            command = [argv[0], *server_arguments(state["arguments"], assigned)]
+        passed = passed_tests(execute_harness(command), assigned)
     else:
-        print("Inventoried target assigned to another PostgreSQL lane.", flush=True)
+        print("Inventoried target has no tests assigned to this PostgreSQL lane.", flush=True)
     result = {"description": artifact["description"], "features": artifact["features"],
-              "tests": tests, "executed": owned, "passed": sorted(passed)}
+              "tests": tests, "assigned": assigned, "executed": executed, "passed": sorted(passed)}
     with (directory / (key + ".json")).open("x", encoding="utf-8") as stream:
         json.dump(result, stream, sort_keys=True)
 
 
 def validate_records(records, targets, suite, lane):
+    require(suite in SUITES and lane in LANES, "Unknown suite or lane")
     require(isinstance(records, dict) and set(records) == set(targets), "Missing or unexpected target receipt")
     total = 0
     for key, target in targets.items():
         item = records[key]
-        require(set(item) == {"description", "features", "tests", "executed", "passed"}, "Invalid target receipt schema")
+        require(set(item) == {"description", "features", "tests", "assigned", "executed", "passed"}, "Invalid target receipt schema")
         require(item["description"] == target["description"], "Wrong target receipt identity")
         tests, features = item["tests"], item["features"]
         require(isinstance(tests, list) and all(isinstance(t, str) and t and "\n" not in t for t in tests) and tests == sorted(set(tests)), "Invalid receipt test inventory")
         require(isinstance(features, list) and all(isinstance(f, str) for f in features) and features == sorted(set(features)), "Invalid receipt feature inventory")
         if target["description"]["package"] == "zrotext-server":
             require(("conversation-simulator-tests" in features) == (suite == "conversation"), "Wrong simulator feature selection")
-        owned = lane_for(target["description"]["package"]) == lane
-        require(type(item["executed"]) is bool and item["executed"] == owned, "Incorrect lane execution ownership")
-        require(item["passed"] == (tests if owned else []), "Incomplete or duplicate executed coverage")
-        if owned:
-            total += len(tests)
+        package = target["description"]["package"]
+        assigned = assigned_tests(package, tests, lane)
+        executed = lane in lanes_for(package) and (package != "zrotext-server" or bool(assigned))
+        require(item["assigned"] == assigned, "Incorrect deterministic test assignment")
+        require(type(item["executed"]) is bool and item["executed"] == executed, "Incorrect lane execution ownership")
+        require(item["passed"] == assigned, "Incomplete or duplicate executed coverage")
+        total += len(assigned)
     require(total > 0, "PostgreSQL lane executed zero tests")
 
 
@@ -384,10 +418,10 @@ def _run_lane(root, suite, lane, destination):
     if doctests:
         subprocess.run(doctest_command(), cwd=root, check=True)
     require(source_identity(root) == identity, "Workflow source changed during testing")
-    result = {"version": 1, "source": identity, "suite": suite, "lane": lane,
+    result = {"version": 2, "source": identity, "suite": suite, "lane": lane,
               "workspace": inventory, "records": records, "doctests": doctests}
     result["inventory_digest"] = digest({"workspace": inventory, "targets": {
-        key: {k: v for k, v in item.items() if k not in ("executed", "passed")}
+        key: {k: v for k, v in item.items() if k not in ("assigned", "executed", "passed")}
         for key, item in records.items()}})
     write_receipt(destination, result)
     print(f"Verified PostgreSQL lane: {lane}")
@@ -410,17 +444,21 @@ def verify_receipts(receipts, suite, identity, inventory, targets):
     inventories = set()
     for receipt in receipts:
         require(set(receipt) == {"version", "source", "suite", "lane", "workspace", "records", "doctests", "inventory_digest"}, "Invalid coverage receipt schema")
-        require(type(receipt["version"]) is int and receipt["version"] == 1, "Unsupported receipt version")
+        require(type(receipt["version"]) is int and receipt["version"] == 2, "Unsupported receipt version")
         require(receipt["source"] == identity and receipt["suite"] == suite, "Foreign workflow coverage receipt")
         require(receipt["workspace"] == inventory, "Dropped or changed workspace package/target")
         validate_records(receipt["records"], targets, suite, receipt["lane"])
         require(type(receipt["doctests"]) is bool and receipt["doctests"] == (suite == "default" and receipt["lane"] == "remaining"), "Missing or misplaced default doctest gate")
         actual = digest({"workspace": inventory, "targets": {
-            key: {k: v for k, v in item.items() if k not in ("executed", "passed")}
+            key: {k: v for k, v in item.items() if k not in ("assigned", "executed", "passed")}
             for key, item in receipt["records"].items()}})
         require(receipt["inventory_digest"] == actual, "Altered coverage inventory digest")
         inventories.add(actual)
     require(len(inventories) == 1, "Lanes did not inventory identical features and tests")
+    for key in targets:
+        passed = [name for receipt in receipts for name in receipt["records"][key]["passed"]]
+        require(len(passed) == len(set(passed)) and sorted(passed) == receipts[0]["records"][key]["tests"],
+                "Lane execution is not a disjoint complete union of the target inventory")
 
 
 def main():

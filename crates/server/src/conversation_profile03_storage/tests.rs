@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
-use crate::payload_profile_writer::tests::Fixture;
+use crate::test_database::Fixture;
 use postgres_protocol::escape::escape_identifier;
 use sha2::{Digest, Sha256};
 use tokio_postgres::error::SqlState;
 use uuid::Uuid;
 
+#[path = "../conversation_profile03_storage/test_fixture.rs"]
+mod current_fixture;
+
 async fn fixture() -> Fixture {
-    let fixture = Fixture::new().await;
-    let role = escape_identifier(&fixture.runtime_role);
-    fixture.owner.batch_execute(&format!("GRANT EXECUTE ON FUNCTION public.payload_profile_v2_capture(uuid,uuid,bytea,bytea,bytea,bytea,bytea,bytea),public.payload_profile_v2_ready(),public.payload_profile_election_reserve(uuid,uuid,uuid,uuid,uuid,bytea,bytea,bigint),public.payload_profile_election_device_proof(uuid,uuid,bytea),public.payload_profile_election_accept(uuid,uuid,uuid,bytea,bigint),public.payload_profile_election_ready(),public.payload_profile_selection_reserve(uuid,uuid,uuid,uuid,bytea,bigint),public.payload_profile_selection_device_proof(uuid,uuid,bytea,bytea),public.payload_profile_selection_approve(uuid,uuid,uuid,bytea,bigint),public.payload_profile_selection_install(uuid,uuid,bytea,bytea),public.payload_profile_selection_ready(),public.payload_profile_manifest_install(uuid,uuid,uuid,uuid,bytea,bytea,bytea,bigint),public.payload_profile_manifest_retention(uuid,uuid,bigint,bytea,bytea,bigint,bytea),public.payload_profile_manifest_ready(),public.conversation_profile03_interval_reserve(uuid,uuid,uuid,uuid,uuid,uuid,bytea,bigint),public.conversation_profile03_interval_request(uuid,uuid,uuid,bytea,bigint),public.conversation_profile03_interval_approve(uuid,uuid,bytea),public.conversation_profile03_interval_install(uuid,uuid,bytea),public.conversation_profile03_interval_stop(uuid,uuid,uuid,uuid),public.conversation_profile03_interval_device_stop(uuid,uuid,uuid,text,text,bigint,bigint,bytea),public.conversation_profile03_interval_ready() TO {role}")).await.unwrap();
-    require(&fixture.db).await.unwrap();
+    let fixture = current_fixture::new().await;
+    require(&fixture.runtime).await.unwrap();
     assert!(require(&fixture.owner).await.is_err());
     fixture
 }
@@ -113,7 +114,7 @@ async fn interval_schema_refuses_partial_disabled_rewritten_policy_declaration_a
         tx.batch_execute(mutation).await.unwrap();
         assert!(optional(&tx).await.is_err(), "{mutation}");
         tx.rollback().await.unwrap();
-        require(&fixture.db).await.unwrap();
+        require(&fixture.runtime).await.unwrap();
     }
     fixture.finish().await;
 }
@@ -130,7 +131,7 @@ async fn interval_runtime_cannot_edit_originals_epoch_or_internal_scope_and_acto
         "SELECT public.conversation_profile03_interval_scope(NULL,NULL,NULL,NULL,true)",
         "SELECT public.conversation_profile03_interval_device_actor(NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL)",
     ] {
-        let error = fixture.db.batch_execute(sql).await.unwrap_err();
+        let error = fixture.runtime.batch_execute(sql).await.unwrap_err();
         assert_eq!(error.code(), Some(&SqlState::INSUFFICIENT_PRIVILEGE));
     }
     let role = escape_identifier(&fixture.runtime_role);
@@ -153,9 +154,9 @@ async fn interval_runtime_cannot_edit_originals_epoch_or_internal_scope_and_acto
         ),
     ] {
         fixture.owner.batch_execute(&grant).await.unwrap();
-        assert!(require(&fixture.db).await.is_err(), "{grant}");
+        assert!(require(&fixture.runtime).await.is_err(), "{grant}");
         fixture.owner.batch_execute(&revoke).await.unwrap();
-        require(&fixture.db).await.unwrap();
+        require(&fixture.runtime).await.unwrap();
     }
     fixture.finish().await;
 }

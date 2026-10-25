@@ -1,21 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
-use crate::payload_profile_writer::tests::Fixture;
-use postgres_protocol::escape::escape_identifier;
+use crate::test_database::Fixture;
 use tokio_postgres::error::SqlState;
 use uuid::Uuid;
 
+#[path = "../conversation_profile03_storage/test_fixture.rs"]
+mod current_fixture;
+
 pub(super) async fn fixture() -> Fixture {
-    let fixture = Fixture::new().await;
-    let role = escape_identifier(&fixture.runtime_role);
-    fixture.owner.batch_execute(&format!("GRANT EXECUTE ON FUNCTION public.payload_profile_v2_capture(uuid,uuid,bytea,bytea,bytea,bytea,bytea,bytea),public.payload_profile_v2_ready(),public.payload_profile_election_reserve(uuid,uuid,uuid,uuid,uuid,bytea,bytea,bigint),public.payload_profile_election_device_proof(uuid,uuid,bytea),public.payload_profile_election_accept(uuid,uuid,uuid,bytea,bigint),public.payload_profile_election_ready(),public.payload_profile_selection_reserve(uuid,uuid,uuid,uuid,bytea,bigint),public.payload_profile_selection_device_proof(uuid,uuid,bytea,bytea),public.payload_profile_selection_approve(uuid,uuid,uuid,bytea,bigint),public.payload_profile_selection_install(uuid,uuid,bytea,bytea),public.payload_profile_selection_ready(),public.payload_profile_manifest_install(uuid,uuid,uuid,uuid,bytea,bytea,bytea,bigint),public.payload_profile_manifest_retention(uuid,uuid,bigint,bytea,bytea,bigint,bytea),public.payload_profile_manifest_ready(),public.conversation_profile03_interval_reserve(uuid,uuid,uuid,uuid,uuid,uuid,bytea,bigint),public.conversation_profile03_interval_request(uuid,uuid,uuid,bytea,bigint),public.conversation_profile03_interval_approve(uuid,uuid,bytea),public.conversation_profile03_interval_install(uuid,uuid,bytea),public.conversation_profile03_interval_stop(uuid,uuid,uuid,uuid),public.conversation_profile03_interval_device_stop(uuid,uuid,uuid,text,text,bigint,bigint,bytea),public.conversation_profile03_interval_ready(),public.conversation_reviewed_send03_admit(uuid,uuid,uuid,bytea,bytea,bytea,bigint),public.conversation_reviewed_send03_ready(),public.conversation_reviewed_send03_v2_ready() TO {role}")).await.unwrap();
-    crate::payload_profile_manifests::require(&fixture.db)
+    let fixture = current_fixture::new().await;
+    crate::payload_profile_manifests::require(&fixture.runtime)
         .await
         .unwrap();
-    crate::conversation_profile03_storage::require(&fixture.db)
+    crate::conversation_profile03_storage::require(&fixture.runtime)
         .await
         .unwrap();
-    require(&fixture.db).await.unwrap();
+    require(&fixture.runtime).await.unwrap();
     assert!(require(&fixture.owner).await.is_err());
     fixture
 }
@@ -136,7 +136,7 @@ async fn actual_queue_metadata_constraint_rejects_null_or_out_of_range_profile03
 async fn reviewed_admission_storage_refuses_missing_disabled_unknown_and_substituted_graph() {
     let mut fixture = fixture().await;
     for search_path in ["pg_catalog", "pg_catalog, public", "public"] {
-        let tx = fixture.db.transaction().await.unwrap();
+        let tx = fixture.runtime.transaction().await.unwrap();
         tx.batch_execute(&format!("SET LOCAL search_path TO {search_path}"))
             .await
             .unwrap();
@@ -160,7 +160,7 @@ async fn reviewed_admission_storage_refuses_missing_disabled_unknown_and_substit
         tx.batch_execute(sql).await.unwrap();
         assert!(optional(&tx).await.is_err(), "{sql}");
         tx.rollback().await.unwrap();
-        require(&fixture.db).await.unwrap();
+        require(&fixture.runtime).await.unwrap();
     }
     fixture.finish().await;
 }
@@ -177,7 +177,7 @@ async fn ordinary_runtime_cannot_edit_restore_originals_or_call_internal_admissi
         "SELECT public.conversation_reviewed_send03_scope(NULL,NULL,NULL,NULL,NULL)",
         "SELECT public.conversation_reviewed_send03_writer(NULL,1,'messages','INSERT',NULL,NULL)",
     ] {
-        let error = fixture.db.batch_execute(sql).await.unwrap_err();
+        let error = fixture.runtime.batch_execute(sql).await.unwrap_err();
         assert_eq!(error.code(), Some(&SqlState::INSUFFICIENT_PRIVILEGE));
     }
     fixture.finish().await;

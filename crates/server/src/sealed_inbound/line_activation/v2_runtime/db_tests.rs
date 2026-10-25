@@ -27,9 +27,9 @@ fn unavailable<T>(result: Result<T>) -> bool {
 
 pub(crate) const ORIGIN: &str = "https://owner.example.test";
 pub(crate) struct SmsCase {
-    pub db: Client,
+    pub database: crate::test_database::Fixture,
+    connections: std::sync::Mutex<Vec<crate::test_database::Driver>>,
     pub url: String,
-    pub schema: String,
     pub hasher: Arc<TokenHasher>,
     pub cipher: Arc<MfaCipher>,
     pub principal: SessionPrincipal,
@@ -42,41 +42,26 @@ pub(crate) struct SmsCase {
 }
 impl SmsCase {
     pub(crate) async fn new() -> Self {
-        let raw = std::env::var("ZT_AUTH_TEST_DATABASE_URL").expect("ZT_AUTH_TEST_DATABASE_URL");
-        let (db, connection) = tokio_postgres::connect(&raw, tokio_postgres::NoTls)
-            .await
-            .unwrap();
-        tokio::spawn(async move {
-            connection.await.expect("fixture connection completion");
-        });
-        let schema = format!("manifest_authority_{}", Uuid::new_v4().simple());
-        db.batch_execute(&format!(
-            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
-        ))
-        .await
-        .unwrap();
-        auth::test_schema::apply(&db).await;
-        schema::require_installed(&db).await.unwrap();
-        let sep = if raw.contains('?') { '&' } else { '?' };
-        let url = format!("{raw}{sep}options=-csearch_path%3D{schema}");
-        let mut db = db;
+        let mut database =
+            crate::test_database::Fixture::for_store("ZT_AUTH_TEST_DATABASE_URL").await;
+        schema::require_installed(&database.runtime).await.unwrap();
+        let url = database.runtime_url.clone();
+        let db = &mut database.runtime;
         let hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
         let cipher = Arc::new(MfaCipher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
         let password = format!("synthetic-owner-{}", Uuid::new_v4().simple());
         let email = "v2-owner@example.test";
-        let signup = auth::register(&mut db, &hasher, email, &password)
-            .await
-            .unwrap();
+        let signup = auth::register(db, &hasher, email, &password).await.unwrap();
         assert!(
-            auth::verify_email(&mut db, &hasher, &signup.verification_token)
+            auth::verify_email(db, &hasher, &signup.verification_token)
                 .await
                 .unwrap()
         );
-        let credentials = auth::login(&db, &hasher, email, &password).await.unwrap();
-        let principal = auth::authenticate_session(&db, &hasher, &credentials.token)
+        let credentials = auth::login(db, &hasher, email, &password).await.unwrap();
+        let principal = auth::authenticate_session(db, &hasher, &credentials.token)
             .await
             .unwrap();
-        let mfa = auth::mfa::begin_enrollment(&mut db, &cipher, &principal, &password)
+        let mfa = auth::mfa::begin_enrollment(db, &cipher, &principal, &password)
             .await
             .unwrap();
         let code = totp_rs::Builder::new()
@@ -85,17 +70,17 @@ impl SmsCase {
             .unwrap()
             .generate_current()
             .to_string();
-        let recovery = auth::mfa::confirm_enrollment(&mut db, &cipher, &hasher, &principal, &code)
+        let recovery = auth::mfa::confirm_enrollment(db, &cipher, &hasher, &principal, &code)
             .await
             .unwrap()
             .codes;
         // A real MFA-required login consumes a distinct recovery factor.
         assert!(matches!(
-            auth::login(&db, &hasher, email, &password).await,
+            auth::login(db, &hasher, email, &password).await,
             Err(auth::AuthError::MfaRequired { .. })
         ));
         let login = auth::mfa::begin_login_challenge(
-            &db,
+            db,
             &hasher,
             signup.account_id,
             signup.user_id,
@@ -103,25 +88,24 @@ impl SmsCase {
         )
         .await
         .unwrap();
-        let second =
-            auth::mfa::complete_login(&mut db, Some(&cipher), &hasher, &login, &recovery[1])
-                .await
-                .unwrap();
+        let second = auth::mfa::complete_login(db, Some(&cipher), &hasher, &login, &recovery[1])
+            .await
+            .unwrap();
         assert_ne!(second.id, credentials.id);
         assert!(
-            auth::mfa::complete_login(&mut db, Some(&cipher), &hasher, &login, &recovery[1])
+            auth::mfa::complete_login(db, Some(&cipher), &hasher, &login, &recovery[1])
                 .await
                 .is_err()
         );
         let approval = SigningKey::generate_from_rng(&mut rand::rng());
         let paired = SigningKey::generate_from_rng(&mut rand::rng());
         let enrol = EnrollmentHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
-        let ticket = enrollment::create_pairing(&db, &enrol, &principal, "synthetic v2 phone")
+        let ticket = enrollment::create_pairing(db, &enrol, &principal, "synthetic v2 phone")
             .await
             .unwrap();
         let spki = paired.verifying_key().to_public_key_der().unwrap();
         let claim =
-            enrollment::claim_pairing(&mut db, &enrol, ticket.id, &ticket.token, spki.as_bytes())
+            enrollment::claim_pairing(db, &enrol, ticket.id, &ticket.token, spki.as_bytes())
                 .await
                 .unwrap();
         let fp = digest(paired.verifying_key().to_sec1_point(false).as_bytes());
@@ -134,7 +118,7 @@ impl SmsCase {
         let signature: Signature = paired.sign(&statement);
         assert!(
             enrollment::prove_pairing_key(
-                &mut db,
+                db,
                 &enrol,
                 ticket.id,
                 &claim.challenge_nonce,
@@ -144,7 +128,7 @@ impl SmsCase {
             .unwrap()
         );
         let device = enrollment::approve_pairing(
-            &mut db,
+            db,
             &principal,
             ticket.id,
             &claim.comparison_code,
@@ -153,9 +137,9 @@ impl SmsCase {
         .await
         .unwrap();
         let c = Self {
-            db,
+            database,
+            connections: std::sync::Mutex::new(Vec::new()),
             url,
-            schema,
             hasher,
             cipher,
             principal,
@@ -193,7 +177,9 @@ impl SmsCase {
         let signature: Signature = c.approval.sign(&statement);
         let response=app.oneshot(c.request("POST","/sms-line-owner-keys",serde_json::json!({"challenge_id":id,"nonce_b64":body["nonce_b64"],"signature_der_b64":STANDARD.encode(signature.to_der().as_bytes()),"mfa_code":recovery[0]}))).await.unwrap();
         assert_eq!(response.status(), StatusCode::CREATED);
-        c.db.execute("INSERT INTO sites(site_id) VALUES('v2-test')", &[])
+        c.database
+            .owner
+            .execute("INSERT INTO sites(site_id) VALUES('v2-test')", &[])
             .await
             .unwrap();
         c
@@ -234,18 +220,14 @@ impl SmsCase {
             .unwrap()
     }
     pub(crate) async fn connect(&self) -> Client {
-        let (db, connection) = tokio_postgres::connect(&self.url, tokio_postgres::NoTls)
-            .await
-            .unwrap();
-        tokio::spawn(async move {
-            connection.await.expect("fixture connection completion");
-        });
+        let (db, driver) = self.database.another_runtime().await;
+        self.connections.lock().unwrap().push(driver);
         db
     }
     /// Seeded lease isolates transaction controls. Socket controls claim it
     /// through the real authenticated handshake instead of calling this.
     pub(crate) async fn seed_lease(&self, version: i16) -> InboundSession<'_> {
-        let row=self.db.query_one("INSERT INTO device_sessions(device_id,account_id,site_id,instance_id,connection_epoch,deployment_epoch,lease_until,line_activation_version) VALUES($1,$2,'v2-test','fixture',1,1,clock_timestamp()+interval '10 minutes',$3) ON CONFLICT(device_id) DO UPDATE SET connection_epoch=device_sessions.connection_epoch+1,line_activation_version=EXCLUDED.line_activation_version,lease_until=EXCLUDED.lease_until RETURNING connection_epoch",&[&self.device,&self.principal.tenant.account_id(),&version]).await.unwrap();
+        let row=self.database.owner.query_one("INSERT INTO device_sessions(device_id,account_id,site_id,instance_id,connection_epoch,deployment_epoch,lease_until,line_activation_version) VALUES($1,$2,'v2-test','fixture',1,1,clock_timestamp()+interval '10 minutes',$3) ON CONFLICT(device_id) DO UPDATE SET connection_epoch=device_sessions.connection_epoch+1,line_activation_version=EXCLUDED.line_activation_version,lease_until=EXCLUDED.lease_until RETURNING connection_epoch",&[&self.device,&self.principal.tenant.account_id(),&version]).await.unwrap();
         self.session(row.get(0))
     }
     pub(crate) fn session(&self, epoch: i64) -> InboundSession<'_> {
@@ -259,14 +241,19 @@ impl SmsCase {
         }
     }
     pub(crate) async fn cleanup(self) {
-        crate::sealed_manifest_store::tests::cleanup::drop_fixture(&self.db, &self.schema)
-            .await
-            .expect("guarded completed fixture cleanup");
+        for driver in self.connections.into_inner().unwrap() {
+            tokio::time::timeout(std::time::Duration::from_secs(5), driver)
+                .await
+                .expect("all direct runtime clients closed before fixture cleanup")
+                .unwrap()
+                .unwrap();
+        }
+        self.database.finish().await;
     }
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; genuine auth and enrollment in isolated schema"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; genuine auth and enrollment in a disposable current public database"]
 async fn complete_set_sms_uses_real_keys_and_immutable_original_session() {
     let c = SmsCase::new().await;
     let mut db = c.connect().await;
@@ -377,7 +364,12 @@ async fn complete_set_sms_uses_real_keys_and_immutable_original_session() {
         "UPDATE line_activation_v2_pending SET opening_id=gen_random_uuid()",
     ] {
         assert_eq!(
-            c.db.batch_execute(sql).await.unwrap_err().code(),
+            c.database
+                .owner
+                .batch_execute(sql)
+                .await
+                .unwrap_err()
+                .code(),
             Some(&tokio_postgres::error::SqlState::CHECK_VIOLATION)
         );
     }
@@ -441,41 +433,45 @@ async fn complete_set_sms_uses_real_keys_and_immutable_original_session() {
     let next = c.seed_lease(1).await;
     assert!(current_ack(&mut db, next, ack).await.is_err());
     assert!(current_ack(&mut db, session, ack).await.is_err());
-    let row=c.db.query_one("SELECT count(*) FROM pg_attribute WHERE attrelid='line_activation_v2_observations'::regclass AND attname IN ('nonce','device_statement','owner_statement') AND NOT attisdropped",&[]).await.unwrap();
+    let row=c.database.owner.query_one("SELECT count(*) FROM pg_attribute WHERE attrelid='line_activation_v2_observations'::regclass AND attname IN ('nonce','device_statement','owner_statement') AND NOT attisdropped",&[]).await.unwrap();
     assert_eq!(row.get::<_, i64>(0), 0);
     drop(db);
     c.cleanup().await;
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; genuine auth and enrollment in isolated schema"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; genuine auth and enrollment in a disposable current public database"]
 async fn schema_and_same_epoch_version_changes_refuse_without_promotion() {
     let c = SmsCase::new().await;
     c.seed_lease(1).await;
     assert_eq!(
-        c.db.execute(
-            "UPDATE device_sessions SET line_activation_version=2 WHERE device_id=$1",
-            &[&c.device]
-        )
-        .await
-        .unwrap_err()
-        .code(),
+        c.database
+            .owner
+            .execute(
+                "UPDATE device_sessions SET line_activation_version=2 WHERE device_id=$1",
+                &[&c.device]
+            )
+            .await
+            .unwrap_err()
+            .code(),
         Some(&tokio_postgres::error::SqlState::CHECK_VIOLATION)
     );
     assert_eq!(
-        c.db.query_one(
-            "SELECT line_activation_version FROM device_sessions WHERE device_id=$1",
-            &[&c.device]
-        )
-        .await
-        .unwrap()
-        .get::<_, i16>(0),
+        c.database
+            .owner
+            .query_one(
+                "SELECT line_activation_version FROM device_sessions WHERE device_id=$1",
+                &[&c.device]
+            )
+            .await
+            .unwrap()
+            .get::<_, i16>(0),
         1
     );
-    c.db.batch_execute("ALTER TABLE line_activation_v2_observations DISABLE TRIGGER line_activation_v2_observation_before_insert_or_update_or_delete").await.unwrap();
-    assert!(schema::require_installed(&c.db).await.is_err());
-    c.db.batch_execute("ALTER TABLE line_activation_v2_observations ENABLE TRIGGER line_activation_v2_observation_before_insert_or_update_or_delete").await.unwrap();
-    schema::require_installed(&c.db).await.unwrap();
+    c.database.owner.batch_execute("ALTER TABLE line_activation_v2_observations DISABLE TRIGGER line_activation_v2_observation_before_insert_or_update_or_delete").await.unwrap();
+    assert!(schema::require_installed(&c.database.owner).await.is_err());
+    c.database.owner.batch_execute("ALTER TABLE line_activation_v2_observations ENABLE TRIGGER line_activation_v2_observation_before_insert_or_update_or_delete").await.unwrap();
+    schema::require_installed(&c.database.owner).await.unwrap();
     c.cleanup().await;
 }
 
@@ -517,7 +513,7 @@ async fn schema_refuses_same_count_constraint_target_default_and_trigger_drift()
             "FOREIGN KEY (challenge_id) REFERENCES line_activation_challenges(id)",
         ),
     ] {
-        let tx = c.db.transaction().await.unwrap();
+        let tx = c.database.owner.transaction().await.unwrap();
         // PostgreSQL 18 catalogs NOT NULL columns as constraints too; the
         // verifier ignores them, so drift lookups must as well.
         let name:String=tx.query_one("SELECT quote_ident(conname) FROM pg_constraint WHERE conrelid=to_regclass($1) AND contype<>'n' AND pg_get_constraintdef(oid) LIKE $2",&[&table,&pattern]).await.unwrap().get(0);
@@ -527,26 +523,40 @@ async fn schema_refuses_same_count_constraint_target_default_and_trigger_drift()
             "{table}: {replacement}"
         );
         tx.rollback().await.unwrap();
-        schema::require_installed(&c.db).await.unwrap();
+        schema::require_installed(&c.database.owner).await.unwrap();
     }
     for mutation in [
         "ALTER TABLE device_sessions DROP CONSTRAINT device_sessions_line_activation_version; ALTER TABLE device_sessions ADD CONSTRAINT device_sessions_line_activation_version CHECK (line_activation_version IN (1,2,12))",
         "ALTER TABLE line_activation_v2_pending ALTER COLUMN protocol_version SET DEFAULT 1",
         "ALTER TABLE line_activation_v2_pending ALTER COLUMN created_at SET DEFAULT now()",
         "ALTER TABLE line_activation_v2_pending ALTER CONSTRAINT line_activation_v2_pending_initiating_session_id_fkey DEFERRABLE",
-        "ALTER FUNCTION line_activation_v2_pending_guard() SET search_path=public",
+        "ALTER FUNCTION line_activation_v2_pending_guard() SET search_path=pg_temp",
         "ALTER FUNCTION line_activation_v2_pending_guard() SECURITY DEFINER",
         "DROP TRIGGER line_activation_v2_pending_before_delete ON line_activation_v2_pending; CREATE TRIGGER line_activation_v2_pending_before_delete BEFORE DELETE ON line_activation_v2_pending FOR EACH ROW WHEN (true) EXECUTE FUNCTION line_activation_v2_pending_guard()",
         "CREATE TRIGGER unexpected_v2_pending_guard BEFORE DELETE ON line_activation_v2_pending FOR EACH ROW EXECUTE FUNCTION line_activation_v2_pending_guard()",
     ] {
-        let tx = c.db.transaction().await.unwrap();
+        let tx = c.database.owner.transaction().await.unwrap();
+        let path_mutation =
+            mutation == "ALTER FUNCTION line_activation_v2_pending_guard() SET search_path=pg_temp";
+        if path_mutation {
+            let before: Vec<String> = tx.query_one(
+                "SELECT proconfig FROM pg_proc WHERE oid='public.line_activation_v2_pending_guard()'::regprocedure", &[]
+            ).await.unwrap().get(0);
+            assert_eq!(before, ["search_path=public"]);
+        }
         tx.batch_execute(mutation).await.unwrap();
+        if path_mutation {
+            let after: Vec<String> = tx.query_one(
+                "SELECT proconfig FROM pg_proc WHERE oid='public.line_activation_v2_pending_guard()'::regprocedure", &[]
+            ).await.unwrap().get(0);
+            assert_eq!(after, ["search_path=pg_temp"]);
+        }
         assert!(
             unavailable(schema::require_installed(&tx).await),
             "{mutation}"
         );
         tx.rollback().await.unwrap();
-        schema::require_installed(&c.db).await.unwrap();
+        schema::require_installed(&c.database.owner).await.unwrap();
     }
     c.cleanup().await;
 }
@@ -692,7 +702,8 @@ async fn proof_wait_cannot_spend_a_challenge_that_expires_behind_the_binding_loc
     let mut proof = Box::pin(proof);
     let wait = async {
         loop {
-            if c.db
+            if c.database
+                .owner
                 .query_one(
                     "SELECT EXISTS(SELECT 1 FROM pg_locks WHERE pid=$1 AND NOT granted)",
                     &[&pid],
@@ -709,13 +720,15 @@ async fn proof_wait_cannot_spend_a_challenge_that_expires_behind_the_binding_loc
     tokio::select! {result=&mut proof=>panic!("proof completed before observed lock wait: {}",matches!(result,Ok(true))),result=tokio::time::timeout(std::time::Duration::from_secs(2),wait)=>result.expect("actual backend lock evidence")}
     tokio::time::sleep(std::time::Duration::from_secs(4)).await;
     assert!(
-        c.db.query_one(
-            "SELECT expires_at<=clock_timestamp() FROM line_activation_challenges WHERE id=$1",
-            &[&challenge.id]
-        )
-        .await
-        .unwrap()
-        .get::<_, bool>(0)
+        c.database
+            .owner
+            .query_one(
+                "SELECT expires_at<=clock_timestamp() FROM line_activation_challenges WHERE id=$1",
+                &[&challenge.id]
+            )
+            .await
+            .unwrap()
+            .get::<_, bool>(0)
     );
     lock.commit().await.unwrap();
     let result = tokio::time::timeout(std::time::Duration::from_secs(5), &mut proof)
@@ -723,25 +736,30 @@ async fn proof_wait_cannot_spend_a_challenge_that_expires_behind_the_binding_loc
         .expect("known proof completion");
     assert!(!result.expect("expired proof is a typed refusal, not a database error"));
     assert_eq!(
-        c.db.query_one(
-            "SELECT count(*) FROM line_activation_v2_observations WHERE challenge_id=$1",
-            &[&challenge.id]
-        )
-        .await
-        .unwrap()
-        .get::<_, i64>(0),
+        c.database
+            .owner
+            .query_one(
+                "SELECT count(*) FROM line_activation_v2_observations WHERE challenge_id=$1",
+                &[&challenge.id]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
         0
     );
     assert!(
-        c.db.query_one(
-            "SELECT consumed_at IS NULL FROM line_activation_challenges WHERE id=$1",
-            &[&challenge.id]
-        )
-        .await
-        .unwrap()
-        .get::<_, bool>(0)
+        c.database
+            .owner
+            .query_one(
+                "SELECT consumed_at IS NULL FROM line_activation_challenges WHERE id=$1",
+                &[&challenge.id]
+            )
+            .await
+            .unwrap()
+            .get::<_, bool>(0)
     );
     drop(proof);
+    drop(db);
     drop(blocker);
     c.cleanup().await;
 }
@@ -783,7 +801,7 @@ async fn signed_pending(c: &SmsCase, db: &mut Client) -> (LineChallenge, Vec<u8>
 }
 
 async fn unchanged_pending(c: &SmsCase, id: Uuid) {
-    let r=c.db.query_one("SELECT b.state,c.consumed_at IS NULL,p.approved_at IS NULL,p.installed_at IS NULL,p.nonce IS NOT NULL,l.last_issued_generation FROM line_activation_v2_pending p JOIN line_activation_challenges c ON c.id=p.challenge_id JOIN device_line_bindings b ON (b.account_id,b.line_id,b.device_id,b.generation)=(p.account_id,p.line_id,p.device_id,p.generation) JOIN phone_lines l ON (l.account_id,l.id)=(b.account_id,b.line_id) WHERE p.challenge_id=$1",&[&id]).await.unwrap();
+    let r=c.database.owner.query_one("SELECT b.state,c.consumed_at IS NULL,p.approved_at IS NULL,p.installed_at IS NULL,p.nonce IS NOT NULL,l.last_issued_generation FROM line_activation_v2_pending p JOIN line_activation_challenges c ON c.id=p.challenge_id JOIN device_line_bindings b ON (b.account_id,b.line_id,b.device_id,b.generation)=(p.account_id,p.line_id,p.device_id,p.generation) JOIN phone_lines l ON (l.account_id,l.id)=(b.account_id,b.line_id) WHERE p.challenge_id=$1",&[&id]).await.unwrap();
     assert_eq!(r.get::<_, String>(0), "pending");
     for column in 1..5 {
         assert!(r.get::<_, bool>(column));
@@ -804,7 +822,7 @@ async fn approval_rechecks_owner_membership_device_revocation_and_owner_expiry_a
         let mut db = c.connect().await;
         let (challenge, der) = signed_pending(&c, &mut db).await;
         if case == "owner_expired" {
-            c.db.execute(
+            c.database.owner.execute(
                 "UPDATE sessions SET expires_at=clock_timestamp()+interval '3 seconds' WHERE id=$1",
                 &[&c.principal.session_id],
             )
@@ -818,15 +836,13 @@ async fn approval_rechecks_owner_membership_device_revocation_and_owner_expiry_a
             // Commit this disposable fixture change before taking the row
             // barrier: ALTER TABLE holds a table lock until commit and must
             // not satisfy the approval's observed row-lock wait.
-            let setup = blocker.transaction().await.unwrap();
-            setup
-                .execute(
+            c.database
+                .owner
+                .batch_execute(
                     "ALTER TABLE memberships DROP CONSTRAINT memberships_owner_not_revoked",
-                    &[],
                 )
                 .await
                 .unwrap();
-            setup.commit().await.unwrap();
         }
         let blocker_pid: i32 = blocker
             .query_one("SELECT pg_backend_pid()", &[])
@@ -885,7 +901,7 @@ async fn approval_rechecks_owner_membership_device_revocation_and_owner_expiry_a
         ));
         let wait = async {
             loop {
-                if c.db
+                if c.database.owner
                     .query_one(
                         "SELECT EXISTS(SELECT 1 FROM pg_locks waiting JOIN pg_locks held ON held.locktype=waiting.locktype AND held.transactionid=waiting.transactionid WHERE waiting.pid=$1 AND waiting.locktype='transactionid' AND waiting.mode='ShareLock' AND NOT waiting.granted AND held.pid=$2 AND held.granted AND held.mode='ExclusiveLock') AND $2=ANY(pg_blocking_pids($1))",
                         &[&pid, &blocker_pid],
@@ -928,7 +944,8 @@ async fn approval_rechecks_owner_membership_device_revocation_and_owner_expiry_a
             _ => {
                 tokio::time::timeout(std::time::Duration::from_secs(5), async {
                     loop {
-                        if c.db
+                        if c.database
+                            .owner
                             .query_one(
                                 "SELECT expires_at<=clock_timestamp() FROM sessions WHERE id=$1",
                                 &[&c.principal.session_id],
@@ -968,7 +985,7 @@ async fn approval_rechecks_owner_membership_device_revocation_and_owner_expiry_a
 async fn current_phone_admission_cannot_survive_lease_expiry_during_a_lock_wait() {
     let c = SmsCase::new().await;
     let session = c.seed_lease(2).await;
-    c.db.execute("UPDATE device_sessions SET lease_until=clock_timestamp()+interval '3 seconds' WHERE device_id=$1",&[&c.device]).await.unwrap();
+    c.database.owner.execute("UPDATE device_sessions SET lease_until=clock_timestamp()+interval '3 seconds' WHERE device_id=$1",&[&c.device]).await.unwrap();
     let mut blocker = c.connect().await;
     let tx = blocker.transaction().await.unwrap();
     tx.query_one(
@@ -986,7 +1003,8 @@ async fn current_phone_admission_cannot_survive_lease_expiry_during_a_lock_wait(
     let mut admission = Box::pin(current(&mut db, session));
     let wait = async {
         loop {
-            if c.db
+            if c.database
+                .owner
                 .query_one(
                     "SELECT EXISTS(SELECT 1 FROM pg_locks WHERE pid=$1 AND NOT granted)",
                     &[&pid],
@@ -1003,7 +1021,8 @@ async fn current_phone_admission_cannot_survive_lease_expiry_during_a_lock_wait(
     tokio::select! {result=&mut admission=>panic!("admission completed before observed wait: {}",result.is_ok()),result=tokio::time::timeout(std::time::Duration::from_secs(2),wait)=>result.expect("actual admission lock wait")}
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
-            if c.db
+            if c.database
+                .owner
                 .query_one(
                     "SELECT lease_until<=clock_timestamp() FROM device_sessions WHERE device_id=$1",
                     &[&c.device],
@@ -1056,8 +1075,10 @@ async fn activated_ack_requires_current_generation_device_key_site_deployment_an
         )
         .await
         .unwrap();
-        let epoch =
-            c.db.query_one(
+        let epoch = c
+            .database
+            .owner
+            .query_one(
                 "SELECT connection_epoch FROM device_sessions WHERE device_id=$1",
                 &[&c.device],
             )
@@ -1080,47 +1101,57 @@ async fn activated_ack_requires_current_generation_device_key_site_deployment_an
                     .unwrap();
             }
             "device" => {
-                c.db.execute(
-                    "UPDATE devices SET revoked_at=clock_timestamp() WHERE id=$1",
-                    &[&c.device],
-                )
-                .await
-                .unwrap();
+                c.database
+                    .owner
+                    .execute(
+                        "UPDATE devices SET revoked_at=clock_timestamp() WHERE id=$1",
+                        &[&c.device],
+                    )
+                    .await
+                    .unwrap();
             }
             "key" => {
-                c.db.execute(
-                    "UPDATE device_keys SET revoked_at=clock_timestamp() WHERE device_id=$1",
-                    &[&c.device],
-                )
-                .await
-                .unwrap();
+                c.database
+                    .owner
+                    .execute(
+                        "UPDATE device_keys SET revoked_at=clock_timestamp() WHERE device_id=$1",
+                        &[&c.device],
+                    )
+                    .await
+                    .unwrap();
             }
             "site" => {
-                c.db.execute(
-                    "UPDATE sites SET enabled=false WHERE site_id='v2-test'",
-                    &[],
-                )
-                .await
-                .unwrap();
+                c.database
+                    .owner
+                    .execute(
+                        "UPDATE sites SET enabled=false WHERE site_id='v2-test'",
+                        &[],
+                    )
+                    .await
+                    .unwrap();
             }
             "deployment" => {
-                c.db.execute(
-                    "UPDATE deployment_authority SET epoch=epoch+1 WHERE singleton=true",
-                    &[],
-                )
-                .await
-                .unwrap();
+                c.database
+                    .owner
+                    .execute(
+                        "UPDATE deployment_authority SET epoch=epoch+1 WHERE singleton=true",
+                        &[],
+                    )
+                    .await
+                    .unwrap();
             }
             "version" => {
                 c.seed_lease(1).await;
             }
             _ => {
-                c.db.execute("UPDATE device_sessions SET lease_until=clock_timestamp()-interval '1 second' WHERE device_id=$1",&[&c.device]).await.unwrap();
+                c.database.owner.execute("UPDATE device_sessions SET lease_until=clock_timestamp()-interval '1 second' WHERE device_id=$1",&[&c.device]).await.unwrap();
             }
         }
         let check_session = if case == "generation" {
-            let epoch =
-                c.db.query_one(
+            let epoch = c
+                .database
+                .owner
+                .query_one(
                     "SELECT connection_epoch FROM device_sessions WHERE device_id=$1",
                     &[&c.device],
                 )
@@ -1173,10 +1204,14 @@ async fn approval_refuses_changed_opening_purpose_der_key_site_and_deployment_wi
                         Uuid::new_v4(),
                         c.device,
                         Purpose::Sms,
-                        observation_store::load(&c.db, challenge.account_id, challenge.id)
-                            .await
-                            .unwrap()
-                            .opening,
+                        observation_store::load(
+                            &c.database.owner,
+                            challenge.account_id,
+                            challenge.id
+                        )
+                        .await
+                        .unwrap()
+                        .opening,
                         None
                     )
                     .await
@@ -1200,34 +1235,40 @@ async fn approval_refuses_changed_opening_purpose_der_key_site_and_deployment_wi
                 der = wrong.to_der().as_bytes().to_vec();
             }
             "device_key" => {
-                c.db.execute(
-                    "UPDATE device_keys SET revoked_at=clock_timestamp() WHERE device_id=$1",
-                    &[&c.device],
-                )
-                .await
-                .unwrap();
+                c.database
+                    .owner
+                    .execute(
+                        "UPDATE device_keys SET revoked_at=clock_timestamp() WHERE device_id=$1",
+                        &[&c.device],
+                    )
+                    .await
+                    .unwrap();
             }
             "owner_key" => {
-                c.db.execute("UPDATE sms_line_owner_approval_keys SET revoked_at=clock_timestamp() WHERE account_id=$1",&[&challenge.account_id]).await.unwrap();
+                c.database.owner.execute("UPDATE sms_line_owner_approval_keys SET revoked_at=clock_timestamp() WHERE account_id=$1",&[&challenge.account_id]).await.unwrap();
             }
             "site" => {
-                c.db.execute(
-                    "UPDATE sites SET draining=true WHERE site_id='v2-test'",
-                    &[],
-                )
-                .await
-                .unwrap();
+                c.database
+                    .owner
+                    .execute(
+                        "UPDATE sites SET draining=true WHERE site_id='v2-test'",
+                        &[],
+                    )
+                    .await
+                    .unwrap();
             }
             "deployment" => {
-                c.db.execute(
-                    "UPDATE deployment_authority SET epoch=epoch+1 WHERE singleton=true",
-                    &[],
-                )
-                .await
-                .unwrap();
+                c.database
+                    .owner
+                    .execute(
+                        "UPDATE deployment_authority SET epoch=epoch+1 WHERE singleton=true",
+                        &[],
+                    )
+                    .await
+                    .unwrap();
             }
             _ => {
-                c.db.execute("UPDATE device_sessions SET lease_until=clock_timestamp()-interval '1 second' WHERE device_id=$1",&[&c.device]).await.unwrap();
+                c.database.owner.execute("UPDATE device_sessions SET lease_until=clock_timestamp()-interval '1 second' WHERE device_id=$1",&[&c.device]).await.unwrap();
             }
         }
         if !matches!(case, "opening" | "purpose") {
@@ -1254,7 +1295,8 @@ async fn approval_refuses_changed_opening_purpose_der_key_site_and_deployment_wi
 
 async fn observed_wait(c: &SmsCase, pid: i32) {
     loop {
-        if c.db
+        if c.database
+            .owner
             .query_one(
                 "SELECT EXISTS(SELECT 1 FROM pg_locks WHERE pid=$1 AND NOT granted)",
                 &[&pid],
@@ -1272,7 +1314,8 @@ async fn observed_wait(c: &SmsCase, pid: i32) {
 async fn observed_expiry(c: &SmsCase, query: &str, id: Uuid) {
     tokio::time::timeout(std::time::Duration::from_secs(7), async {
         loop {
-            if c.db
+            if c.database
+                .owner
                 .query_one(query, &[&id])
                 .await
                 .unwrap()
@@ -1288,7 +1331,7 @@ async fn observed_expiry(c: &SmsCase, query: &str, id: Uuid) {
 }
 
 async fn exchange_snapshot(c: &SmsCase, id: Uuid) -> String {
-    c.db.query_one("SELECT jsonb_build_array(to_jsonb(p),to_jsonb(c),to_jsonb(b),to_jsonb(l),(SELECT to_jsonb(o) FROM line_activation_v2_observations o WHERE o.challenge_id=p.challenge_id))::text FROM line_activation_v2_pending p JOIN line_activation_challenges c ON c.id=p.challenge_id JOIN device_line_bindings b ON (b.account_id,b.line_id,b.device_id,b.generation)=(p.account_id,p.line_id,p.device_id,p.generation) JOIN phone_lines l ON (l.account_id,l.id)=(b.account_id,b.line_id) WHERE p.challenge_id=$1",&[&id]).await.unwrap().get(0)
+    c.database.owner.query_one("SELECT jsonb_build_array(to_jsonb(p),to_jsonb(c),to_jsonb(b),to_jsonb(l),(SELECT to_jsonb(o) FROM line_activation_v2_observations o WHERE o.challenge_id=p.challenge_id))::text FROM line_activation_v2_pending p JOIN line_activation_challenges c ON c.id=p.challenge_id JOIN device_line_bindings b ON (b.account_id,b.line_id,b.device_id,b.generation)=(p.account_id,p.line_id,p.device_id,p.generation) JOIN phone_lines l ON (l.account_id,l.id)=(b.account_id,b.line_id) WHERE p.challenge_id=$1",&[&id]).await.unwrap().get(0)
 }
 
 #[tokio::test]
@@ -1317,14 +1360,14 @@ async fn exact_opening_retry_rechecks_challenge_owner_and_phone_expiry_after_bin
         .unwrap();
         let (query, expiry_id) = match case {
             "owner" => {
-                c.db.execute("UPDATE sessions SET expires_at=clock_timestamp()+interval '5 seconds' WHERE id=$1",&[&c.principal.session_id]).await.unwrap();
+                c.database.owner.execute("UPDATE sessions SET expires_at=clock_timestamp()+interval '5 seconds' WHERE id=$1",&[&c.principal.session_id]).await.unwrap();
                 (
                     "SELECT expires_at<=clock_timestamp() FROM sessions WHERE id=$1",
                     c.principal.session_id,
                 )
             }
             "phone" => {
-                c.db.execute("UPDATE device_sessions SET lease_until=clock_timestamp()+interval '5 seconds' WHERE device_id=$1",&[&c.device]).await.unwrap();
+                c.database.owner.execute("UPDATE device_sessions SET lease_until=clock_timestamp()+interval '5 seconds' WHERE device_id=$1",&[&c.device]).await.unwrap();
                 (
                     "SELECT lease_until<=clock_timestamp() FROM device_sessions WHERE device_id=$1",
                     c.device,
@@ -1397,12 +1440,14 @@ async fn approved_view_and_idempotent_approval_recheck_owner_expiry_after_bindin
         )
         .await
         .unwrap();
-        c.db.execute(
-            "UPDATE sessions SET expires_at=clock_timestamp()+interval '5 seconds' WHERE id=$1",
-            &[&c.principal.session_id],
-        )
-        .await
-        .unwrap();
+        c.database
+            .owner
+            .execute(
+                "UPDATE sessions SET expires_at=clock_timestamp()+interval '5 seconds' WHERE id=$1",
+                &[&c.principal.session_id],
+            )
+            .await
+            .unwrap();
         let before = exchange_snapshot(&c, challenge.id).await;
         let mut blocker = c.connect().await;
         let lock = blocker.transaction().await.unwrap();

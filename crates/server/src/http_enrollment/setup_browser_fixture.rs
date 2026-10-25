@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::{
-    auth::{self, login, register, verify_email},
+    auth::{login, register, verify_email},
     http_auth::{self, AuthHttpState, DisabledVerificationDispatcher},
 };
 use serde_json::json;
@@ -90,21 +90,10 @@ async fn control(
 async fn ordinary_pairing_browser_android_fixture() {
     let external = external_mode(std::env::var_os("ZT_PAIRING_SETUP_CONSUMER").as_deref())
         .expect("test consumer mode must be absent or exactly external");
-    let root_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
-        .expect("select an isolated disposable PostgreSQL fixture");
-    let (mut db, connection) = tokio_postgres::connect(&root_url, NoTls).await.unwrap();
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
-    let schema = format!("pairing_browser_android_{}", Uuid::new_v4().simple());
-    db.batch_execute(&format!(
-        "CREATE SCHEMA {schema}; SET search_path TO {schema}"
-    ))
-    .await
-    .unwrap();
-    // Use the complete frozen predecessor train; never the smaller enrollment
-    // unit fixture's selected migration subset.
-    auth::test_schema::apply(&db).await;
+    // Current native pairing approval must use the current public installation
+    // and its independent ordinary runtime role, never a legacy schema owner.
+    let database = crate::test_database::Fixture::for_store("ZT_AUTH_TEST_DATABASE_URL").await;
+    let (mut db, db_driver) = database.another_runtime().await;
     let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(1)).unwrap());
     let enrollment_hasher = Arc::new(EnrollmentHasher::new(crate::test_keys::key(2)).unwrap());
     let password = crate::test_keys::password(3);
@@ -117,13 +106,8 @@ async fn ordinary_pairing_browser_android_fixture() {
     let signed_in = login(&db, &hasher, "pairing-owner@example.test", &password)
         .await
         .unwrap();
-    let mut scoped = url::Url::parse(&root_url).unwrap();
-    assert!(!scoped.query_pairs().any(|(key, _)| key == "options"));
-    scoped
-        .query_pairs_mut()
-        .append_pair("options", &format!("-csearch_path={schema}"));
     let auth = AuthHttpState::new(
-        scoped.to_string(),
+        database.runtime_url.clone(),
         hasher.clone(),
         ORIGIN.to_owned(),
         Arc::new(DisabledVerificationDispatcher),
@@ -135,7 +119,7 @@ async fn ordinary_pairing_browser_android_fixture() {
         .nest(
             "/v1/enrollment",
             router(EnrollmentHttpState::new(
-                scoped.to_string(),
+                database.runtime_url.clone(),
                 hasher,
                 enrollment_hasher,
                 ORIGIN.to_owned(),
@@ -195,10 +179,8 @@ async fn ordinary_pairing_browser_android_fixture() {
         .await
         .take()
         .expect("fixture owns its database");
-    assert!(schema.starts_with("pairing_browser_android_"));
-    db.batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
+    crate::test_database::Fixture::close_connection(db, db_driver).await;
+    database.finish().await;
     result.expect("pairing fixture consumer/server failed");
     if !external {
         println!(

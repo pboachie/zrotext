@@ -27,6 +27,13 @@ class RegisteredControlProvisioningTest(unittest.TestCase):
                         helper = (ROOT / "scripts/ci_rust_postgresql.py").read_text(encoding="utf-8")
                         self.assertIn('return args + ["--test-threads=4"]', helper)
                         self.assertIn("--lane", command)
+                        if name == "rust-postgresql":
+                            self.assertIn("lane: [delivery-store, server-0, server-1]", block)
+                            self.assertIn("max-parallel: 3", block)
+                        elif name == "conversation-postgresql-lanes":
+                            self.assertIn("lane: [delivery-store, server-0, server-1, remaining]", block)
+                            self.assertIn("max-parallel: 3", block)
+                            self.assertIn("needs: [conversation-workspace]", block)
                     else:
                         self.assertIn("--test-threads=4", command)
                     self.assertIn("SHOW max_locks_per_transaction", block)

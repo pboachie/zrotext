@@ -430,6 +430,4 @@ async fn cancel(
 }
 
 #[cfg(test)]
-use tokio_postgres::NoTls;
-#[cfg(test)]
 mod tests;

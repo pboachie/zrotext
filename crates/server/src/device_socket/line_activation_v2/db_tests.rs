@@ -103,13 +103,15 @@ async fn actual_composite_handshake_and_legacy_reconnect_store_different_version
     let url = format!("ws://{address}/v1/device-stream");
     let (mut socket, epoch) = authenticate(&c, &url, PROTOCOL).await;
     assert_eq!(
-        c.db.query_one(
-            "SELECT line_activation_version FROM device_sessions WHERE device_id=$1",
-            &[&c.device]
-        )
-        .await
-        .unwrap()
-        .get::<_, i16>(0),
+        c.database
+            .owner
+            .query_one(
+                "SELECT line_activation_version FROM device_sessions WHERE device_id=$1",
+                &[&c.device]
+            )
+            .await
+            .unwrap()
+            .get::<_, i16>(0),
         2
     );
     let mut db = c.connect().await;
@@ -170,16 +172,27 @@ async fn actual_composite_handshake_and_legacy_reconnect_store_different_version
         final_ack["device_signature_sha256"],
         URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(proof.to_der().as_bytes()))
     );
+    let first_socket_finished = DEVICE_SOCKET_ADMISSION
+        .tenancy
+        .lock()
+        .unwrap()
+        .devices
+        .get(&(c.principal.tenant.account_id(), c.device))
+        .unwrap()
+        .superseded
+        .clone();
     let (mut legacy, next) = authenticate(&c, &url, preconditions::PROTOCOL_V2).await;
     assert!(next > epoch);
     assert_eq!(
-        c.db.query_one(
-            "SELECT line_activation_version FROM device_sessions WHERE device_id=$1",
-            &[&c.device]
-        )
-        .await
-        .unwrap()
-        .get::<_, i16>(0),
+        c.database
+            .owner
+            .query_one(
+                "SELECT line_activation_version FROM device_sessions WHERE device_id=$1",
+                &[&c.device]
+            )
+            .await
+            .unwrap()
+            .get::<_, i16>(0),
         1
     );
     assert!(runtime::current(&mut db, c.session(epoch)).await.is_err());
@@ -194,5 +207,27 @@ async fn actual_composite_handshake_and_legacy_reconnect_store_different_version
         .await
         .expect("server completed before guarded cleanup")
         .unwrap();
+    // HTTP graceful shutdown does not join upgraded socket tasks. Wait for
+    // this exact authenticated device's slot to be released after its final
+    // epoch-guarded database cleanup, before draining the fixture's pool.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let active = DEVICE_SOCKET_ADMISSION
+                .tenancy
+                .lock()
+                .unwrap()
+                .devices
+                .contains_key(&(c.principal.tenant.account_id(), c.device));
+            // The replaced notification is now held only by the old task
+            // and this fixture. Its sole remaining reference proves that
+            // superseded task also completed, not just the newer holder.
+            if !active && Arc::strong_count(&first_socket_finished) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("owned upgraded device session completed before fixture cleanup");
     c.cleanup().await;
 }

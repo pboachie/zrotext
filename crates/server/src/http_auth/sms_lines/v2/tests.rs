@@ -171,7 +171,9 @@ async fn actual_owner_routes_keep_opening_identity_and_refuse_wrong_origin_and_c
         );
     }
     assert_eq!(
-        c.db.query_one("SELECT count(*) FROM line_activation_v2_pending", &[])
+        c.database
+            .owner
+            .query_one("SELECT count(*) FROM line_activation_v2_pending", &[])
             .await
             .unwrap()
             .get::<_, i64>(0),
