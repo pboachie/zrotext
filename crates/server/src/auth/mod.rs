@@ -33,6 +33,15 @@ const MAX_EMAIL_BYTES: usize = 254;
 /// Serialize operator bootstrap and HTTP registration across API processes.
 const REGISTRATION_ADVISORY_LOCK: i64 = 0x5a54524547495354;
 
+// Share the exact SQL duration between both credential issuers and fixed-time
+// regression probes. Calendar-day intervals can extend a leaked credential
+// across a daylight-saving boundary; this duration is always 86,400 seconds.
+macro_rules! elapsed_credential_day_sql {
+    () => {
+        "interval '24 hours'"
+    };
+}
+
 pub mod abuse_limits;
 pub mod account;
 pub mod agent_grants;
@@ -1010,7 +1019,7 @@ pub(crate) async fn insert_api_key(
     lifetime: ApiKeyLifetime,
 ) -> Result<ApiKeyCredentials, AuthError> {
     validate_api_key_request(scopes, lifetime)?;
-    // `Never` stores NULL: `now() + (NULL * interval '1 day')` is NULL, and a
+    // `Never` stores NULL: adding its NULL duration still yields NULL, and a
     // NULL `expires_at` never excludes the key from authentication.
     let lifetime_days = lifetime.stored_days();
     let mut normalized = scopes.to_vec();
@@ -1026,7 +1035,11 @@ pub(crate) async fn insert_api_key(
     let id = Uuid::new_v4();
     let inserted = tx
         .execute(
-            "INSERT INTO api_keys(id,account_id,created_by_user_id,public_prefix,token_hash,scopes,bound_device_id,expires_at) SELECT $1,$2,$3,$4,$5,$6,$7,now()+($8::integer * interval '1 day') FROM sessions s WHERE s.id=$9 AND s.account_id=$2 AND s.user_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now()",
+            concat!(
+                "INSERT INTO api_keys(id,account_id,created_by_user_id,public_prefix,token_hash,scopes,bound_device_id,expires_at) SELECT $1,$2,$3,$4,$5,$6,$7,now()+($8::integer * ",
+                elapsed_credential_day_sql!(),
+                ") FROM sessions s WHERE s.id=$9 AND s.account_id=$2 AND s.user_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now()"
+            ),
             &[&id, &principal.tenant.account_id, &principal.user_id, &public_prefix, &&hash[..], &scope_names, &bound_device_id, &lifetime_days, &principal.session_id],
         )
         .await?;
@@ -1446,3 +1459,6 @@ mod tests;
 
 #[cfg(test)]
 pub(crate) mod test_schema;
+
+#[cfg(test)]
+mod elapsed_day_tests;

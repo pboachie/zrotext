@@ -328,7 +328,9 @@ impl Loopback03 {
         grant: &crate::sealed_dispatch::wire03::GrantFrame03,
         key: &SigningKey,
     ) -> Value {
-        self.heartbeat().await;
+        // grant() keeps the socket live before issuing the immutable grant.
+        // Start HTTP directly, like the device client, rather than waiting for
+        // an unrelated socket ACK inside the original grant window.
         let signature: Signature = key.sign(&grant.fetch_transcript());
         let body = json!({"grant":serde_json::from_slice::<Value>(&grant.to_json().unwrap()).unwrap(),
             "signature_der":B.encode(signature.normalize_s().to_der().as_bytes())});

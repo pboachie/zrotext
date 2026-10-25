@@ -659,7 +659,7 @@ fn every_native_required_body_matches_the_independent_closed_stock_pins() {
         ),
         (
             "payload_profile_writer_json",
-            &["ba20a6a52c8e77012dc41546475ab19f0d1743bd4675a3184108b78abdfb4b45"] as &[&str],
+            &["33c468e0b9077291b6b6cd4f0816952d32aa8848ddf74141eed3379c1a237227"] as &[&str],
         ),
         (
             "payload_profile_writer_global_guard",

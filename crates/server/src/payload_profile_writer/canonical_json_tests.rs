@@ -1,0 +1,113 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+//! Preserve the original closed-array bytes while traversing bounded array levels.
+use crate::test_database::Fixture;
+use futures_util::FutureExt;
+use std::panic::{AssertUnwindSafe, resume_unwind};
+use tokio_postgres::error::SqlState;
+
+// The original recursive implementation is an independent equivalence oracle.
+// Keep it literal: deriving it from the current migration would mirror a bug.
+const LEGACY: &str = r#"
+CREATE FUNCTION pg_temp.writer_json_legacy(value json) RETURNS text
+LANGUAGE plpgsql IMMUTABLE STRICT SET search_path TO pg_catalog AS $function$
+DECLARE result text;
+BEGIN
+    IF json_typeof(value)='array' THEN
+        SELECT '['||coalesce(string_agg(pg_temp.writer_json_legacy(element),',' ORDER BY ordinal),'')||']'
+          INTO result FROM json_array_elements(value) WITH ORDINALITY items(element,ordinal);
+        RETURN result;
+    END IF;
+    IF json_typeof(value)='object' THEN
+        RAISE EXCEPTION 'writer canonical array required' USING ERRCODE='23514';
+    END IF;
+    RETURN value::text;
+END;
+$function$;
+"#;
+
+#[tokio::test]
+#[ignore = "requires disposable ZT_AUTH_TEST_DATABASE_URL; compares installed canonical JSON with the original serializer"]
+async fn bounded_array_serialization_preserves_legacy_bytes_and_object_refusals() {
+    let fixture = Fixture::for_store("ZT_AUTH_TEST_DATABASE_URL").await;
+    let outcome = AssertUnwindSafe(async {
+        fixture.owner.batch_execute(LEGACY).await.unwrap();
+        let mut vectors = [
+            r#"[""]"#, "null", "true", "false", "0", "-0", "1.00", "1e+2", "1E-02", "1e9999",
+            "[]", "[[],[[]]]", r#""\u0041""#, r#""\ud83d\ude03""#,
+            r#"["spaces, {} [] : preserved","quote \" and slash \\","\n\t\b\f\r"]"#,
+            r#"[null,true,false,1.00,-0,1E+02]"#,
+        ].map(str::to_owned).to_vec();
+        let mut nested = r#"["nested spaces, and escapes \"",null,1.00]"#.to_owned();
+        for _ in 0..32 {
+            nested = format!("[{nested}]");
+            vectors.push(nested.clone());
+        }
+        for ordinal in 0..128 {
+            let leaf = serde_json::to_string(&format!("synthetic '{ordinal}, é and 😀"))
+                .unwrap();
+            vectors.push(format!("[{ordinal},[true,null,false],{leaf},[[],[1.00,-0,1E+02]]]"));
+        }
+        vectors.extend([
+            "\"\"".to_owned(),
+            r#"["\u0022","\u005c","\u007b"]"#.to_owned(),
+            " \t[\n1,\r2,\t\" inside \\t string \"\n]\r ".to_owned(),
+        ]);
+        for count in 0..32 {
+            let value = format!("{}\"{{}}", "\\".repeat(count));
+            vectors.push(serde_json::to_string(&vec![value]).unwrap());
+        }
+        for value in vectors {
+            let row = fixture.owner.query_one(
+                "SELECT public.payload_profile_writer_json($1::text::json),pg_temp.writer_json_legacy($1::text::json)",
+                &[&value],
+            ).await.unwrap();
+            assert_eq!(row.get::<_,String>(0),row.get::<_,String>(1));
+        }
+        let row=fixture.owner.query_one(
+            "SELECT public.payload_profile_writer_json(NULL::json),pg_temp.writer_json_legacy(NULL::json)",
+            &[],
+        ).await.unwrap();
+        assert_eq!(row.get::<_,Option<String>>(0),None);
+        assert_eq!(row.get::<_,Option<String>>(1),None);
+        let graph = zrotext_delivery_store::hosted_runtime_identity::declared_function_body(
+            include_str!("../../../../deploy/compose/migrations/109_original_sealed_activation_receipts.sql"),
+            "payload_profile_writer_graph",
+            "$function$",
+        ).unwrap();
+        assert_eq!(graph.matches("public.payload_profile_writer_json(").count(),1);
+        let graph=graph.replace("public.payload_profile_writer_json(","pg_temp.writer_json_legacy(");
+        assert!(!graph.contains("$writer_graph_oracle$"));
+        fixture.owner.batch_execute(&format!(
+            "CREATE FUNCTION pg_temp.writer_graph_legacy() RETURNS bytea LANGUAGE sql STABLE SET search_path TO pg_catalog AS $writer_graph_oracle${graph}$writer_graph_oracle$;"
+        )).await.unwrap();
+        let row=fixture.owner.query_one(
+            "SELECT public.payload_profile_writer_graph(),pg_temp.writer_graph_legacy()",
+            &[],
+        ).await.unwrap();
+        assert_eq!(row.get::<_,Vec<u8>>(0),row.get::<_,Vec<u8>>(1));
+        for value in ["{}", "[{}]", r#"[[1,{"a":2}]]"#, r#"{"a":1,"a":2}"#] {
+            for query in [
+                "SELECT public.payload_profile_writer_json($1::text::json)",
+                "SELECT pg_temp.writer_json_legacy($1::text::json)",
+            ] {
+                let error=fixture.owner.query_one(query,&[&value]).await.unwrap_err();
+                assert_eq!(error.code(),Some(&SqlState::CHECK_VIOLATION));
+            }
+        }
+        let mut object="{}".to_owned();
+        for _ in 0..32 {
+            object=format!("[{object}]");
+            for query in [
+                "SELECT public.payload_profile_writer_json($1::text::json)",
+                "SELECT pg_temp.writer_json_legacy($1::text::json)",
+            ] {
+                let error=fixture.owner.query_one(query,&[&object]).await.unwrap_err();
+                assert_eq!(error.code(),Some(&SqlState::CHECK_VIOLATION));
+            }
+        }
+    }).catch_unwind().await;
+    fixture.finish().await;
+    if let Err(panic) = outcome {
+        resume_unwind(panic);
+    }
+}

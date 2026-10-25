@@ -183,6 +183,9 @@ fn first<'a>(
             super::typed_submit_tests::liabilities(c, packet.message).await,
             ("submitting".into(), "submitting".into(), 1, 1, 0)
         );
+        // Keep the manual peer live for historical exchanges after every
+        // first-submit assertion. This cannot renew the immutable grant.
+        c.loopback().heartbeat().await;
         Saved {
             request,
             original,

@@ -8,7 +8,7 @@ BEGIN
  IF to_regclass('accounts') IS DISTINCT FROM 'public.accounts'::regclass OR pg_is_in_recovery() THEN
   RAISE EXCEPTION 'reviewed V2 requires exact primary namespace' USING ERRCODE='23514'; END IF;
 FOR writer_expected IN SELECT * FROM (VALUES
-            ('payload_profile_writer_json(json)','ba20a6a52c8e77012dc41546475ab19f0d1743bd4675a3184108b78abdfb4b45','text','plpgsql','i',true,false,ARRAY['search_path=pg_catalog']),
+            ('payload_profile_writer_json(json)','33c468e0b9077291b6b6cd4f0816952d32aa8848ddf74141eed3379c1a237227','text','plpgsql','i',true,false,ARRAY['search_path=pg_catalog']),
             ('payload_profile_writer_guard()',CASE WHEN writer_installation=116 THEN 'f0cc270d7de8b3c0cf1335c310bae04ab2653aa8cb0ce07c56e07d74e6b1af37' ELSE CASE WHEN writer_installation IN(110,111,112,113,114,115,116) THEN 'e17595d3e26a9d87766539c90dcc55f036fb8cd1a31037a59154a7659087da23' ELSE 'f47f6d64ef583f2f5272128aa02c7bd5974d2e9f06b6bfff743a5b0a29e3c18a' END END,'trigger','plpgsql','v',false,true,ARRAY['search_path=pg_catalog','lock_timeout=3s']),
             ('payload_profile_writer_global_guard()','b8837a0f8a53c45722524ff8082ffaebb3d992cac441a69f02e9750b2a9ee106','trigger','plpgsql','v',false,false,ARRAY['search_path=pg_catalog']),
             ('payload_profile_writer_catalog_guard()','07fb697ab77abd9ae2142bb44ca59d0fdf3515a5507f0ab74c57b2d42d73bc8a','trigger','plpgsql','v',false,false,ARRAY['search_path=pg_catalog']),
@@ -211,7 +211,7 @@ FOR writer_expected IN SELECT * FROM(VALUES
             ('public.payload_profile_writer_guard()',ARRAY['f0cc270d7de8b3c0cf1335c310bae04ab2653aa8cb0ce07c56e07d74e6b1af37']::text[],'trigger','plpgsql','v',false,true,false,ARRAY['search_path=pg_catalog','lock_timeout=3s']::text[],NULL::text[]),
             ('public.payload_profile_writer_version()',ARRAY['ed66b42a6a2dea25f770957e7c502f16adb31e784bd9fe8776e0c8f416388dd9']::text[],'boolean','sql','s',false,true,false,ARRAY['search_path=pg_catalog']::text[],NULL::text[]),
             ('public.payload_profile_writer_ready()',ARRAY['04a3ce5ea884a1e1a62971a833e2d15e7687a137a86846395275c6bdd53fc2f3']::text[],'boolean','sql','s',false,false,false,ARRAY['search_path=pg_catalog']::text[],NULL::text[]),
-            ('public.payload_profile_writer_json(json)',ARRAY['ba20a6a52c8e77012dc41546475ab19f0d1743bd4675a3184108b78abdfb4b45']::text[],'text','plpgsql','i',true,false,false,ARRAY['search_path=pg_catalog']::text[],ARRAY['value']::text[]),
+            ('public.payload_profile_writer_json(json)',ARRAY['33c468e0b9077291b6b6cd4f0816952d32aa8848ddf74141eed3379c1a237227']::text[],'text','plpgsql','i',true,false,false,ARRAY['search_path=pg_catalog']::text[],ARRAY['value']::text[]),
             ('public.payload_profile_writer_global_guard()',ARRAY['b8837a0f8a53c45722524ff8082ffaebb3d992cac441a69f02e9750b2a9ee106']::text[],'trigger','plpgsql','v',false,false,false,ARRAY['search_path=pg_catalog']::text[],NULL::text[]),
             ('public.payload_profile_writer_catalog_guard()',ARRAY['07fb697ab77abd9ae2142bb44ca59d0fdf3515a5507f0ab74c57b2d42d73bc8a']::text[],'trigger','plpgsql','v',false,false,false,ARRAY['search_path=pg_catalog']::text[],NULL::text[]),
             ('public.payload_profile_writer_graph()',ARRAY['93654ee42134f973861336539b90c0b4f6727355c087e6d25cb86617aa6e2061']::text[],'bytea','sql','s',false,false,false,ARRAY['search_path=pg_catalog']::text[],NULL::text[]),

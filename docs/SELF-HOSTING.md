@@ -307,7 +307,7 @@ device-status observer. Creating an invitation grants lasting read access, so
 it asks for your current password and, if you turned on two-step sign-in, an
 authenticator or recovery code, exactly as creating an API key does; a session
 cookie alone cannot mint a seat. The invitation token is shown once, expires
-after seven days, works once, and is bound to the invited address; deliver it
+after seven elapsed 24-hour days, works once, and is bound to the invited address; deliver it
 out of band. The invitee opens `/owner/observer`, accepts the token with a
 password they choose, verifies their email with the mailed code, and then
 signs in to a read-only device-status page. Observers can change their own

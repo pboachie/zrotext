@@ -1991,21 +1991,9 @@ async fn session_expires_during_erasure_wait_deletes_nothing() {
         )
         .await
         .unwrap();
-        // Short-fuse the session directly: the absolute expiry lands far enough
-        // out for the pre-transaction proof, then passes while the request is
-        // parked. `now()` inside the parked statement stays frozen at statement
-        // start, so only a post-lock `clock_timestamp()` recheck can catch it.
-        // The fuse also has to pass inside production's bounded lock wait: the
-        // server's pooled connections run with lock_timeout=3s
-        // (crate::runtime_db), after which the request fails closed with 503 —
-        // so the fuse is set well below that bound while still clearing the
-        // request's pre-fence proof work.
-        db.execute(
-            "UPDATE sessions SET expires_at=now()+interval '2 seconds' WHERE id=$1",
-            &[&session_a.id],
-        )
-        .await
-        .unwrap();
+        // Keep the session live through password proof and the earlier member
+        // check. Start the short fuse only after the exact session-row wait,
+        // so proof duration cannot turn this into an early-refusal test.
         // Hold the session row so the fence parks inside its live-session lock
         // statement, whose snapshot predates the expiry passing.
         let blocker_pid: i32 = db
@@ -2034,13 +2022,22 @@ async fn session_expires_during_erasure_wait_deletes_nothing() {
             .await
             .unwrap()
         });
-        // Let the database clock run past the short fuse (with a short grace)
-        // while the request stays parked, then release the lock well inside the
-        // lock_timeout so the parked statement itself is not canceled.
+        // First prove the request is parked after its pre-transaction proof.
         wait_until_handler_is_blocked_by(admin, "zt_erasure_expiry_race", blocker_pid).await;
+        // The blocker owns the session row. Its uncommitted new expiry is
+        // later than the waiting erasure transaction's frozen now(), but will
+        // be in the past when that row is released. Only the final real-clock
+        // recheck must reject it. Keep the wait below the production 3s bound.
+        blocker
+            .execute(
+                "UPDATE sessions SET expires_at=clock_timestamp()+interval '1 second' WHERE id=$1",
+                &[&session_a.id],
+            )
+            .await
+            .unwrap();
         let mut fuse_passed = false;
         for _ in 0..1200 {
-            let past: bool = admin
+            let past: bool = blocker
                 .query_one(
                     &format!(
                         "SELECT clock_timestamp() > expires_at + interval '250 milliseconds' \

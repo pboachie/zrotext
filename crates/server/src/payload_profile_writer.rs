@@ -328,3 +328,6 @@ pub async fn require<C: GenericClient + Sync>(db: &C) -> Result<()> {
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+#[cfg(test)]
+mod canonical_json_tests;
