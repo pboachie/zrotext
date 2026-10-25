@@ -4,6 +4,7 @@ use super::*;
 use crate::sealed_inbound::line_activation::{v2, v2_runtime as run};
 use tokio_postgres::error::SqlState;
 pub(crate) mod fixture;
+mod poll_lock_tests;
 use fixture::Case;
 const ORIGIN: &str = "https://activation.example";
 

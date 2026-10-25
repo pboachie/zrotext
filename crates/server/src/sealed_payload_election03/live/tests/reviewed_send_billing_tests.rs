@@ -10,8 +10,8 @@ use tokio_postgres::{NoTls, error::SqlState};
 async fn customer_tuple_nowait_precedes_account_upgrade_and_is_held_through_real_queue_commit() {
     let (mut c, key, interval) = active().await;
     let account = c.principal.tenant.account_id();
-    c.db.owner.execute("INSERT INTO public.billing_customers(account_id,stripe_customer_id) VALUES($1,'cus_reviewed_order')",&[&account]).await.unwrap();
-    c.db.owner.execute("INSERT INTO public.billing_reconciliations(stripe_subscription_id,account_id,stripe_customer_id,dirty_generation,processed_generation) VALUES('sub_reviewed_order',$1,'cus_reviewed_order',1,1)",&[&account]).await.unwrap();
+    c.db.owner.execute("INSERT INTO public.billing_customers(account_id,stripe_customer_id) VALUES($1,'cus_reviewedorder')",&[&account]).await.unwrap();
+    c.db.owner.execute("INSERT INTO public.billing_reconciliations(stripe_subscription_id,account_id,stripe_customer_id,dirty_generation,processed_generation) VALUES('sub_reviewedorder',$1,'cus_reviewedorder',1,1)",&[&account]).await.unwrap();
     c.db.owner.execute("INSERT INTO public.usage_quota_policies(account_id,metric,limit_units,source) VALUES($1,'outbound_message',10,'stripe_test')",&[&account]).await.unwrap();
     let p = packet(&mut c, &key, &interval).await;
     let (mut other, connection) = c.db.reader_config.connect(NoTls).await.unwrap();
@@ -88,7 +88,7 @@ async fn uncommitted_customer_binding_refuses_exclusive_queue_mode_without_accou
     let (mut other, connection) = c.db.reader_config.connect(NoTls).await.unwrap();
     let driver = tokio::spawn(connection);
     let binder = other.transaction().await.unwrap();
-    binder.execute("INSERT INTO public.billing_customers(account_id,stripe_customer_id) VALUES($1,'cus_reviewed_new_binding')",&[&account]).await.unwrap();
+    binder.execute("INSERT INTO public.billing_customers(account_id,stripe_customer_id) VALUES($1,'cus_reviewednewbinding')",&[&account]).await.unwrap();
     let tx = c.db.reader.transaction().await.unwrap();
     let mut owner = ordinary_owner03::authenticate(&tx, &c.hasher, ORIGIN, source(&c.credentials))
         .await

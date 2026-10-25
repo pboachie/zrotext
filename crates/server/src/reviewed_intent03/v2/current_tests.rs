@@ -204,3 +204,44 @@ fn retained_v2_preserves_original_review_time_and_present_grant_permission() {
         );
     }
 }
+
+#[test]
+fn retained_v2_accepts_exact_signed_message_bound_but_refuses_one_millisecond_more() {
+    let (mut p, bytes, signature) = packet();
+    let now = NOW + 250;
+    p.current.compared_at_ms = now;
+    let signed_expiry = Intent03V2::decode(&bytes).unwrap().message_expires_ms();
+    let expected = p.expected();
+    assert!(expected.current.permission_expires_at_ms > signed_expiry + 1);
+    assert!(expected.interval_expires_ms > signed_expiry + 1);
+    // Pure verifier inputs, not a substituted database/runtime clock. The
+    // packet and signature are unchanged between the exact/+1 boundary cases.
+    let original = |required_until_ms| RetainedTiming03 {
+        admitted_ms: NOW + 50,
+        installed_ms: NOW,
+        required_until_ms,
+    };
+    let accepted = verify_retained(
+        Intent03V2::decode(&bytes).unwrap(),
+        &signature,
+        &p.envelope,
+        &expected,
+        now,
+        original(signed_expiry),
+    )
+    .unwrap();
+    assert_eq!(accepted.expires_ms(), signed_expiry);
+    assert_eq!(accepted.intent().bytes(), bytes);
+    assert_eq!(accepted.signature().as_slice(), signature);
+    assert!(matches!(
+        verify_retained(
+            Intent03V2::decode(&bytes).unwrap(),
+            &signature,
+            &p.envelope,
+            &expected,
+            now,
+            original(signed_expiry + 1),
+        ),
+        Err("review current timing")
+    ));
+}

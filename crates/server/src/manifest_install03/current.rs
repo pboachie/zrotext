@@ -94,9 +94,6 @@ pub(super) async fn physical(
     context: &device_context::HeldDeviceContext03<'_, '_>,
     origin: &str,
 ) -> Result<Physical03> {
-    crate::payload_profile_selections::require(tx)
-        .await
-        .map_err(|_| Error::Unavailable)?;
     let lease = context.selected_identity();
     let row=tx.query_opt("SELECT c.refresh_id,c.initiating_user_id,c.initiating_session_id,s.bundle,s.bundle_sha256,s.accepted_ms,s.installed_ms,s.installed_signature,c.device_point,c.owner_point,c.device_session_digest,c.manifest_version,c.manifest_digest,c.signed_manifest,c.manifest_accepted_ms FROM public.payload_profile_selection_receipts s JOIN public.payload_profile_selection_challenges c ON (c.account_id,c.refresh_id)=(s.account_id,s.refresh_id) WHERE s.account_id=$1 AND s.binding_id=$2 AND s.proof_site_id=$3 AND s.proof_instance_id=$4 AND s.proof_connection_epoch=$5 AND s.proof_deployment_epoch=$6 AND s.installed_ms IS NOT NULL",&[&h.account,&h.binding,&lease.site,&lease.instance,&(lease.connection_epoch as i64),&(lease.deployment_epoch as i64)]).await?;
     if let Some(row) = row {

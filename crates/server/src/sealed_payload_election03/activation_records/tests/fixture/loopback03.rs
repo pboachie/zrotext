@@ -17,6 +17,9 @@ const OWNER_ORIGIN: &str = "https://activation.example";
 const PROFILE_PROTOCOL: &str = "zrotext-device-status-v2+sealed-dispatch-v3";
 const ORDINARY_PROTOCOL: &str = "zrotext-device-status-v2";
 const IO_BOUND: Duration = Duration::from_secs(5);
+// Current profile readiness traverses the full writer graph. This is a bounded
+// test observation budget, never a server/grant lifetime or a renewed permit.
+const PROFILE_RESPONSE_BOUND: Duration = Duration::from_secs(60);
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 struct Peer {
@@ -37,7 +40,11 @@ impl Peer {
         if let Some(index) = self.pending.iter().position(|v| v["type"] == kind) {
             return self.pending.remove(index).unwrap();
         }
-        let deadline = tokio::time::Instant::now() + IO_BOUND;
+        let bound = match kind {
+            "sealed_execution_grant" | "payload_profile_submit_ack03" => PROFILE_RESPONSE_BOUND,
+            _ => IO_BOUND,
+        };
+        let deadline = tokio::time::Instant::now() + bound;
         for _ in 0..64 {
             let frame = tokio::time::timeout_at(deadline, self.socket.next())
                 .await
@@ -253,20 +260,25 @@ impl Loopback03 {
             device,
             io: Mutex::new(peer),
         };
-        result.assert_claim(&db.reader, key).await;
+        result.assert_claim(&db.reader, key, 2).await;
         result
     }
     pub(crate) async fn epoch(&self) -> i64 {
         self.io.lock().await.epoch
     }
-    pub(crate) async fn assert_claim(&self, reader: &tokio_postgres::Client, key: &SigningKey) {
+    pub(crate) async fn assert_claim(
+        &self,
+        reader: &tokio_postgres::Client,
+        key: &SigningKey,
+        expected_line_activation_version: i16,
+    ) {
         let epoch = self.epoch().await;
         let row = reader.query_one(
             "SELECT s.connection_epoch,s.line_activation_version,k.signing_key_sec1,s.lease_until>clock_timestamp() FROM public.device_sessions s JOIN public.device_keys k ON(k.account_id,k.device_id)=(s.account_id,s.device_id) WHERE s.account_id=$1 AND s.device_id=$2 AND k.revoked_at IS NULL",
             &[&self.account,&self.device],
         ).await.unwrap();
         assert_eq!(row.get::<_, i64>(0), epoch);
-        assert_eq!(row.get::<_, i16>(1), 2);
+        assert_eq!(row.get::<_, i16>(1), expected_line_activation_version);
         assert_eq!(
             row.get::<_, Vec<u8>>(2),
             key.verifying_key().to_sec1_point(false).as_bytes()
@@ -302,6 +314,10 @@ impl Loopback03 {
         &self,
         ready: &crate::sealed_dispatch::wire03::ReadyFrame03,
     ) -> crate::sealed_dispatch::wire03::GrantFrame03 {
+        // This manual peer must perform the real same-epoch heartbeat between
+        // long positive phases, just as a live peer does. No expired lease or
+        // immutable grant is renewed by this assertion-preserving exchange.
+        self.heartbeat().await;
         let raw: Value = serde_json::from_slice(&ready.to_json().unwrap()).unwrap();
         let response = self.exchange(&raw, "sealed_execution_grant").await;
         crate::sealed_dispatch::wire03::GrantFrame03::parse(&serde_json::to_vec(&response).unwrap())
@@ -312,13 +328,15 @@ impl Loopback03 {
         grant: &crate::sealed_dispatch::wire03::GrantFrame03,
         key: &SigningKey,
     ) -> Value {
+        self.heartbeat().await;
         let signature: Signature = key.sign(&grant.fetch_transcript());
         let body = json!({"grant":serde_json::from_slice::<Value>(&grant.to_json().unwrap()).unwrap(),
             "signature_der":B.encode(signature.normalize_s().to_der().as_bytes())});
         let client = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
-            .timeout(IO_BOUND)
+            .connect_timeout(IO_BOUND)
+            .timeout(PROFILE_RESPONSE_BOUND)
             .build()
             .unwrap();
         let response = client

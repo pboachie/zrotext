@@ -367,32 +367,47 @@ const REQUIRED_FUNCTIONS: &[FunctionDeclaration] = &[
         (&[] as &[&str]),
     ),
 ];
+fn qualified_signature(name: &str, args: &str) -> String {
+    // Composite argument display names depend on the caller's search_path.
+    // Resolve the exact qualified signature instead of trusting that display.
+    let args = args
+        .split(", ")
+        .filter(|argument| !argument.is_empty())
+        .map(|argument| {
+            if argument == "bigint" {
+                "pg_catalog.int8".to_owned()
+            } else if argument.starts_with("public.") {
+                argument.to_owned()
+            } else {
+                format!("pg_catalog.{argument}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("public.{name}({args})")
+}
+const FUNCTION_METADATA: &str = "SELECT p.prosrc,coalesce(p.oid=pg_catalog.to_regprocedure(($3::text[])[e.ordinal::integer]),false),p.prorettype=($2::text[])[e.ordinal::integer]::pg_catalog.regtype,l.lanname,p.provolatile::text,p.proisstrict,p.prosecdef,p.proretset,p.proconfig,p.proargnames,p.proargmodes IS NULL,p.proallargtypes IS NULL,p.proparallel='u',p.prokind='f',p.pronargdefaults=0,p.proowner=c.relowner,e.ordinal FROM pg_catalog.unnest($1::text[]) WITH ORDINALITY AS e(name,ordinal) JOIN pg_catalog.pg_proc p ON p.pronamespace='public'::pg_catalog.regnamespace AND p.proname=e.name JOIN pg_catalog.pg_language l ON l.oid=p.prolang JOIN pg_catalog.pg_class c ON c.oid='public.accounts'::pg_catalog.regclass ORDER BY e.ordinal";
 async fn functions<C: GenericClient + Sync>(db: &C, version: i64) -> Result<()> {
-    for &(name, args, result, language, volatility, strict, definer, set, config, names) in
-        REQUIRED_FUNCTIONS
+    let expected_names = REQUIRED_FUNCTIONS.iter().map(|f| f.0).collect::<Vec<_>>();
+    let results = REQUIRED_FUNCTIONS.iter().map(|f| f.2).collect::<Vec<_>>();
+    let signatures = REQUIRED_FUNCTIONS
+        .iter()
+        .map(|f| qualified_signature(f.0, f.1))
+        .collect::<Vec<_>>();
+    // Resolve every overload by public name in one fresh metadata snapshot.
+    // Count and ordinality together reject even offsetting missing/extra rows.
+    let rows = db
+        .query(FUNCTION_METADATA, &[&expected_names, &results, &signatures])
+        .await?;
+    if rows.len() != REQUIRED_FUNCTIONS.len() {
+        return Err(GrantSchemaError::Invalid);
+    }
+    for (index, (&(name, _, _, language, volatility, strict, definer, set, config, names), row)) in
+        REQUIRED_FUNCTIONS.iter().zip(rows).enumerate()
     {
-        // Composite argument display names depend on the caller's search_path.
-        // Resolve the exact qualified signature instead of trusting that display.
-        let args = args
-            .split(", ")
-            .filter(|argument| !argument.is_empty())
-            .map(|argument| {
-                if argument == "bigint" {
-                    "pg_catalog.int8".to_owned()
-                } else if argument.starts_with("public.") {
-                    argument.to_owned()
-                } else {
-                    format!("pg_catalog.{argument}")
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(",");
-        let signature = format!("public.{name}({args})");
-        let rows=db.query("SELECT p.prosrc,coalesce(p.oid=pg_catalog.to_regprocedure($3::text),false),p.prorettype=$2::text::pg_catalog.regtype,l.lanname,p.provolatile::text,p.proisstrict,p.prosecdef,p.proretset,p.proconfig,p.proargnames,p.proargmodes IS NULL,p.proallargtypes IS NULL,p.proparallel='u',p.prokind='f',p.pronargdefaults=0,p.proowner=c.relowner FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_language l ON l.oid=p.prolang JOIN pg_catalog.pg_class c ON c.oid='public.accounts'::pg_catalog.regclass WHERE p.pronamespace='public'::pg_catalog.regnamespace AND p.proname=$1",&[&name,&result,&signature]).await?;
-        if rows.len() != 1 {
+        if row.try_get::<_, i64>(16)? != index as i64 + 1 {
             return Err(GrantSchemaError::Invalid);
         }
-        let row = &rows[0];
         let config = config.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
         let names = names.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
         if row.try_get::<_, String>(0)? != body(name, version)?
@@ -432,15 +447,10 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
       }
         return Ok(false);
     }
+    // The immediate predecessor validates the complete earlier schema chain.
     if namespace != "public"
         || !table
         || !helper
-        || !crate::payload_profile_writer::optional(db, "public.line_activation_v2_pending").await?
-        || !crate::payload_profile_v2_receipts::optional(db).await?
-        || !crate::payload_profile_elections::optional(db).await?
-        || !crate::payload_profile_selections::optional(db).await?
-        || !crate::payload_profile_manifests::optional(db).await?
-        || !crate::conversation_profile03_storage::optional(db).await?
         || !crate::conversation_reviewed_send03_storage::optional(db).await?
     {
         return Err(GrantSchemaError::Invalid);
@@ -474,3 +484,6 @@ pub async fn require<C: GenericClient + Sync>(db: &C) -> Result<()> {
 }
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod metadata_tests;

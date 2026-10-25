@@ -53,12 +53,8 @@ impl<'held, 'db> Mode03<'held, 'db> {
             return Err(Error::Authentication);
         }
         tx.batch_execute("SET LOCAL search_path TO pg_catalog; SET LOCAL lock_timeout='3s'; SET LOCAL statement_timeout='5s'").await?;
-        crate::conversation_profile03_grant_storage::require(tx)
-            .await
-            .map_err(|_| Error::Unavailable)?;
-        crate::conversation_reviewed_send03_storage::require_v2(tx)
-            .await
-            .map_err(|_| Error::Unavailable)?;
+        // Effect readiness includes the full grant and reviewed-v2 validators.
+        // Keep that complete current check once, before taking business locks.
         crate::conversation_profile03_effect_storage::require(tx)
             .await
             .map_err(|_| Error::Unavailable)?;
@@ -155,13 +151,9 @@ pub(crate) async fn issue_next<C: crate::runtime_db::NativeConnection>(
     // enrolled key actually proved possession during this exact session claim.
     actor::verify_new(socket, actor, &review)?;
     ready_matches(ready, &review, actor)?;
-    let permission = review.deadline().await?.min(
-        review
-            .selected()
-            .now_ms()
-            .checked_add(30_000)
-            .ok_or(Error::Expired)?,
-    );
+    // Preserve the complete signed/current bound. The pinned SQL mint caps
+    // this original grant at thirty seconds from its actual primary mint time.
+    let permission = review.deadline().await?;
     review.verify_until(permission).await?;
     let rows = tx
         .query(
@@ -184,7 +176,6 @@ pub(crate) async fn issue_next<C: crate::runtime_db::NativeConnection>(
     }
     let row = GrantRow03::from_row(&rows[0])?;
     row.actor(actor, attempt)?;
-    row.matches(&review)?;
     let original = actor::RetainedActor03::read(&tx, &row).await?;
     original.matches_socket(socket)?;
     original.matches_selected(&review)?;
@@ -192,6 +183,9 @@ pub(crate) async fn issue_next<C: crate::runtime_db::NativeConnection>(
         return Err(Error::Expired);
     }
     review.verify_until(row.numbers[9]).await?;
+    // SQL minted this original after the pre-issue held clock. Refresh current
+    // permission first, then compare against that unchanged mint and expiry.
+    row.matches(&review)?;
     actor::verify_new(socket, actor, &review)?;
     original.matches_selected(&review)?;
     ready_matches(ready, &review, actor)?;
@@ -277,7 +271,8 @@ pub(crate) async fn fetch<C: crate::runtime_db::NativeConnection>(
     request
         .verify(&original.verifying_key()?)
         .map_err(|_| Error::Authentication)?;
-    review.verify_until(row.numbers[9]).await?;
+    // response begins with the same full original-expiry verification, then
+    // performs the final current comparison used by both projections.
     let response = review.response(request.grant()).await?;
     original.matches_selected(&review)?;
     // Fetch is data-read-only: no lease/time/attempt/anchor renewal or commit.

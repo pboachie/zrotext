@@ -94,3 +94,6 @@ async fn held_message_selection_uses_complete_current_ancestry_and_refuses_owner
     tx.rollback().await.unwrap();
     c.db.finish().await;
 }
+
+#[path = "selected_physical_schema_tests.rs"]
+mod schema_tests;

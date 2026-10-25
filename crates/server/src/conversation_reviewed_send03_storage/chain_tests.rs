@@ -58,6 +58,12 @@ async fn ancestor_refuses(db: &Client, name: &str) {
         require_v2(db).await.is_err(),
         "top-level accepted changed {name}"
     );
+    assert!(
+        crate::conversation_profile03_grant_storage::require(db)
+            .await
+            .is_err(),
+        "grant capability accepted changed {name}"
+    );
 }
 
 #[tokio::test]
@@ -66,6 +72,9 @@ async fn every_ancestor_body_and_metadata_is_rechecked_after_prior_success_and_r
     let f = Fixture::runtime().await;
     for name in ANCESTORS {
         require_v2(&f.reader).await.unwrap();
+        crate::conversation_profile03_grant_storage::require(&f.reader)
+            .await
+            .unwrap();
         let original = original_definition(&f.owner, name).await;
         f.owner.batch_execute(&format!(
             "CREATE OR REPLACE FUNCTION public.{name}() RETURNS boolean LANGUAGE sql STABLE SET search_path TO pg_catalog AS 'SELECT true'"
@@ -73,6 +82,9 @@ async fn every_ancestor_body_and_metadata_is_rechecked_after_prior_success_and_r
         ancestor_refuses(&f.reader, name).await;
         f.owner.batch_execute(&original).await.unwrap();
         require_v2(&f.reader).await.unwrap();
+        crate::conversation_profile03_grant_storage::require(&f.reader)
+            .await
+            .unwrap();
         // A previous success must not cache readiness: mutate again without
         // changing the body, then require the complete chain to fail freshly.
         f.owner
@@ -84,6 +96,9 @@ async fn every_ancestor_body_and_metadata_is_rechecked_after_prior_success_and_r
         ancestor_refuses(&f.reader, name).await;
         f.owner.batch_execute(&original).await.unwrap();
         require_v2(&f.reader).await.unwrap();
+        crate::conversation_profile03_grant_storage::require(&f.reader)
+            .await
+            .unwrap();
     }
     f.finish().await;
 }
@@ -94,6 +109,9 @@ async fn public_ancestor_execute_grants_refuse_then_fresh_restored_calls_work() 
     let f = Fixture::runtime().await;
     for name in ANCESTORS {
         require_v2(&f.reader).await.unwrap();
+        crate::conversation_profile03_grant_storage::require(&f.reader)
+            .await
+            .unwrap();
         f.owner
             .batch_execute(&format!(
                 "GRANT EXECUTE ON FUNCTION public.{name}() TO PUBLIC"
@@ -108,6 +126,9 @@ async fn public_ancestor_execute_grants_refuse_then_fresh_restored_calls_work() 
             .await
             .unwrap();
         require_v2(&f.reader).await.unwrap();
+        crate::conversation_profile03_grant_storage::require(&f.reader)
+            .await
+            .unwrap();
     }
     f.finish().await;
 }
@@ -117,6 +138,9 @@ async fn public_ancestor_execute_grants_refuse_then_fresh_restored_calls_work() 
 async fn partial_ancestor_and_extra_family_objects_cannot_bypass_the_transitive_chain() {
     let f = Fixture::runtime().await;
     require_v2(&f.reader).await.unwrap();
+    crate::conversation_profile03_grant_storage::require(&f.reader)
+        .await
+        .unwrap();
     f.owner.batch_execute("ALTER TABLE public.payload_profile_selection_receipts RENAME TO renamed_selection_receipts").await.unwrap();
     assert!(
         crate::payload_profile_selections::optional(&f.reader)
@@ -124,8 +148,16 @@ async fn partial_ancestor_and_extra_family_objects_cannot_bypass_the_transitive_
             .is_err()
     );
     assert!(require_v2(&f.reader).await.is_err());
+    assert!(
+        crate::conversation_profile03_grant_storage::require(&f.reader)
+            .await
+            .is_err()
+    );
     f.owner.batch_execute("ALTER TABLE public.renamed_selection_receipts RENAME TO payload_profile_selection_receipts").await.unwrap();
     require_v2(&f.reader).await.unwrap();
+    crate::conversation_profile03_grant_storage::require(&f.reader)
+        .await
+        .unwrap();
     for (create, drop) in [
         (
             "CREATE FUNCTION public.payload_profile_manifest_unexpected() RETURNS boolean LANGUAGE sql AS 'SELECT true'",
@@ -138,8 +170,17 @@ async fn partial_ancestor_and_extra_family_objects_cannot_bypass_the_transitive_
     ] {
         f.owner.batch_execute(create).await.unwrap();
         assert!(require_v2(&f.reader).await.is_err(), "{create}");
+        assert!(
+            crate::conversation_profile03_grant_storage::require(&f.reader)
+                .await
+                .is_err(),
+            "{create}"
+        );
         f.owner.batch_execute(drop).await.unwrap();
         require_v2(&f.reader).await.unwrap();
+        crate::conversation_profile03_grant_storage::require(&f.reader)
+            .await
+            .unwrap();
     }
     f.finish().await;
 }
@@ -149,7 +190,15 @@ async fn partial_ancestor_and_extra_family_objects_cannot_bypass_the_transitive_
 async fn namespace_shadow_and_owner_role_still_cannot_supply_runtime_readiness() {
     let f = Fixture::runtime().await;
     require_v2(&f.reader).await.unwrap();
+    crate::conversation_profile03_grant_storage::require(&f.reader)
+        .await
+        .unwrap();
     assert!(require_v2(&f.owner).await.is_err());
+    assert!(
+        crate::conversation_profile03_grant_storage::require(&f.owner)
+            .await
+            .is_err()
+    );
     let ordinary: bool = f.reader.query_one(
         "SELECT NOT(rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls) FROM pg_catalog.pg_roles WHERE rolname=current_user",
         &[],
@@ -167,6 +216,11 @@ async fn namespace_shadow_and_owner_role_still_cannot_supply_runtime_readiness()
     // it still cannot provide the required current capability.
     assert!(!optional(&f.reader).await.unwrap());
     assert!(require_v2(&f.reader).await.is_err());
+    assert!(
+        crate::conversation_profile03_grant_storage::require(&f.reader)
+            .await
+            .is_err()
+    );
     f.owner
         .batch_execute(&format!(
             "CREATE TABLE {schema}.conversation_reviewed_sends03(value integer)"
@@ -175,15 +229,26 @@ async fn namespace_shadow_and_owner_role_still_cannot_supply_runtime_readiness()
         .unwrap();
     assert!(optional(&f.reader).await.is_err());
     assert!(require_v2(&f.reader).await.is_err());
+    assert!(
+        crate::conversation_profile03_grant_storage::require(&f.reader)
+            .await
+            .is_err()
+    );
     f.reader
         .batch_execute("SET search_path TO pg_catalog,public")
         .await
         .unwrap();
     require_v2(&f.reader).await.unwrap();
+    crate::conversation_profile03_grant_storage::require(&f.reader)
+        .await
+        .unwrap();
     f.owner
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await
         .unwrap();
     require_v2(&f.reader).await.unwrap();
+    crate::conversation_profile03_grant_storage::require(&f.reader)
+        .await
+        .unwrap();
     f.finish().await;
 }

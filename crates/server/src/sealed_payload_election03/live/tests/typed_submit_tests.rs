@@ -197,6 +197,28 @@ async fn closure_after_reconnect(accept_before_reconnect: bool, lose_first_ack: 
         assert!(duplicate["current"].is_null());
         assert!(duplicate["interval_permission"].is_null());
         assert_eq!(duplicate["accepted_ms"], accepted["accepted_ms"]);
+
+        // Change only the retained command's event identity. Original actor,
+        // transcript, session, segment ceiling and observed time remain valid,
+        // so the historical SQL identity comparison must refuse this conflict.
+        let before = retained(&c).await;
+        let before_liabilities = liabilities(&c, packet.message).await;
+        let mut conflicting = submit.clone();
+        let different_event = Uuid::new_v4();
+        assert_ne!(different_event, event);
+        conflicting["event_id"] = json!(different_event);
+        let error = apply_as(&mut c, socket, &conflicting).await.unwrap_err();
+        let Error::Database(error) = error else {
+            panic!("conflicting original must reach the SQL identity comparison");
+        };
+        let database = error.as_db_error().unwrap();
+        assert_eq!(database.code().code(), "23514");
+        assert_eq!(
+            database.message(),
+            "effect retained original identity conflicts"
+        );
+        assert_eq!(retained(&c).await, before);
+        assert_eq!(liabilities(&c, packet.message).await, before_liabilities);
     }
     assert_eq!(
         liabilities(&c, packet.message).await,

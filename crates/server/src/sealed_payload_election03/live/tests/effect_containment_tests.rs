@@ -62,7 +62,13 @@ async fn actual_expiry_and_recipient_cancellation_preserve_profile03_originals_a
     let (mut c, browser, statement) = active().await;
     let account = c.principal.tenant.account_id();
     c.db.owner.execute("INSERT INTO public.usage_quota_policies(account_id,metric,limit_units,source) VALUES($1,'outbound_message',10,'operator')",&[&account]).await.unwrap();
-    let packet = packet_with_lifetime(&mut c, &browser, &statement, 5000).await;
+    // Current admission validates the full writer graph. Give this positive
+    // containment control a finite initial window, then observe its REAL signed
+    // expiry below. The separate short-window control still proves refusal.
+    let packet = packet_with_lifetime(&mut c, &browser, &statement, 60_000).await;
+    let signed_expiry = crate::reviewed_intent03::v2::Intent03V2::decode(&packet.intent)
+        .unwrap()
+        .message_expires_ms();
     let tx = crate::runtime_db::begin_native(&mut c.db.reader)
         .await
         .unwrap();
@@ -81,12 +87,30 @@ async fn actual_expiry_and_recipient_cancellation_preserve_profile03_originals_a
     .unwrap();
     drop(owner);
     tx.commit().await.unwrap();
+    let stored = c.db.reader.query_one(
+        "SELECT floor(extract(epoch FROM m.expires_at)*1000)::bigint,row_to_json(m)::text FROM public.messages m WHERE account_id=$1 AND id=$2",
+        &[&account, &packet.message],
+    ).await.unwrap();
+    let stored_expiry: i64 = stored.get(0);
+    let original_message: String = stored.get(1);
+    assert_eq!(stored_expiry as u64, signed_expiry);
     let (old_account, old_device) = legacy(&mut c.db.reader).await;
     let expiry = now(&c.db.reader).await + 5000;
     let expired = enqueue(&mut c.db.reader, old_account, old_device, expiry).await;
     let pending = enqueue(&mut c.db.reader, old_account, old_device, expiry + 60000).await;
-    tokio::time::sleep(std::time::Duration::from_millis(5500)).await;
-    assert!(now(&c.db.reader).await >= expiry);
+    tokio::time::timeout(std::time::Duration::from_secs(90), async {
+        loop {
+            let primary = now(&c.db.reader).await;
+            if primary >= expiry && primary >= stored_expiry {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("actual expiry of both original profile03 and legacy messages");
+    let primary = now(&c.db.reader).await;
+    assert!(primary >= expiry && primary >= stored_expiry);
     assert_eq!(
         DeliveryStore::new(&mut c.db.reader)
             .expire_due(100)
@@ -145,6 +169,16 @@ async fn actual_expiry_and_recipient_cancellation_preserve_profile03_originals_a
         guarded_snapshot(&c.db.reader, account, packet.message).await,
         ("queued".into(), 1, 0, 0)
     );
+    let retained_message: String =
+        c.db.reader
+            .query_one(
+                "SELECT row_to_json(m)::text FROM public.messages m WHERE account_id=$1 AND id=$2",
+                &[&account, &packet.message],
+            )
+            .await
+            .unwrap()
+            .get(0);
+    assert_eq!(retained_message, original_message);
     c.db.finish().await;
 }
 
@@ -285,6 +319,59 @@ async fn actual_legacy_events_cannot_change_profile03_grant_and_do_not_poison_ot
             .unwrap()
             .get::<_, i64>(0),
         0
+    );
+    c.db.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable ZT_AUTH_TEST_DATABASE_URL administrator; original short message expiry refuses admission without mutation"]
+async fn original_short_message_expiry_refuses_admission_without_queue_or_reservation() {
+    let (mut c, browser, statement) = active().await;
+    let account = c.principal.tenant.account_id();
+    c.db.owner.execute("INSERT INTO public.usage_quota_policies(account_id,metric,limit_units,source) VALUES($1,'outbound_message',10,'operator')", &[&account]).await.unwrap();
+    let packet = packet_with_lifetime(&mut c, &browser, &statement, 5000).await;
+    let signed = crate::reviewed_intent03::v2::Intent03V2::decode(&packet.intent).unwrap();
+    assert_eq!(signed.message_expires_ms() - signed.observed_ms(), 5000);
+    assert!((now(&c.db.reader).await as u64) < signed.message_expires_ms());
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        while (now(&c.db.reader).await as u64) < signed.message_expires_ms() {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("original five-second signed message expires naturally");
+    let tx = crate::runtime_db::begin_native(&mut c.db.reader)
+        .await
+        .unwrap();
+    let mut owner = ordinary_owner03::authenticate(&tx, &c.hasher, ORIGIN, source(&c.credentials))
+        .await
+        .unwrap();
+    assert!(matches!(
+        crate::reviewed_intent03::live::admit(
+            &tx,
+            &mut owner,
+            &packet.intent,
+            &packet.signature,
+            &packet.envelope,
+            ORIGIN
+        )
+        .await,
+        Err(Error::Unsupported)
+    ));
+    drop(owner);
+    tx.rollback().await.unwrap();
+    let counts = c.db.reader.query_one(
+        "SELECT (SELECT count(*) FROM public.messages WHERE account_id=$1),(SELECT count(*) FROM public.conversation_reviewed_sends03 WHERE account_id=$1),(SELECT count(*) FROM public.usage_ledger WHERE account_id=$1),(SELECT count(*) FROM public.message_attempts WHERE account_id=$1)",
+        &[&account],
+    ).await.unwrap();
+    assert_eq!(
+        (
+            counts.get::<_, i64>(0),
+            counts.get::<_, i64>(1),
+            counts.get::<_, i64>(2),
+            counts.get::<_, i64>(3)
+        ),
+        (0, 0, 0, 0)
     );
     c.db.finish().await;
 }

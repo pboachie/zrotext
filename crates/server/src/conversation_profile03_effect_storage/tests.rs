@@ -31,7 +31,7 @@ fn every_required_declaration_pins_its_actual_source_including_transitive_writer
         ),
         (
             "conversation_profile03_effect_identity",
-            "9a8fac7918591c82f068e70b991f70c17be2868ef83a174e4ef6a89fd3213b38",
+            "db62bfbc313ca4d9594f993314b79b9e3ab4ed9d5191ca55e39b1905bbfbf8a4",
         ),
         (
             "conversation_profile03_effect_current",
@@ -99,7 +99,7 @@ fn every_required_declaration_pins_its_actual_source_including_transitive_writer
         ),
         (
             "conversation_profile03_effect_complete",
-            "28e84de268c37bdf0c8b21d4cbeeafee3252e56aa6ca5cae263cd5208f20770a",
+            "bdacdf5a8d5582dcd0d13ed7ac9f0e43b3526821a8f0258e41b0e0622b318ea6",
         ),
         (
             "payload_profile_writer_policy",
@@ -119,7 +119,7 @@ fn every_required_declaration_pins_its_actual_source_including_transitive_writer
         ),
         (
             "hosted_runtime_identity_ready",
-            "7daa884d124ed982e5f22d51c5027ee7af60038192f69b3c720ce0aeecf1be22",
+            "fe05742031ad01f8ec25539bfd2af310d76e31e60421eb8143e33eb91d5d21b2",
         ),
         (
             "hosted_runtime_scope",
@@ -127,7 +127,7 @@ fn every_required_declaration_pins_its_actual_source_including_transitive_writer
         ),
         (
             "conversation_reviewed_send03_v2_ready",
-            "7c111a19c8d7f21c6668caaec3b74feee2992633a0544cddc8bd3eacfea57f7a",
+            "913249dc22a3aaa2d2cf904f82a9c2e73822f051445a91144407b439e8945997",
         ),
         (
             "device_protection_ready",
@@ -139,7 +139,7 @@ fn every_required_declaration_pins_its_actual_source_including_transitive_writer
         ),
         (
             "conversation_profile03_effect_ready",
-            "6ab86f85e9866c8ca958f0661afc45265430bedcdd94cbec65f75cfbc048c388",
+            "841fd43a8c9b8821f5ab80984b5486749052315570de713854b5be3e016842ba",
         ),
     ];
     assert_eq!(pins.len(), FUNCTIONS.len());
@@ -151,6 +151,26 @@ fn every_required_declaration_pins_its_actual_source_including_transitive_writer
         })
         .map(|s| s.split_once('(').unwrap().0)
         .collect::<Vec<_>>();
+    // The migration also replaces one legacy invoker trigger; it is not a
+    // typed effect capability and must not enter the typed FUNCTIONS table.
+    let (legacy, declarations): (Vec<_>, Vec<_>) = declarations
+        .into_iter()
+        .partition(|name| *name == "close_billing_invoice_liability");
+    assert_eq!(legacy, ["close_billing_invoice_liability"]);
+    let legacy_body = zrotext_delivery_store::hosted_runtime_identity::declared_function_body(
+        MIGRATION,
+        "close_billing_invoice_liability",
+        "$$",
+    )
+    .unwrap();
+    let legacy_hash = Sha256::digest(legacy_body.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    assert_eq!(
+        legacy_hash,
+        "2c8daf93d7c5990fa0ac5ea2eb9c7ecf0a5cf7fc0cd5f67413092ca47c78c261"
+    );
     assert_eq!(declarations.len(), FUNCTIONS.len());
     for ((name, expected), function) in pins.iter().zip(FUNCTIONS) {
         assert_eq!(*name, function.name);
@@ -382,3 +402,106 @@ fn typed_stock_reset_finishes_before_the_only_provisioning_commit() {
 
 #[cfg(test)]
 mod database_tests;
+
+#[test]
+fn orphan_closure_check_is_nested_under_its_exact_record_shape() {
+    let source = body("conversation_profile03_effect_complete").unwrap();
+    let expected = " IF TG_TABLE_NAME='conversation_profile03_closure_records' THEN\n  IF NOT EXISTS(SELECT FROM public.conversation_profile03_closure_challenges x WHERE x.account_id=account AND x.closure_id=NEW.closure_id) THEN\n   RAISE EXCEPTION 'typed orphan closure assertion cannot commit' USING ERRCODE='23514'; END IF;\n END IF;";
+    assert_eq!(source.matches(expected).count(), 1);
+    assert_eq!(source.matches("NEW.closure_id").count(), 1);
+}
+
+#[cfg(test)]
+mod schema_tests;
+
+#[test]
+fn effect_readiness_retains_exact_latest_graph_through_pinned_v2() {
+    let body = |source, name| {
+        zrotext_delivery_store::hosted_runtime_identity::declared_function_body(
+            source,
+            name,
+            "$function$",
+        )
+        .unwrap()
+    };
+    for (source, caller, callee) in [
+        (
+            MIGRATION,
+            "conversation_profile03_effect_ready",
+            "conversation_reviewed_send03_v2_ready",
+        ),
+        (
+            MIGRATION,
+            "conversation_reviewed_send03_v2_ready",
+            "conversation_reviewed_send03_ready",
+        ),
+        (
+            include_str!(
+                "../../../../deploy/compose/migrations/117_explicit_reviewed_intent_v2.sql"
+            ),
+            "conversation_reviewed_send03_ready",
+            "conversation_profile03_interval_ready",
+        ),
+        (
+            MIGRATION,
+            "conversation_profile03_interval_ready",
+            "payload_profile_manifest_ready",
+        ),
+        (
+            include_str!(
+                "../../../../deploy/compose/migrations/112_payload_profile_manifest_successors.sql"
+            ),
+            "payload_profile_manifest_ready",
+            "payload_profile_selection_ready",
+        ),
+        (
+            include_str!(
+                "../../../../deploy/compose/migrations/111_payload_profile_selection_refresh.sql"
+            ),
+            "payload_profile_selection_ready",
+            "payload_profile_election_ready",
+        ),
+        (
+            include_str!("../../../../deploy/compose/migrations/110_payload_profile_elections.sql"),
+            "payload_profile_election_ready",
+            "payload_profile_v2_ready",
+        ),
+        (
+            include_str!(
+                "../../../../deploy/compose/migrations/109_original_sealed_activation_receipts.sql"
+            ),
+            "payload_profile_v2_ready",
+            "payload_profile_writer_ready",
+        ),
+        (
+            MIGRATION,
+            "hosted_runtime_identity_ready",
+            "payload_profile_writer_ready",
+        ),
+    ] {
+        assert!(
+            body(source, caller)
+                .trim_start()
+                .starts_with(&format!("SELECT public.{callee}()")),
+            "{caller}"
+        );
+    }
+    let writer = body(MIGRATION, "payload_profile_writer_ready");
+    assert!(writer.contains("SELECT public.payload_profile_writer_version() AND coalesce((SELECT migration_version=119 AND graph_sha256=public.payload_profile_writer_graph()"));
+    assert!(writer.contains("FROM public.payload_profile_writer_catalog WHERE singleton),false)"));
+    assert!(body(MIGRATION, "payload_profile_writer_version").contains(
+        "SELECT count(*)=119 AND min(version)=1 AND max(version)=119 FROM public.schema_migrations"
+    ));
+    assert!(
+        body(MIGRATION, "hosted_runtime_identity_ready")
+            .contains("AND public.payload_profile_writer_version()")
+    );
+    for name in [
+        "conversation_reviewed_send03_v2_ready",
+        "hosted_runtime_identity_ready",
+        "payload_profile_writer_ready",
+        "payload_profile_writer_version",
+    ] {
+        assert!(FUNCTIONS.iter().any(|function| function.name == name));
+    }
+}

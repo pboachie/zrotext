@@ -6,6 +6,7 @@ use serde_json::json;
 use sha2::Sha256;
 use tokio_postgres::{Client, NoTls};
 mod hosted;
+mod liability;
 mod lifecycle;
 mod races;
 mod recovery;

@@ -240,7 +240,9 @@ fn exercise(reconnect: bool) -> TestIo<'static, ()> {
                 let before = c.loopback().epoch().await;
                 c.loopback().reconnect_ordinary(&c.phone_key).await;
                 assert!(c.loopback().epoch().await > before);
-                c.loopback().assert_claim(&c.db.reader,&c.phone_key).await;
+                // Ordinary status-v2 negotiates legacy line activation, unlike the
+                // initial profile03 composite. Its fresh claim must store version 1.
+                c.loopback().assert_claim(&c.db.reader,&c.phone_key,1).await;
                 let actor = c.db.reader.query_one("SELECT original_enrolled_point,original_enrolled_key_id FROM public.conversation_profile03_effect_actors WHERE account_id=$1 AND message_id=$2",&[&c.principal.tenant.account_id(),&saved.message]).await.unwrap();
                 assert_eq!(actor.get::<_,Vec<u8>>(0),saved.point);
                 assert_eq!(actor.get::<_,Vec<u8>>(1),saved.key_id);

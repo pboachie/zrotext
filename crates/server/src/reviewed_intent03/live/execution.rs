@@ -17,7 +17,6 @@ pub(crate) async fn lock<'held, 'db>(
     message: Uuid,
 ) -> Result<HeldReviewed03<'held, 'db>> {
     let tx = mode.tx();
-    ready(tx).await?;
     let actor = mode.actor();
     // An immutable row is a selector hint only. Choose owner records before
     // interval/line/device locks; the actual locked row is compared afterward.
@@ -127,7 +126,6 @@ impl<'held, 'db> HeldReviewed03<'held, 'db> {
     pub(crate) async fn verify_until(&mut self, required_until: u64) -> Result<()> {
         self.read_message().await?;
         let deadline = self.interval.admission_deadline(&mut self.held).await?;
-        self.held.revalidate().await?;
         if required_until > deadline {
             return Err(Error::Expired);
         }
@@ -215,7 +213,7 @@ impl<'held, 'db> HeldReviewed03<'held, 'db> {
     ) -> Result<serde_json::Value> {
         let claims = grant.claims();
         let end = time(claims.expires_at_ms)?;
-        self.verify_until(end).await?;
+        self.read_message().await?;
         let interval_permission = self
             .interval
             .fetch_permission(&mut self.held, claims.attempt_id, end)
@@ -241,7 +239,7 @@ impl<'held, 'db> HeldReviewed03<'held, 'db> {
         event: Uuid,
     ) -> Result<(serde_json::Value, serde_json::Value)> {
         let end = time(grant.claims().expires_at_ms)?;
-        self.verify_until(end).await?;
+        self.read_message().await?;
         let interval = self
             .interval
             .submit_permission(&mut self.held, event, end)

@@ -814,12 +814,50 @@ async fn intervening_event_invalidates_in_flight_reads_and_partial_lists_cannot_
     });
     *f.fake.pause.lock().unwrap() = Some(pause.clone());
     f.due().await;
+    let (worker_result_tx, mut worker_result_rx) = tokio::sync::oneshot::channel();
     let pending = {
         let r = r.clone();
-        tokio::spawn(async move { worker::run_one(&r).await })
+        tokio::spawn(async move {
+            let result = worker::run_one(&r).await;
+            let _ = worker_result_tx.send(result);
+            result
+        })
     };
+    let pause_wait_started = std::time::Instant::now();
     tokio::time::timeout(Duration::from_secs(5), pause.started.notified())
         .await
+        .inspect_err(|_| {
+            // Observe only fixed outcomes on failure. Do not await, retry, or
+            // extend the original barrier; never print provider/DB details.
+            let worker_state = match worker_result_rx.try_recv() {
+                Ok(Ok(true)) => "completed_true",
+                Ok(Ok(false)) => "no_job",
+                Ok(Err(Error::Configuration)) => "configuration",
+                Ok(Err(Error::Identity)) => "identity",
+                Ok(Err(Error::Provider)) => "provider",
+                Ok(Err(Error::Database)) => "database",
+                Ok(Err(Error::Pending)) => "pending_result",
+                Ok(Err(Error::Conflict)) => "conflict",
+                Ok(Err(Error::Session)) => "session",
+                Ok(Err(Error::Forbidden)) => "forbidden",
+                Ok(Err(Error::RateLimited)) => "rate_limited",
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => "still_running",
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => "result_channel_closed",
+            };
+            let mock_state = match f.fake.pause.try_lock() {
+                Ok(pause) if pause.is_none() => "taken",
+                Ok(_) => "not_taken",
+                Err(std::sync::TryLockError::WouldBlock) => "would_block",
+                Err(std::sync::TryLockError::Poisoned(_)) => "poisoned",
+            };
+            eprintln!(
+                "hosted_pause_wait elapsed_ms={} worker_finished={} worker_state={} mock_pause_state={}",
+                pause_wait_started.elapsed().as_millis(),
+                pending.is_finished(),
+                worker_state,
+                mock_state,
+            );
+        })
         .unwrap();
     let subscription = f.fake.inner.lock().unwrap().subscriptions["data"][0].clone();
     assert_eq!(

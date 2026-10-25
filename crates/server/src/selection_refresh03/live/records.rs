@@ -160,16 +160,22 @@ impl Challenge {
         )
     }
 }
+// These retained SELECT-only rows are pinned by the caller's account fence,
+// not by row-lock privileges the ordinary role deliberately does not possess.
+// Owner paths retain HeldOrdinaryOwner03/HeldStepUp03; device mutation paths
+// take device_mutation_mode, and device challenge projection holds Scope.
+// Every non-no-op SQL writer takes the exclusive root/account/anchor scope;
+// deletion requires account erasure. Keep those NOWAIT fences held through use.
 pub(super) async fn by_opening(
     tx: &Transaction<'_>,
     account: Uuid,
     opening: Uuid,
 ) -> Result<Option<Challenge>> {
-    let row = tx.query_opt("SELECT * FROM public.payload_profile_selection_challenges WHERE account_id=$1 AND opening_id=$2 FOR SHARE NOWAIT", &[&account,&opening]).await?;
+    let row = tx.query_opt("SELECT * FROM public.payload_profile_selection_challenges WHERE account_id=$1 AND opening_id=$2", &[&account,&opening]).await?;
     row.as_ref().map(Challenge::read).transpose()
 }
 pub(super) async fn by_id(tx: &Transaction<'_>, account: Uuid, refresh: Uuid) -> Result<Challenge> {
-    let row=tx.query_opt("SELECT * FROM public.payload_profile_selection_challenges WHERE account_id=$1 AND refresh_id=$2 FOR SHARE NOWAIT", &[&account,&refresh]).await?.ok_or(Error::NotFound)?;
+    let row=tx.query_opt("SELECT * FROM public.payload_profile_selection_challenges WHERE account_id=$1 AND refresh_id=$2", &[&account,&refresh]).await?.ok_or(Error::NotFound)?;
     Challenge::read(&row)
 }
 async fn ancestors(tx: &Transaction<'_>, target: &Challenge) -> Result<Vec<serde_json::Value>> {
@@ -213,7 +219,7 @@ impl Receipt {
         account: Uuid,
         refresh: Uuid,
     ) -> Result<Option<Self>> {
-        let Some(row) = tx.query_opt("SELECT * FROM public.payload_profile_selection_receipts WHERE account_id=$1 AND refresh_id=$2 FOR SHARE NOWAIT", &[&account,&refresh]).await? else { return Ok(None); };
+        let Some(row) = tx.query_opt("SELECT * FROM public.payload_profile_selection_receipts WHERE account_id=$1 AND refresh_id=$2", &[&account,&refresh]).await? else { return Ok(None); };
         let bundle: [u8; 745] = fixed(&row, "bundle")?;
         if fixed::<32>(&row, "bundle_sha256")? != crypto::sha(&bundle) {
             return Err(Error::Conflict);

@@ -78,11 +78,71 @@ async fn reconnect_requires_distinct_owner_approval_and_installed_ack_without_re
         b"ZTSE/line/payload-profile/selection-refresh/device/v1\0",
         &[core.as_slice(), &observation].concat(),
     );
+    // Retained reads use SELECT-only grants and hold the universal account
+    // fence. Exercise both contention orders with genuine actors and proof.
+    let acl = c.db.reader.query_one(
+        "SELECT has_table_privilege(current_user,'public.payload_profile_selection_challenges','SELECT'),has_any_column_privilege(current_user,'public.payload_profile_selection_challenges','UPDATE'),has_any_column_privilege(current_user,'public.payload_profile_selection_receipts','UPDATE')",
+        &[],
+    ).await.unwrap();
+    assert!(acl.get::<_, bool>(0));
+    assert!(!acl.get::<_, bool>(1));
+    assert!(!acl.get::<_, bool>(2));
+    let (mut peer, driver) = c.db.runtime_peer().await;
+    let read = peer.transaction().await.unwrap();
+    let mut owner =
+        ordinary_owner03::authenticate(&read, &c.hasher, ORIGIN, source(&c.credentials))
+            .await
+            .unwrap();
+    let before = refresh::status(&read, &mut owner, opening, c.line, ORIGIN)
+        .await
+        .unwrap();
+    let original_row: String = read.query_one(
+        "SELECT row_to_json(c)::text FROM public.payload_profile_selection_challenges c WHERE account_id=$1 AND refresh_id=$2",
+        &[&account, &id],
+    ).await.unwrap().get(0);
+    let write = c.db.reader.transaction().await.unwrap();
+    assert!(matches!(
+        refresh::device_proof(&write, &socket, id, &observation, &device_signature).await,
+        Err(Error::Database(ref error)) if error.code() == Some(&tokio_postgres::error::SqlState::LOCK_NOT_AVAILABLE)
+    ));
+    write.rollback().await.unwrap();
+    assert_eq!(read.query_one(
+        "SELECT row_to_json(c)::text FROM public.payload_profile_selection_challenges c WHERE account_id=$1 AND refresh_id=$2",
+        &[&account, &id],
+    ).await.unwrap().get::<_, String>(0), original_row);
+    assert_eq!(
+        refresh::status(&read, &mut owner, opening, c.line, ORIGIN)
+            .await
+            .unwrap(),
+        before
+    );
+    drop(owner);
+    read.rollback().await.unwrap();
+
     let tx = c.db.reader.transaction().await.unwrap();
     refresh::device_proof(&tx, &socket, id, &observation, &device_signature)
         .await
         .unwrap();
+    let read = peer.transaction().await.unwrap();
+    assert!(matches!(
+        ordinary_owner03::authenticate(&read, &c.hasher, ORIGIN, source(&c.credentials)).await,
+        Err(ordinary_owner03::Error::Records(crate::sealed_payload_election03::owner_records::OwnerRecordsError::Database(ref error)))
+            if error.code() == Some(&tokio_postgres::error::SqlState::LOCK_NOT_AVAILABLE)
+    ));
+    read.rollback().await.unwrap();
     tx.commit().await.unwrap();
+    let read = peer.transaction().await.unwrap();
+    let mut owner =
+        ordinary_owner03::authenticate(&read, &c.hasher, ORIGIN, source(&c.credentials))
+            .await
+            .unwrap();
+    refresh::proof(&read, &mut owner, opening, id, ORIGIN)
+        .await
+        .unwrap();
+    drop(owner);
+    read.rollback().await.unwrap();
+    drop(peer);
+    driver.await.unwrap().unwrap();
     let owner_signature = sign(
         &c.approval_key,
         b"ZTSE/line/payload-profile/selection-refresh/owner/v1\0",
@@ -149,11 +209,63 @@ async fn reconnect_requires_distinct_owner_approval_and_installed_ack_without_re
         b"ZTSE/line/payload-profile/selection-refresh/installed/v1\0",
         &[id.as_bytes().as_slice(), &digest, &core[344..376]].concat(),
     );
+    let (mut peer, driver) = c.db.runtime_peer().await;
+    let read = peer.transaction().await.unwrap();
+    let mut owner =
+        ordinary_owner03::authenticate(&read, &c.hasher, ORIGIN, source(&c.credentials))
+            .await
+            .unwrap();
+    assert_eq!(
+        refresh::historical_approval(&read, &mut owner, opening, id, &bundle, ORIGIN)
+            .await
+            .unwrap()
+            .unwrap(),
+        accepted
+    );
+    assert!(matches!(
+        refresh::installed(&read, &mut owner, opening, id, ORIGIN).await,
+        Err(Error::NotFound)
+    ));
+    let original_receipt: String = read.query_one(
+        "SELECT row_to_json(r)::text FROM public.payload_profile_selection_receipts r WHERE account_id=$1 AND refresh_id=$2",
+        &[&account, &id],
+    ).await.unwrap().get(0);
+    let write = c.db.reader.transaction().await.unwrap();
+    assert!(matches!(
+        refresh::device_installed(&write, &socket, id, &digest, &installed_signature).await,
+        Err(Error::Database(ref error)) if error.code() == Some(&tokio_postgres::error::SqlState::LOCK_NOT_AVAILABLE)
+    ));
+    write.rollback().await.unwrap();
+    assert_eq!(read.query_one(
+        "SELECT row_to_json(r)::text FROM public.payload_profile_selection_receipts r WHERE account_id=$1 AND refresh_id=$2",
+        &[&account, &id],
+    ).await.unwrap().get::<_, String>(0), original_receipt);
+    drop(owner);
+    read.rollback().await.unwrap();
     let tx = c.db.reader.transaction().await.unwrap();
     let ack = refresh::device_installed(&tx, &socket, id, &digest, &installed_signature)
         .await
         .unwrap();
+    let read = peer.transaction().await.unwrap();
+    assert!(matches!(
+        ordinary_owner03::authenticate(&read, &c.hasher, ORIGIN, source(&c.credentials)).await,
+        Err(ordinary_owner03::Error::Records(crate::sealed_payload_election03::owner_records::OwnerRecordsError::Database(ref error)))
+            if error.code() == Some(&tokio_postgres::error::SqlState::LOCK_NOT_AVAILABLE)
+    ));
+    read.rollback().await.unwrap();
     tx.commit().await.unwrap();
+    let read = peer.transaction().await.unwrap();
+    let mut owner =
+        ordinary_owner03::authenticate(&read, &c.hasher, ORIGIN, source(&c.credentials))
+            .await
+            .unwrap();
+    refresh::installed(&read, &mut owner, opening, id, ORIGIN)
+        .await
+        .unwrap();
+    drop(owner);
+    read.rollback().await.unwrap();
+    drop(peer);
+    driver.await.unwrap().unwrap();
     let tx = c.db.reader.transaction().await.unwrap();
     let repeated = refresh::device_installed(&tx, &socket, id, &digest, &installed_signature)
         .await

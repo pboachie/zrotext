@@ -518,7 +518,7 @@ BEGIN
  IF segments NOT BETWEEN 1 AND g.authenticated_segment_ceiling OR observed<greatest(1,g.issued_ms-2000) OR observed>g.expires_at_ms+2000 THEN
   RAISE EXCEPTION 'effect original diagnostic bounds differ' USING ERRCODE='23514'; END IF;
  digest:=sha256(public.payload_profile_election_frame('ZTSE/conversation/submit-command03/v1',command));
- IF EXISTS(SELECT FROM public.conversation_profile03_submits s WHERE s.account_id=account AND s.attempt_id=attempt AND s.command<>command)
+ IF EXISTS(SELECT FROM public.conversation_profile03_submits s WHERE s.account_id=account AND s.attempt_id=attempt AND s.command<>conversation_profile03_effect_identity.command)
   OR EXISTS(SELECT FROM public.conversation_profile03_outcomes o WHERE o.account_id=account AND o.attempt_id=attempt AND(o.submit_event_id,o.submit_command_sha256,o.segment_count,o.submit_observed_ms) IS DISTINCT FROM(event,digest,segments::smallint,observed))
   OR EXISTS(SELECT FROM public.conversation_profile03_closure_records c WHERE c.account_id=account AND c.attempt_id=attempt AND(c.submit_event_id,c.submit_command_sha256,c.segment_count,c.submit_observed_ms) IS DISTINCT FROM(event,digest,segments::smallint,observed)) THEN
   RAISE EXCEPTION 'effect retained original identity conflicts' USING ERRCODE='23514'; END IF;
@@ -1181,8 +1181,10 @@ BEGIN
   RETURN NULL;
  END IF;
  IF TG_TABLE_NAME='conversation_profile03_submits' THEN PERFORM public.conversation_profile03_effect_current(account,attempt); END IF;
- IF TG_TABLE_NAME='conversation_profile03_closure_records' AND NOT EXISTS(SELECT FROM public.conversation_profile03_closure_challenges x WHERE x.account_id=account AND x.closure_id=NEW.closure_id) THEN
-  RAISE EXCEPTION 'typed orphan closure assertion cannot commit' USING ERRCODE='23514'; END IF;
+ IF TG_TABLE_NAME='conversation_profile03_closure_records' THEN
+  IF NOT EXISTS(SELECT FROM public.conversation_profile03_closure_challenges x WHERE x.account_id=account AND x.closure_id=NEW.closure_id) THEN
+   RAISE EXCEPTION 'typed orphan closure assertion cannot commit' USING ERRCODE='23514'; END IF;
+ END IF;
  IF TG_TABLE_NAME='conversation_profile03_closure_challenges' THEN
   SELECT * INTO c FROM public.conversation_profile03_closure_challenges x WHERE x.account_id=account AND x.challenge_id=NEW.challenge_id;
   IF c.closed_unaccepted_ms IS NOT NULL THEN
@@ -1442,8 +1444,7 @@ $function$;
 CREATE OR REPLACE FUNCTION public.hosted_runtime_identity_ready() RETURNS boolean
 LANGUAGE sql STABLE SET search_path TO pg_catalog AS $function$
  SELECT public.payload_profile_writer_ready() AND public.payload_profile_writer_version()
- AND coalesce((SELECT migration_version=119 AND graph_sha256=public.payload_profile_writer_graph()
- FROM public.payload_profile_writer_catalog WHERE singleton),false) AND NOT EXISTS(SELECT FROM pg_roles WHERE oid=(CURRENT_USER::regrole)::oid AND(rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls))
+ AND NOT EXISTS(SELECT FROM pg_roles WHERE oid=(CURRENT_USER::regrole)::oid AND(rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls))
  AND NOT EXISTS(SELECT FROM pg_auth_members WHERE member=(CURRENT_USER::regrole)::oid)
  AND NOT has_database_privilege((CURRENT_USER::regrole)::oid,current_database(),'CREATE,TEMP')
  AND NOT EXISTS(SELECT FROM pg_class c CROSS JOIN LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a
@@ -1487,8 +1488,6 @@ $function$;
 CREATE OR REPLACE FUNCTION public.conversation_reviewed_send03_v2_ready() RETURNS boolean
 LANGUAGE sql STABLE SET search_path TO pg_catalog AS $function$
  SELECT public.conversation_reviewed_send03_ready()
- AND coalesce((SELECT migration_version=119 AND graph_sha256=public.payload_profile_writer_graph()
-  FROM public.payload_profile_writer_catalog WHERE singleton),false)
  AND EXISTS(SELECT FROM pg_attribute a WHERE a.attrelid='public.conversation_reviewed_sends03'::regclass
   AND a.attname='intent_version' AND a.attnum>0 AND NOT a.attisdropped AND a.atttypid='smallint'::regtype
   AND a.attnotnull AND NOT a.atthasdef AND a.attidentity='' AND a.attgenerated=''
@@ -1530,8 +1529,7 @@ $function$;
 
 CREATE FUNCTION public.conversation_profile03_effect_ready() RETURNS boolean
 LANGUAGE sql STABLE SET search_path TO pg_catalog AS $function$
-SELECT public.payload_profile_writer_ready() AND public.conversation_reviewed_send03_v2_ready()
- AND coalesce((SELECT migration_version=119 AND graph_sha256=public.payload_profile_writer_graph() FROM public.payload_profile_writer_catalog WHERE singleton),false)
+SELECT public.conversation_reviewed_send03_v2_ready()
  AND NOT EXISTS(SELECT FROM pg_class c WHERE c.relnamespace='public'::regnamespace AND EXISTS(SELECT FROM unnest(ARRAY['conversation_profile03_effect_actors','conversation_profile03_submits','conversation_profile03_outcomes','conversation_profile03_closure_records','conversation_profile03_closure_challenges','conversation_profile03_closure_receipts','conversation_profile03_effect_quarantines']::text[]) AS f(name) WHERE starts_with(c.relname::text,f.name)) AND(c.relkind NOT IN('r','i')
  OR(c.relkind='r' AND c.relname::text NOT IN('conversation_profile03_effect_actors','conversation_profile03_submits','conversation_profile03_outcomes','conversation_profile03_closure_records','conversation_profile03_closure_challenges','conversation_profile03_closure_receipts','conversation_profile03_effect_quarantines'))
  OR(c.relkind='i' AND NOT EXISTS(SELECT FROM pg_index i JOIN pg_class t ON t.oid=i.indrelid WHERE i.indexrelid=c.oid AND t.relnamespace='public'::regnamespace AND t.relname::text IN('conversation_profile03_effect_actors','conversation_profile03_submits','conversation_profile03_outcomes','conversation_profile03_closure_records','conversation_profile03_closure_challenges','conversation_profile03_closure_receipts','conversation_profile03_effect_quarantines')))))
@@ -1567,6 +1565,25 @@ BEGIN
  END LOOP;
 END;
 $migration$;
+
+-- Terminal projections run with a catalog-only path. Keep the existing
+-- invoker trigger and accounting, resolving only the accepted public tables.
+CREATE OR REPLACE FUNCTION public.close_billing_invoice_liability() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE p_id uuid;
+BEGIN
+    IF NEW.state IN ('delivered','failed','cancelled','expired') AND NEW.state IS DISTINCT FROM OLD.state THEN
+        SELECT period_id INTO p_id FROM public.billing_invoice_usage WHERE account_id=NEW.account_id AND message_id=NEW.id;
+        IF FOUND THEN
+            PERFORM 1 FROM public.billing_invoice_periods WHERE id=p_id FOR UPDATE;
+            UPDATE public.billing_invoice_usage SET terminal=true WHERE account_id=NEW.account_id AND message_id=NEW.id AND NOT terminal;
+            IF FOUND THEN
+                UPDATE public.billing_invoice_periods SET open_units=open_units-1 WHERE id=p_id
+                    AND NOT EXISTS(SELECT 1 FROM public.billing_invoice_usage WHERE account_id=NEW.account_id AND message_id=NEW.id AND refunded);
+            END IF;
+        END IF;
+    END IF;
+    RETURN NEW;
+END $$;
 
 DROP TRIGGER payload_profile_writer_catalog_before_change ON public.payload_profile_writer_catalog;
 ALTER TABLE public.payload_profile_writer_catalog DROP CONSTRAINT payload_profile_writer_catalog_migration_version_check;

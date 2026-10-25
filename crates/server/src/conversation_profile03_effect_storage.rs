@@ -663,9 +663,22 @@ const FUNCTIONS: &[Function] = &[
         all_types: &[],
     },
 ];
+const FUNCTION_METADATA: &str = "SELECT p.prosrc,p.proowner=c.relowner,p.prorettype=pg_catalog.to_regtype(($2::text[])[e.ordinal::integer]),l.lanname::text,p.provolatile::text,p.proisstrict,p.prosecdef,p.proretset,p.proconfig,p.proargnames,p.proargmodes::text[],CASE WHEN p.proallargtypes IS NULL THEN NULL ELSE ARRAY(SELECT pg_catalog.format_type(t,NULL) FROM unnest(p.proallargtypes) t) END,p.proparallel='u' AND p.prokind='f' AND p.pronargdefaults=0 AND p.provariadic=0 AND NOT p.proleakproof AND p.proargdefaults IS NULL AND(SELECT count(*) FROM pg_catalog.pg_proc x WHERE x.pronamespace=p.pronamespace AND x.proname=p.proname)=1,e.ordinal FROM pg_catalog.unnest($1::text[]) WITH ORDINALITY AS e(signature,ordinal) JOIN pg_catalog.pg_proc p ON p.oid=pg_catalog.to_regprocedure(e.signature) JOIN pg_catalog.pg_language l ON l.oid=p.prolang JOIN pg_catalog.pg_class c ON c.oid='public.accounts'::pg_catalog.regclass ORDER BY e.ordinal";
 async fn functions<C: GenericClient + Sync>(db: &C) -> Result<()> {
-    for f in FUNCTIONS {
-        let row=db.query_opt("SELECT p.prosrc,p.proowner=c.relowner,p.prorettype=pg_catalog.to_regtype($2::text),l.lanname::text,p.provolatile::text,p.proisstrict,p.prosecdef,p.proretset,p.proconfig,p.proargnames,p.proargmodes::text[],CASE WHEN p.proallargtypes IS NULL THEN NULL ELSE ARRAY(SELECT pg_catalog.format_type(t,NULL) FROM unnest(p.proallargtypes) t) END,p.proparallel='u' AND p.prokind='f' AND p.pronargdefaults=0 AND p.provariadic=0 AND NOT p.proleakproof AND p.proargdefaults IS NULL AND(SELECT count(*) FROM pg_catalog.pg_proc x WHERE x.pronamespace=p.pronamespace AND x.proname=p.proname)=1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_language l ON l.oid=p.prolang JOIN pg_catalog.pg_class c ON c.oid='public.accounts'::pg_catalog.regclass WHERE p.oid=pg_catalog.to_regprocedure($1::text)",&[&f.signature,&f.result]).await?.ok_or(EffectSchemaError::Invalid)?;
+    let signatures = FUNCTIONS.iter().map(|f| f.signature).collect::<Vec<_>>();
+    let results = FUNCTIONS.iter().map(|f| f.result).collect::<Vec<_>>();
+    // One metadata snapshot per call, never a cached capability. Every expected
+    // row, original body and declaration comparison remains mandatory.
+    let rows = db
+        .query(FUNCTION_METADATA, &[&signatures, &results])
+        .await?;
+    if rows.len() != FUNCTIONS.len() {
+        return Err(EffectSchemaError::Invalid);
+    }
+    for (index, (f, row)) in FUNCTIONS.iter().zip(rows).enumerate() {
+        if row.try_get::<_, i64>(13)? != index as i64 + 1 {
+            return Err(EffectSchemaError::Invalid);
+        }
         let strings = |xs: &[&str]| xs.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
         let maybe = |xs: &[&str]| {
             if xs.is_empty() {
@@ -902,15 +915,8 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
 /// A closed ordinary-runtime capability only. Genuine native/current opaque
 /// actor, original crypto and successful first COMMIT remain independent.
 pub async fn require<C: GenericClient + Sync>(db: &C) -> Result<()> {
-    crate::hosted_runtime_identity::require(db).await?;
-    crate::conversation_reviewed_send03_storage::require_v2(db).await?;
     crate::conversation_profile03_grant_storage::require(db).await?;
-    if !optional(db).await?
-        || !db
-            .query_one("SELECT public.conversation_profile03_effect_ready()", &[])
-            .await?
-            .try_get::<_, bool>(0)?
-    {
+    if !optional(db).await? {
         return Err(EffectSchemaError::Invalid);
     }
     Ok(())

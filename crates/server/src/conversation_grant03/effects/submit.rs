@@ -127,7 +127,9 @@ pub(super) async fn apply(
         return Err(Error::Conflict);
     }
     let permissions = if inserted {
-        review.verify_until(end).await?;
+        let permissions = review
+            .submit_permission(&row.frame()?, request.event_id)
+            .await?;
         row.matches(&review)?;
         if review
             .selected()
@@ -138,9 +140,6 @@ pub(super) async fn apply(
         {
             return Err(Error::Authentication);
         }
-        let permissions = review
-            .submit_permission(&row.frame()?, request.event_id)
-            .await?;
         // The shared final projection clock must also cover the actual SQL
         // acceptance sample. Refuse a primary regression; never clamp it.
         if review.selected().now_ms() < accepted_ms {

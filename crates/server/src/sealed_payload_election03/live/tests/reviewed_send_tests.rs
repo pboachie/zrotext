@@ -183,9 +183,17 @@ async fn genuine_review_queues_once_reserves_once_and_signout_preserves_only_his
     let account = c.principal.tenant.account_id();
     c.db.owner.execute("INSERT INTO public.usage_quota_policies(account_id,metric,limit_units,source) VALUES($1,'outbound_message',10,'operator')",&[&account]).await.unwrap();
     let p = packet(&mut c, &browser, &statement).await;
-    // These real temporary shadows must not replace the stock public account,
-    // quota or queue. The explicit legacy bridge places pg_temp last.
-    c.db.reader.batch_execute("CREATE TEMP TABLE accounts(id uuid,disabled_at timestamptz); CREATE TEMP TABLE messages(id uuid,account_id uuid); CREATE TEMP TABLE usage_quota_policies(account_id uuid,metric text,limit_units bigint,source text)").await.unwrap();
+    // The current ordinary role cannot create shadows at all. Keep the genuine
+    // admission/retry/signout path below on its unchanged least-privilege ACL.
+    let denied =
+        c.db.reader
+            .batch_execute("CREATE TEMP TABLE accounts(id uuid,disabled_at timestamptz)")
+            .await
+            .unwrap_err();
+    assert_eq!(
+        denied.code(),
+        Some(&tokio_postgres::error::SqlState::INSUFFICIENT_PRIVILEGE)
+    );
     let tx = c.db.reader.transaction().await.unwrap();
     let mut owner = ordinary_owner03::authenticate(&tx, &c.hasher, ORIGIN, source(&c.credentials))
         .await
@@ -235,13 +243,15 @@ async fn genuine_review_queues_once_reserves_once_and_signout_preserves_only_his
     assert_eq!(row.get::<_, i64>(3), 1);
     assert_eq!(row.get::<_, i64>(4), 1);
     assert_eq!(row.get::<_, i64>(5), 0);
-    assert_eq!(
+    assert!(
         c.db.reader
-            .query_one("SELECT count(*) FROM pg_temp.messages", &[])
+            .query_one(
+                "SELECT pg_catalog.to_regclass('pg_temp.messages') IS NULL",
+                &[]
+            )
             .await
             .unwrap()
-            .get::<_, i64>(0),
-        0
+            .get::<_, bool>(0)
     );
     let tx = c.db.reader.transaction().await.unwrap();
     let mut owner = ordinary_owner03::authenticate(&tx, &c.hasher, ORIGIN, source(&c.credentials))
@@ -426,5 +436,74 @@ async fn unconfigured_selfhosted_review_refuses_without_partial_sidecar_message_
     for i in 0..4 {
         assert_eq!(row.get::<_, i64>(i), 0);
     }
+    c.db.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable ZT_AUTH_TEST_DATABASE_URL administrator; current TEMP privilege drift refuses admission"]
+async fn temporary_table_privilege_drift_refuses_before_queue_mutation_and_revocation_restores_readiness()
+ {
+    use postgres_protocol::escape::escape_identifier;
+    let (mut c, browser, statement) = active().await;
+    let account = c.principal.tenant.account_id();
+    c.db.owner.execute("INSERT INTO public.usage_quota_policies(account_id,metric,limit_units,source) VALUES($1,'outbound_message',10,'operator')", &[&account]).await.unwrap();
+    let p = packet(&mut c, &browser, &statement).await;
+    crate::conversation_reviewed_send03_storage::require_v2(&c.db.reader)
+        .await
+        .unwrap();
+    let database = escape_identifier(c.db.reader_config.get_dbname().unwrap());
+    let role = escape_identifier(c.db.reader_config.get_user().unwrap());
+    // Only this isolated negative control changes an ACL; normal runtime and
+    // production grants remain unchanged. No shadow table is manufactured.
+    c.db.owner
+        .batch_execute(&format!("GRANT TEMP ON DATABASE {database} TO {role}"))
+        .await
+        .unwrap();
+    assert!(
+        crate::conversation_reviewed_send03_storage::require_v2(&c.db.reader)
+            .await
+            .is_err()
+    );
+    let tx = c.db.reader.transaction().await.unwrap();
+    let mut owner = ordinary_owner03::authenticate(&tx, &c.hasher, ORIGIN, source(&c.credentials))
+        .await
+        .unwrap();
+    let refused = reviewed::admit(
+        &tx,
+        &mut owner,
+        &p.intent,
+        &p.signature,
+        &p.envelope,
+        ORIGIN,
+    )
+    .await;
+    assert!(matches!(refused, Err(Error::Unavailable)));
+    drop(owner);
+    tx.rollback().await.unwrap();
+    let counts = c.db.reader.query_one("SELECT (SELECT count(*) FROM public.messages WHERE account_id=$1),(SELECT count(*) FROM public.conversation_reviewed_sends03 WHERE account_id=$1),(SELECT count(*) FROM public.usage_ledger WHERE account_id=$1)", &[&account]).await.unwrap();
+    assert_eq!(
+        (
+            counts.get::<_, i64>(0),
+            counts.get::<_, i64>(1),
+            counts.get::<_, i64>(2)
+        ),
+        (0, 0, 0)
+    );
+    c.db.owner
+        .batch_execute(&format!("REVOKE TEMP ON DATABASE {database} FROM {role}"))
+        .await
+        .unwrap();
+    crate::conversation_reviewed_send03_storage::require_v2(&c.db.reader)
+        .await
+        .unwrap();
+    let denied =
+        c.db.reader
+            .batch_execute("CREATE TEMP TABLE accounts(id uuid)")
+            .await
+            .unwrap_err();
+    assert_eq!(
+        denied.code(),
+        Some(&tokio_postgres::error::SqlState::INSUFFICIENT_PRIVILEGE)
+    );
     c.db.finish().await;
 }

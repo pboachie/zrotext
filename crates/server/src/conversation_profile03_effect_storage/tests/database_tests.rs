@@ -124,3 +124,119 @@ async fn unknown_helper_and_composite_family_objects_refuse_and_rollback_restore
     require(&f.reader).await.unwrap();
     f.finish().await;
 }
+
+fn metadata_fields(row: &tokio_postgres::Row) -> Value {
+    json!([
+        row.get::<_, String>(0),
+        row.get::<_, bool>(1),
+        row.get::<_, bool>(2),
+        row.get::<_, String>(3),
+        row.get::<_, String>(4),
+        row.get::<_, bool>(5),
+        row.get::<_, bool>(6),
+        row.get::<_, bool>(7),
+        row.get::<_, Option<Vec<String>>>(8),
+        row.get::<_, Option<Vec<String>>>(9),
+        row.get::<_, Option<Vec<String>>>(10),
+        row.get::<_, Option<Vec<String>>>(11),
+        row.get::<_, bool>(12)
+    ])
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with disposable CREATEDB/CREATEROLE"]
+async fn batched_metadata_equals_every_individual_closed_function_descriptor() {
+    let f = Fixture::runtime().await;
+    require(&f.reader).await.unwrap();
+    let signatures = FUNCTIONS.iter().map(|f| f.signature).collect::<Vec<_>>();
+    let results = FUNCTIONS.iter().map(|f| f.result).collect::<Vec<_>>();
+    let rows = f
+        .reader
+        .query(FUNCTION_METADATA, &[&signatures, &results])
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), FUNCTIONS.len());
+    for (index, (function, batch)) in FUNCTIONS.iter().zip(rows).enumerate() {
+        let individual = f.reader.query_one("SELECT p.prosrc,p.proowner=c.relowner,p.prorettype=pg_catalog.to_regtype($2::text),l.lanname::text,p.provolatile::text,p.proisstrict,p.prosecdef,p.proretset,p.proconfig,p.proargnames,p.proargmodes::text[],CASE WHEN p.proallargtypes IS NULL THEN NULL ELSE ARRAY(SELECT pg_catalog.format_type(t,NULL) FROM unnest(p.proallargtypes) t) END,p.proparallel='u' AND p.prokind='f' AND p.pronargdefaults=0 AND p.provariadic=0 AND NOT p.proleakproof AND p.proargdefaults IS NULL AND(SELECT count(*) FROM pg_catalog.pg_proc x WHERE x.pronamespace=p.pronamespace AND x.proname=p.proname)=1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_language l ON l.oid=p.prolang JOIN pg_catalog.pg_class c ON c.oid='public.accounts'::pg_catalog.regclass WHERE p.oid=pg_catalog.to_regprocedure($1::text)", &[&function.signature, &function.result]).await.unwrap();
+        assert_eq!(batch.get::<_, i64>(13), index as i64 + 1);
+        assert_eq!(
+            metadata_fields(&batch),
+            metadata_fields(&individual),
+            "{}",
+            function.name
+        );
+    }
+    f.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with disposable CREATEDB/CREATEROLE"]
+async fn batched_metadata_refuses_missing_overloaded_and_changed_declarations() {
+    let mut f = Fixture::runtime().await;
+    require(&f.reader).await.unwrap();
+    for index in [0, FUNCTIONS.len() / 2, FUNCTIONS.len() - 1] {
+        let tx = f.owner.transaction().await.unwrap();
+        tx.batch_execute(&format!(
+            "ALTER FUNCTION {} RENAME TO synthetic_missing_effect_helper",
+            FUNCTIONS[index].signature
+        ))
+        .await
+        .unwrap();
+        assert!(matches!(
+            functions(&tx).await,
+            Err(EffectSchemaError::Invalid)
+        ));
+        tx.rollback().await.unwrap();
+        require(&f.reader).await.unwrap();
+    }
+    for sql in [
+        "CREATE FUNCTION public.conversation_profile03_effect_fetch(text) RETURNS bytea LANGUAGE sql IMMUTABLE AS 'SELECT NULL::bytea'",
+        "ALTER FUNCTION public.conversation_profile03_effect_identity(uuid,uuid,bytea) SET search_path TO public",
+        "ALTER FUNCTION public.conversation_profile03_effect_identity(uuid,uuid,bytea) IMMUTABLE",
+        "ALTER FUNCTION public.conversation_profile03_effect_identity(uuid,uuid,bytea) STRICT",
+        "ALTER FUNCTION public.conversation_profile03_effect_identity(uuid,uuid,bytea) SECURITY INVOKER",
+        "ALTER FUNCTION public.conversation_profile03_effect_identity(uuid,uuid,bytea) PARALLEL SAFE",
+        "CREATE OR REPLACE FUNCTION public.conversation_profile03_effect_identity(account uuid,attempt uuid,command bytea) RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path TO pg_catalog SET lock_timeout TO '3s' AS 'BEGIN RETURN; END'",
+    ] {
+        let tx = f.owner.transaction().await.unwrap();
+        tx.batch_execute(sql).await.unwrap();
+        assert!(
+            matches!(functions(&tx).await, Err(EffectSchemaError::Invalid)),
+            "{sql}"
+        );
+        tx.rollback().await.unwrap();
+        require(&f.reader).await.unwrap();
+    }
+    let signature = "public.conversation_profile03_effect_identity(uuid,uuid,bytea)";
+    let definition: String = f
+        .owner
+        .query_one(
+            "SELECT pg_catalog.pg_get_functiondef(pg_catalog.to_regprocedure($1::text))",
+            &[&signature],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    for (from, to) in [
+        ("command bytea", "command text"),
+        ("RETURNS void", "RETURNS bigint"),
+        ("command bytea)", "command bytea, OUT diagnostic bigint)"),
+    ] {
+        assert_eq!(definition.matches(from).count(), 1);
+        let mut changed = definition.replacen(from, to, 1);
+        if to.contains("OUT diagnostic") {
+            changed = changed.replacen("RETURNS void", "RETURNS bigint", 1);
+        }
+        let tx = f.owner.transaction().await.unwrap();
+        tx.batch_execute(&format!("DROP FUNCTION {signature}; {changed}"))
+            .await
+            .unwrap();
+        assert!(matches!(
+            functions(&tx).await,
+            Err(EffectSchemaError::Invalid)
+        ));
+        tx.rollback().await.unwrap();
+        require(&f.reader).await.unwrap();
+    }
+    f.finish().await;
+}

@@ -238,6 +238,17 @@ impl Case {
             )
             .await
             .unwrap();
+        // Explicit operator setup in this disposable database. Production keeps
+        // dispatch disabled by default; session/epoch/lease guards stay intact.
+        if claimed || socket {
+            assert_eq!(
+                db.owner.execute(
+                    "UPDATE public.deployment_authority SET dispatch_enabled=true WHERE singleton AND epoch=1",
+                    &[],
+                ).await.unwrap(),
+                1,
+            );
+        }
         let mut loopback = None;
         let (socket_actor, socket_state) = if socket {
             let connected = Loopback03::start(

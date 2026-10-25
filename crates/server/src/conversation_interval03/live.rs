@@ -208,6 +208,12 @@ impl StoredInterval03 {
         &self,
         held: &mut HeldMessageSelection03<'_, '_, '_>,
     ) -> Result<u64> {
+        Ok(self.validated_admission(held).await?.1)
+    }
+    async fn validated_admission(
+        &self,
+        held: &mut HeldMessageSelection03<'_, '_, '_>,
+    ) -> Result<(mappings::Mappings03, u64)> {
         if self.phase != "active" || self.installed_ms.is_none() {
             return Err(Error::Conflict);
         }
@@ -221,7 +227,7 @@ impl StoredInterval03 {
         if held.now_ms() < installed || held.now_ms() >= deadline {
             return Err(Error::Expired);
         }
-        Ok(deadline)
+        Ok((mappings, deadline))
     }
     fn require_owner(&self, held: &HeldMessageSelection03<'_, '_, '_>) -> Result<()> {
         if self.selected_owner() != held.selected() {
@@ -301,9 +307,17 @@ impl StoredInterval03 {
         if held.now_ms() >= deadline {
             return Err(Error::Expired);
         }
-        Ok(
-            serde_json::json!({"v":1,"kind":"interval_permission03","request_kind":kind,"request_id":id,"interval_id":self.statement.interval_id(),"statement_sha256":B.encode(self.statement.digest()),"statement":B.encode(self.statement.bytes()),"owner_signature":self.owner.map(|s|B.encode(s)),"phone_signature":self.phone.map(|s|B.encode(s)),"installed_signature":self.installed.map(|s|B.encode(s)),"requested_ms":self.requested_ms.map(|v|v.to_string()),"approved_ms":self.approved_ms.map(|v|v.to_string()),"installed_ms":self.installed_ms.map(|v|v.to_string()),"phase":self.phase,"device_session_digest":B.encode(held.device_session_digest()),"physical_selection_digest":B.encode(held.physical_digest()),"owner_session_digest":B.encode(self.statement.owner_digest()),"compared_ms":held.now_ms().to_string(),"permission_expires_ms":deadline.to_string(),"readers":mapping.projection()}),
-        )
+        Ok(self.render_permission(held, kind, id, &mapping, deadline))
+    }
+    fn render_permission(
+        &self,
+        held: &HeldMessageSelection03<'_, '_, '_>,
+        kind: &str,
+        id: Uuid,
+        mapping: &mappings::Mappings03,
+        deadline: u64,
+    ) -> serde_json::Value {
+        serde_json::json!({"v":1,"kind":"interval_permission03","request_kind":kind,"request_id":id,"interval_id":self.statement.interval_id(),"statement_sha256":B.encode(self.statement.digest()),"statement":B.encode(self.statement.bytes()),"owner_signature":self.owner.map(|s|B.encode(s)),"phone_signature":self.phone.map(|s|B.encode(s)),"installed_signature":self.installed.map(|s|B.encode(s)),"requested_ms":self.requested_ms.map(|v|v.to_string()),"approved_ms":self.approved_ms.map(|v|v.to_string()),"installed_ms":self.installed_ms.map(|v|v.to_string()),"phase":self.phase,"device_session_digest":B.encode(held.device_session_digest()),"physical_selection_digest":B.encode(held.physical_digest()),"owner_session_digest":B.encode(self.statement.owner_digest()),"compared_ms":held.now_ms().to_string(),"permission_expires_ms":deadline.to_string(),"readers":mapping.projection()})
     }
     /// The retained grant is never shortened or renewed by a fetch. Both
     /// receiver permissions must cover its exact original expiry.
@@ -313,25 +327,16 @@ impl StoredInterval03 {
         attempt: Uuid,
         grant_expires: u64,
     ) -> Result<serde_json::Value> {
-        let deadline = self.admission_deadline(held).await?;
-        if grant_expires <= held.now_ms() || grant_expires > deadline {
-            return Err(Error::Expired);
+        if attempt.is_nil() {
+            return Err(Error::Conflict);
         }
-        let mut value = self.permission(held, "fetch", attempt).await?;
-        let final_deadline = self.admission_deadline(held).await?;
+        // Keep one complete final admission validation and render both fields
+        // from its held mapping and actual comparison time, without awaits.
+        let (mapping, final_deadline) = self.validated_admission(held).await?;
         if grant_expires <= held.now_ms() || grant_expires > final_deadline {
             return Err(Error::Expired);
         }
-        let object = value.as_object_mut().ok_or(Error::Unavailable)?;
-        object.insert(
-            "compared_ms".into(),
-            serde_json::json!(held.now_ms().to_string()),
-        );
-        object.insert(
-            "permission_expires_ms".into(),
-            serde_json::json!(grant_expires.to_string()),
-        );
-        Ok(value)
+        Ok(self.render_permission(held, "fetch", attempt, &mapping, grant_expires))
     }
     /// A distinct purpose-specific projection from the SAME actually held
     /// installed proofs/current owner/reader mapping, covering the full grant.
@@ -345,8 +350,7 @@ impl StoredInterval03 {
         if event.is_nil() || self.phase != "active" {
             return Err(Error::Conflict);
         }
-        let mapping = self.validate(held, false).await?;
-        let deadline = self.admission_deadline(held).await?;
+        let (mapping, deadline) = self.validated_admission(held).await?;
         if grant_expires <= held.now_ms() || grant_expires > deadline {
             return Err(Error::Expired);
         }

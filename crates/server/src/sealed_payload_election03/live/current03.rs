@@ -54,9 +54,11 @@ impl<'held, 'db> Current<'held, 'db> {
         origin: &str,
         selected_manifest: Option<crate::manifest_install03::SelectedManifest03<'held, 'db>>,
     ) -> Result<Self> {
-        crate::payload_profile_elections::require(tx)
-            .await
-            .map_err(|_| Error::Unavailable)?;
+        if selected_manifest.is_none() {
+            crate::payload_profile_elections::require(tx)
+                .await
+                .map_err(|_| Error::Unavailable)?;
+        }
         tx.batch_execute("SET LOCAL search_path TO pg_catalog; SET LOCAL lock_timeout='3s'; SET LOCAL statement_timeout='5s'").await?;
         let root=tx.query_opt("SELECT root_pin,root_fingerprint,generation,version,semantic_digest,anchor_digest,manifest,accepted_at_ms,last_verified_ms FROM public.sealed_manifest_authorities WHERE account_id=$1 AND revoked_at IS NULL FOR SHARE NOWAIT",&[&account]).await?.ok_or(Error::Unsupported)?;
         let pin: [u8; 94] = fixed(&root, 0)?;
