@@ -94,15 +94,38 @@ async fn newer_invoice_period_carries_unknown_work_and_historical_paid_cannot_ro
     let mut case = Case::new().await;
     let now: i64 = case
         .db
-        .query_one("SELECT extract(epoch FROM clock_timestamp())::bigint", &[])
+        .query_one(
+            "SELECT floor(extract(epoch FROM clock_timestamp()))::bigint",
+            &[],
+        )
         .await
         .unwrap()
         .get(0);
-    case.end = now + 2;
+    // Genuine native admission must finish while both the invoice period and
+    // message are live; it is not a two-second performance assertion.
+    case.end = now + 30;
     let old = case.observation("active", "paid", "subscription_cycle");
     case.observe(&old).await.unwrap();
     case.send("original-unknown").await.unwrap();
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    tokio::time::timeout(std::time::Duration::from_secs(45), async {
+        loop {
+            let expired: bool = case
+                .db
+                .query_one(
+                    "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint >= $1",
+                    &[&(case.end * 1000)],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            if expired {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("the original invoice period must expire within the fixture budget");
     case.start = case.end;
     case.end += 3600;
     let mut next = case.observation("active", "paid", "subscription_cycle");

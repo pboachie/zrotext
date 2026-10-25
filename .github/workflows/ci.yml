@@ -141,9 +141,23 @@ jobs:
         run: python3 -m unittest discover -s sdk/python/tests -t sdk/python
       - name: Roadmap output matches docs/roadmap.json
         run: python3 scripts/roadmap.py --check
+      - name: Stage hash-verified pip for offline interpreter setup
+        run: python -I scripts/bootstrap_python_pip.py --fetch-only --wheel-dir "${{ runner.temp }}/python-pip-bootstrap"
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        env:
+          PIP_CONFIG_FILE: ${{ runner.os == 'Windows' && 'nul' || '/dev/null' }}
+          PIP_NO_INDEX: '1'
+          PIP_FIND_LINKS: ${{ runner.temp }}/python-pip-bootstrap/pip-26.2.2-py3-none-any.whl
+          PIP_DISABLE_PIP_VERSION_CHECK: '1'
+        with:
+          python-version: '3.12.15'
+          check-latest: true
+      - name: Qualify pip before network package operations
+        run: python -I scripts/bootstrap_python_pip.py
       - name: Complete protocol contracts and vectors
         run: |
           python3 -m venv /tmp/zrotext-schema-venv
+          /tmp/zrotext-schema-venv/bin/python -I scripts/bootstrap_python_pip.py
           /tmp/zrotext-schema-venv/bin/pip install --disable-pip-version-check jsonschema==4.25.1
           /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_*.py'
       - name: JavaScript syntax
@@ -273,10 +287,27 @@ jobs:
         run: |
           target/debug/zrotext-migrator
           target/debug/zrotext-migrator
+      - name: Stage hash-verified pip for offline interpreter setup
+        if: env.RUN_RUST == 'true'
+        run: python -I scripts/bootstrap_python_pip.py --fetch-only --wheel-dir "${{ runner.temp }}/python-pip-bootstrap"
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        if: env.RUN_RUST == 'true'
+        env:
+          PIP_CONFIG_FILE: ${{ runner.os == 'Windows' && 'nul' || '/dev/null' }}
+          PIP_NO_INDEX: '1'
+          PIP_FIND_LINKS: ${{ runner.temp }}/python-pip-bootstrap/pip-26.2.2-py3-none-any.whl
+          PIP_DISABLE_PIP_VERSION_CHECK: '1'
+        with:
+          python-version: '3.12.15'
+          check-latest: true
+      - name: Qualify pip before network package operations
+        if: env.RUN_RUST == 'true'
+        run: python -I scripts/bootstrap_python_pip.py
       - name: Verify PostgreSQL TLS and certificate failures
         if: env.RUN_RUST == 'true'
         run: |
           python3 -m venv /tmp/zrotext-postgres-tls-venv
+          /tmp/zrotext-postgres-tls-venv/bin/python -I scripts/bootstrap_python_pip.py
           /tmp/zrotext-postgres-tls-venv/bin/pip install --disable-pip-version-check cryptography==46.0.4
           /tmp/zrotext-postgres-tls-venv/bin/python scripts/tests/test_postgres_tls.py
       - name: Simulator timeline

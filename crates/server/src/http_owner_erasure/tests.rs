@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use totp_rs::{Builder, Secret};
 use tower::ServiceExt;
 mod anchor_lifecycle;
+mod current_hosted;
 mod hosted;
 mod managed_grants;
 mod opening_capacity;

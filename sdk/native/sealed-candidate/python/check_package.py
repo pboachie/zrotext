@@ -25,7 +25,10 @@ def run(args,**kwargs):
 
 def environment(path):
     venv.EnvBuilder(with_pip=True).create(path)
-    return path/('Scripts/python.exe' if os.name=='nt' else 'bin/python')
+    python=path/('Scripts/python.exe' if os.name=='nt' else 'bin/python')
+    run([python,'-I',ROOT.parents[3]/'scripts/bootstrap_python_pip.py',
+         '--wheel-dir',path.parent/'pip-bootstrap'],cwd=path.parent)
+    return python
 
 
 def check_wheel(path):
@@ -63,12 +66,12 @@ def main():
             shutil.copyfile(ROOT/name,source/name)
         shutil.copytree(ROOT/PACKAGE,source/PACKAGE,ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
         builder=environment(temporary/'builder')
-        run([builder,'-m','pip','install','setuptools==84.0.0'],cwd=temporary)
+        run([builder,'-m','pip','--disable-pip-version-check','install','setuptools==84.0.0'],cwd=temporary)
         run([builder,'-c',"from setuptools.build_meta import build_wheel,build_sdist;build_wheel('dist');build_sdist('dist')"],cwd=source)
         wheel=next((source/'dist').glob('*.whl'));sdist=next((source/'dist').glob('*.tar.gz'))
         check_wheel(wheel);check_sdist(sdist)
         workflow_output=temporary/'workflow';workflow_output.mkdir()
-        run([builder,'-m','pip','wheel','--no-deps','--wheel-dir',workflow_output,args.workflow_source.resolve()],cwd=temporary)
+        run([builder,'-m','pip','--disable-pip-version-check','wheel','--no-deps','--wheel-dir',workflow_output,args.workflow_source.resolve()],cwd=temporary)
         workflow_wheel=next(workflow_output.glob('zrotext_workflow_candidate-0.1.0a1-*.whl'))
         fixtures={name:json.loads(run(['node',ROOT/producer],cwd=temporary)) for name,producer in
                   (('archive','produce-fixture.mjs'),('election','produce-election03.mjs'),('selection','produce-selected-reply02.mjs'),('template','template-interop.mjs'),('contact','contact-interop.mjs'))}
@@ -115,7 +118,7 @@ def main():
         signer_qualifications=[]
         for index,artifact in enumerate((wheel,sdist)):
             python=environment(temporary/f'consumer-{index}')
-            run([python,'-m','pip','install',artifact],cwd=temporary)
+            run([python,'-m','pip','--disable-pip-version-check','install',artifact],cwd=temporary)
             run([python,'-I','-c',"import zrotext_native_candidate,importlib.util;assert importlib.util.find_spec('zrotext_workflow') is None"],cwd=temporary)
             assert json.loads(run([python,'-I',contact_consumer],cwd=temporary,input=json.dumps(fixtures['contact'])))==dict(installed=True,historical_contact_integrity=True)
             assert json.loads(run([python,'-I',bundle_consumer],cwd=temporary,input=json.dumps(bundle_fixture)))==dict(installed=True,public_root_bundle_cases=41)
@@ -181,8 +184,8 @@ def main():
             assert store_open['verified']
             base_reply=json.loads(run([python,'-I',reply_consumer,'--without-workflow'],cwd=temporary,input=json.dumps(fixtures['selection'])))
             assert base_reply==dict(installed=True,workflow_coinstalled=False,original_reply_https=True)
-            run([python,'-m','pip','install',workflow_wheel],cwd=temporary)
-            run([python,'-m','pip','check'],cwd=temporary)
+            run([python,'-m','pip','--disable-pip-version-check','install',workflow_wheel],cwd=temporary)
+            run([python,'-m','pip','--disable-pip-version-check','check'],cwd=temporary)
             result=json.loads(run([python,'-I',consumer],cwd=temporary,input=json.dumps(fixtures)))
             payload=json.dumps(dict(fixture=fixtures['election'],envelope=result['envelope'],expectedText='Native composed 🌱'))
             accepted=json.loads(run(['node',ROOT/'consume-native03.mjs'],cwd=temporary,input=payload))

@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
+use crate::conversation_profile03_storage::test_fixture as current_fixture;
 use crate::test_database::Fixture;
 use postgres_protocol::escape::escape_identifier;
 use sha2::{Digest, Sha256};
 use tokio_postgres::error::SqlState;
 use uuid::Uuid;
-
-#[path = "../conversation_profile03_storage/test_fixture.rs"]
-mod current_fixture;
 
 async fn fixture() -> Fixture {
     let fixture = current_fixture::new().await;

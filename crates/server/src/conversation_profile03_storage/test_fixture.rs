@@ -4,7 +4,7 @@ use crate::test_database::Fixture;
 // Current storage capabilities must use the unchanged stock runtime ACLs, not
 // a hand-maintained list of entry points from an earlier migration. Retain the
 // shared writer fixture's idempotent-migration and owner/runtime controls.
-pub(super) async fn new() -> Fixture {
+pub(crate) async fn new() -> Fixture {
     let mut fixture = Fixture::new("ZT_AUTH_TEST_DATABASE_URL").await;
     fixture.verify().await;
     let snapshot: Vec<u8> = fixture

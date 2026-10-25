@@ -114,7 +114,14 @@ pub(super) struct Fixture {
     pub url: String,
     pub hasher: Arc<TokenHasher>,
     pub owner: Owner,
-    cleanup: SchemaCleanup,
+    cleanup: DatabaseCleanup,
+}
+enum DatabaseCleanup {
+    Historical(SchemaCleanup),
+    Current {
+        database: Box<crate::test_database::Fixture>,
+        driver: crate::test_database::Driver,
+    },
 }
 impl Fixture {
     pub async fn new() -> Self {
@@ -155,7 +162,40 @@ impl Fixture {
             url,
             hasher,
             owner,
-            cleanup,
+            cleanup: DatabaseCleanup::Historical(cleanup),
+        }
+    }
+    /// The current ordinary runtime and unchanged stock ACLs are separate from
+    /// the migration owner. Candidate installation is a refusal test, not a
+    /// promotion or a current-schema grant issuance/erasure success fixture.
+    pub async fn run_current<F>(body: F)
+    where
+        F: for<'a> AsyncFnOnce(&'a mut Self),
+    {
+        let database = crate::test_database::Fixture::for_store("ZT_AUTH_TEST_DATABASE_URL").await;
+        let (mut db, driver) = database.another_runtime().await;
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(37)).unwrap());
+        let owner = Self::register(&mut db, &hasher).await;
+        let mut fixture = Self {
+            db,
+            url: database.runtime_url.clone(),
+            hasher,
+            owner,
+            cleanup: DatabaseCleanup::Current {
+                database: Box::new(database),
+                driver,
+            },
+        };
+        let result = AssertUnwindSafe(body(&mut fixture)).catch_unwind().await;
+        fixture.finish().await;
+        if let Err(panic) = result {
+            resume_unwind(panic);
+        }
+    }
+    pub fn migration_owner(&self) -> &Client {
+        match &self.cleanup {
+            DatabaseCleanup::Historical(_) => &self.db,
+            DatabaseCleanup::Current { database, .. } => &database.owner,
         }
     }
     pub async fn run<F>(body: F)
@@ -262,7 +302,16 @@ impl Fixture {
             .unwrap()
     }
     pub async fn install_candidate(&self) {
-        self.db
+        if let DatabaseCleanup::Current { database, .. } = &self.cleanup {
+            // DDL targets public, never pg_catalog. Do not change the ordinary
+            // runtime search path, its ACLs, or the closed graph commitment.
+            database
+                .owner
+                .batch_execute("SET search_path=public,pg_catalog")
+                .await
+                .unwrap();
+        }
+        self.migration_owner()
             .batch_execute(include_str!(
                 "../../../../../deploy/compose/migration-candidates/managed_reader_grants.sql"
             ))
@@ -278,7 +327,11 @@ impl Fixture {
     ) -> Uuid {
         let account = self.owner.principal.tenant.account_id();
         let id = Uuid::new_v4();
-        let tx = self.db.transaction().await.unwrap();
+        let db = match &mut self.cleanup {
+            DatabaseCleanup::Historical(_) => &mut self.db,
+            DatabaseCleanup::Current { database, .. } => &mut database.owner,
+        };
+        let tx = db.transaction().await.unwrap();
         tx.execute("INSERT INTO managed_reader_keys(account_id,id,generation,key_id,key_point,expires_ms) VALUES($1,$2,1,$3,$4,1)", &[&account,&r.policy.reader,&vec![1u8;32],&vec![4u8;65]]).await.unwrap();
         tx.execute("INSERT INTO managed_reader_policies(account_id,id,version,digest,reader_id,reader_generation,provider_id,provider_version,provider_digest,budget_id,budget_version,budget_digest,expires_ms,max_calls,max_input_bytes,max_cost_microunits) VALUES($1,$2,1,$3,$4,1,$5,1,$6,$7,1,$6,1,8,4000,40)", &[&account,&r.policy.id,&r.policy.digest.as_slice(),&r.policy.reader,&Uuid::new_v4(),&vec![1u8;32],&Uuid::new_v4()]).await.unwrap();
         tx.execute("INSERT INTO managed_reader_grants(account_id,id,contact_id,purpose,current_version) VALUES($1,$2,$3,$4,$5)", &[&account,&id,&r.contact,&r.purpose.slug(),&version]).await.unwrap();
@@ -295,7 +348,7 @@ impl Fixture {
         let mut result = [0; 6];
         for (i, table) in crate::managed_ai::lifecycle::TABLES.iter().enumerate() {
             result[i] = self
-                .db
+                .migration_owner()
                 .query_one(&format!("SELECT count(*) FROM {table}"), &[])
                 .await
                 .unwrap()
@@ -318,7 +371,39 @@ impl Fixture {
         tokio::spawn(async move { connection.await.unwrap() });
         db
     }
-    pub async fn finish(mut self) {
-        self.cleanup.finish().await;
+    /// Full synthetic row snapshots, not just row counts, witness refusal.
+    pub async fn erasure_rows(&self) -> Vec<String> {
+        let mut result = Vec::new();
+        for table in crate::managed_ai::lifecycle::TABLES {
+            result.push(self.migration_owner().query_one(
+                &format!("SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY id),'[]'::jsonb)::text FROM {table} t WHERE account_id=$1"),
+                &[&self.owner.principal.tenant.account_id()],
+            ).await.unwrap().get(0));
+        }
+        for (table, id) in [
+            ("accounts", self.owner.principal.tenant.account_id()),
+            ("sessions", self.owner.principal.session_id),
+        ] {
+            result.push(
+                self.migration_owner()
+                    .query_one(
+                        &format!("SELECT to_jsonb(t)::text FROM {table} t WHERE id=$1"),
+                        &[&id],
+                    )
+                    .await
+                    .unwrap()
+                    .get(0),
+            );
+        }
+        result
+    }
+    pub async fn finish(self) {
+        match self.cleanup {
+            DatabaseCleanup::Historical(mut cleanup) => cleanup.finish().await,
+            DatabaseCleanup::Current { database, driver } => {
+                crate::test_database::Fixture::close_connection(self.db, driver).await;
+                database.finish().await;
+            }
+        }
     }
 }

@@ -112,7 +112,10 @@ async fn checkout_recovery_refuses_unstarted_known_terminal_unbound_expired_chan
         .await
         .unwrap();
 
-    for when in [started - 23 * 60 * 60 - 5, started + 60] {
+    for offset in [-23 * 60 * 60 - 5, 60] {
+        // The preceding native requests may take longer than a minute. Bind
+        // this case to the database's current time, not the original checkout.
+        let when = f.now().await + offset;
         f.database
             .owner
             .execute(

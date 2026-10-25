@@ -394,6 +394,20 @@ jobs:
         with:
           shared-key: windows-cargo-deps
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Stage hash-verified pip for offline interpreter setup
+        run: python -I scripts/bootstrap_python_pip.py --fetch-only --wheel-dir "${{ runner.temp }}/python-pip-bootstrap"
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        env:
+          PIP_CONFIG_FILE: ${{ runner.os == 'Windows' && 'nul' || '/dev/null' }}
+          PIP_NO_INDEX: '1'
+          PIP_FIND_LINKS: ${{ runner.temp }}/python-pip-bootstrap/pip-26.2.2-py3-none-any.whl
+          PIP_DISABLE_PIP_VERSION_CHECK: '1'
+        with:
+          # Current Windows installers; this is not Python 3.12 qualification.
+          python-version: '3.13.17'
+          check-latest: true
+      - name: Qualify pip before network package operations
+        run: python -I scripts/bootstrap_python_pip.py
       - name: Install pinned fixture tools and build the existing SDK
         run: |
           rustup toolchain install 1.99.1 --profile minimal
@@ -412,6 +426,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Browser installation failed' }
           python -m venv "$env:RUNNER_TEMP/sealed-setup-python"
           if ($LASTEXITCODE -ne 0) { throw 'Fixture Python setup failed' }
+          & "$env:RUNNER_TEMP/sealed-setup-python/Scripts/python.exe" -I scripts/bootstrap_python_pip.py
+          if ($LASTEXITCODE -ne 0) { throw 'Fixture pip bootstrap failed' }
           & "$env:RUNNER_TEMP/sealed-setup-python/Scripts/python.exe" -m pip install --disable-pip-version-check cryptography==46.0.4
           if ($LASTEXITCODE -ne 0) { throw 'Fixture TLS tooling setup failed' }
       - name: Verify explicit consumer guards

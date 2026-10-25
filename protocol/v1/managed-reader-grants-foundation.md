@@ -46,9 +46,15 @@ functional dependency, without changing its owner branch.
 Events are append-only through the API and database UPDATE is rejected for
 policies, grant versions, selections and events. The privileged database role
 can DELETE; no stronger database deletion-immutability claim is made. The owner
-erasure handler explicitly deletes these six tables in child-first order within
-its existing owner-fenced transaction and reports their counts. Partial proposal
-installation fails closed; complete absence preserves ordinary export/erasure.
+erasure source contains conditional hooks for these six tables in child-first
+order, with individual counts, inside its existing owner-fenced transaction.
+Those hooks are not evidence of live candidate acceptance: adding the unpromoted
+proposal to the current public schema invalidates the closed native catalog
+capability, so HTTP erasure refuses before deleting anything. Historical SQL-plan
+fixtures separately exercise the six exact production statements, committed
+child counts and rollback after a witnessed later failure; they do not exercise
+complete authenticated HTTP erasure. Partial proposal installation fails closed;
+complete absence leaves the existing export/erasure gates in force.
 Export includes expired/revoked history and all public policy/key identities in
 bounded pages. Reader generations and policy versions use composite cursors.
 
@@ -61,9 +67,19 @@ permit. Task-bound wraps and atomic exposure admission require separate designs.
 
 Verification: the real PostgreSQL fixtures cover owner/archive/MFA admission,
 exact digest/head rejection, immutable rows, cross-account foreign keys, export,
-child-first erase counts/rollback, expired/purged reductions, the version cap,
-fresh MFA for replacement, creator-session loss, the mounted consent route,
-observed account-lock waits, and mounted erasure commit/counts/later-failure rollback.
+expired/purged reductions, the version cap, fresh MFA for replacement,
+creator-session loss, the mounted consent route and observed account-lock waits.
+Erasure coverage is split: historical107 SQL-plan tests verify each of the six
+child counts, committed deletion, account isolation and exact later-failure
+rollback; current119 ordinary-runtime tests verify native readiness before the
+proposal, catalog/native-entry refusal after installation, and HTTP refusal with
+all six tables plus the account/session unchanged. A separate current HTTP acceptance control requires successful ordinary erasure
+with the proposal absent. These controls do not prove
+candidate HTTP acceptance or a hosted erasure flow.
 Run `cargo test --locked -p zrotext-server managed_grants -- --ignored` with a
-disposable `ZT_INBOUND_TEST_DATABASE_URL`. Hosted PostgreSQL results and an
-independent exact-head review are required before this draft is ready.
+disposable `ZT_INBOUND_TEST_DATABASE_URL` and `ZT_AUTH_TEST_DATABASE_URL`; run the
+managed HTTP tests with
+`cargo test --locked -p zrotext-server http_managed_ai_grants -- --ignored` and
+`ZT_AUTH_TEST_DATABASE_URL`. Current-schema tests require CREATEDB/CREATEROLE on
+that disposable cluster. Hosted PostgreSQL results and an independent exact-head
+review are required before this draft is ready.

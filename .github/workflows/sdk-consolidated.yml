@@ -163,9 +163,20 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.22.1'
+      - name: Stage hash-verified pip for offline interpreter setup
+        run: python -I scripts/bootstrap_python_pip.py --fetch-only --wheel-dir "${{ runner.temp }}/python-pip-bootstrap"
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        env:
+          PIP_CONFIG_FILE: ${{ runner.os == 'Windows' && 'nul' || '/dev/null' }}
+          PIP_NO_INDEX: '1'
+          PIP_FIND_LINKS: ${{ runner.temp }}/python-pip-bootstrap/pip-26.2.2-py3-none-any.whl
+          PIP_DISABLE_PIP_VERSION_CHECK: '1'
         with:
-          python-version: '3.12'
+          # Current Windows installers; this is not Python 3.12 qualification.
+          python-version: '3.13.17'
+          check-latest: true
+      - name: Qualify pip before network package operations
+        run: python -I scripts/bootstrap_python_pip.py
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version: '1.26.10'
@@ -186,7 +197,7 @@ jobs:
           rustup toolchain install 1.99.1 --profile minimal
       - name: "Native candidate installed archives [rust]"
         run: |
-          python -m pip install cryptography==46.0.5 ada-url==1.27.0
+          python -m pip install --disable-pip-version-check cryptography==46.0.5 ada-url==1.27.0
       - name: "Native candidate installed archives [rust]: Prepare independently pinned maintained producers"
         shell: pwsh
         run: |
@@ -241,7 +252,7 @@ jobs:
           rustup toolchain install 1.99.1 --profile minimal
       - name: "Native candidate installed archives [go]"
         run: |
-          python -m pip install cryptography==46.0.5 ada-url==1.27.0
+          python -m pip install --disable-pip-version-check cryptography==46.0.5 ada-url==1.27.0
       - name: "Native candidate installed archives [go]: Prepare independently pinned maintained producers"
         shell: pwsh
         run: |
@@ -396,15 +407,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Stage hash-verified pip for offline interpreter setup
+        run: python -I scripts/bootstrap_python_pip.py --fetch-only --wheel-dir "${{ runner.temp }}/python-pip-bootstrap"
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        env:
+          PIP_CONFIG_FILE: ${{ runner.os == 'Windows' && 'nul' || '/dev/null' }}
+          PIP_NO_INDEX: '1'
+          PIP_FIND_LINKS: ${{ runner.temp }}/python-pip-bootstrap/pip-26.2.2-py3-none-any.whl
+          PIP_DISABLE_PIP_VERSION_CHECK: '1'
         with:
-          python-version: '3.12'
+          python-version: '3.12.15'
+          check-latest: true
+      - name: Qualify pip before network package operations
+        run: python -I scripts/bootstrap_python_pip.py
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.22.1'
       - name: "Python candidate body conformance: Install pinned native crypto provider"
         run: |
-          python -m pip install --only-binary=:all: -r sdk/native/crypto-candidate/python/requirements.txt
+          python -m pip install --disable-pip-version-check --only-binary=:all: -r sdk/native/crypto-candidate/python/requirements.txt
       - name: "Python candidate body conformance: Verify shared authentication and text corpus"
         run: |
           python -m unittest discover -s sdk/native/crypto-candidate/python -p 'test_*.py'
@@ -438,10 +459,10 @@ jobs:
           npm run build
       - name: "Python sealed candidate interoperability: Install native crypto provider"
         run: |
-          python -m pip install --only-binary=:all: -r sdk/native/sealed-candidate/python/requirements.txt
+          python -m pip install --disable-pip-version-check --only-binary=:all: -r sdk/native/sealed-candidate/python/requirements.txt
       - name: "Python sealed candidate interoperability: Install the exact reviewed optional workflow package"
         run: |
-          python -m pip install --no-deps workflow-source/sdk/python/workflow
+          python -m pip install --disable-pip-version-check --no-deps workflow-source/sdk/python/workflow
       - name: "Python sealed candidate interoperability: Execute native cryptographic interoperability and refusal tests"
         run: |
           python -m unittest discover -s sdk/native/sealed-candidate/python -p 'test_*.py'
@@ -461,10 +482,20 @@ jobs:
           ref: dc4eac37d43f77b414cbc6d610c2a2754d4640a7
           path: alpha-source
           persist-credentials: false
+      - name: Stage hash-verified pip for offline interpreter setup
+        run: python -I scripts/bootstrap_python_pip.py --fetch-only --wheel-dir "${{ runner.temp }}/python-pip-bootstrap"
       - name: "Python 3.11"
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        env:
+          PIP_CONFIG_FILE: ${{ runner.os == 'Windows' && 'nul' || '/dev/null' }}
+          PIP_NO_INDEX: '1'
+          PIP_FIND_LINKS: ${{ runner.temp }}/python-pip-bootstrap/pip-26.2.2-py3-none-any.whl
+          PIP_DISABLE_PIP_VERSION_CHECK: '1'
         with:
-          python-version: '3.11'
+          python-version: '3.11.17'
+          check-latest: true
+      - name: Qualify pip before network package operations
+        run: python -I scripts/bootstrap_python_pip.py
       - name: "Installed Python workflow candidate: Install independent TypeScript fixture dependencies: py3.11"
         working-directory: sdk/typescript
         run: |
@@ -495,6 +526,19 @@ jobs:
           ref: dc4eac37d43f77b414cbc6d610c2a2754d4640a7
           path: alpha-source
           persist-credentials: false
+      - name: Stage hash-verified pip for offline interpreter setup
+        run: python -I scripts/bootstrap_python_pip.py --fetch-only --wheel-dir "${{ runner.temp }}/python-pip-bootstrap"
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        env:
+          PIP_CONFIG_FILE: ${{ runner.os == 'Windows' && 'nul' || '/dev/null' }}
+          PIP_NO_INDEX: '1'
+          PIP_FIND_LINKS: ${{ runner.temp }}/python-pip-bootstrap/pip-26.2.2-py3-none-any.whl
+          PIP_DISABLE_PIP_VERSION_CHECK: '1'
+        with:
+          python-version: '3.12.15'
+          check-latest: true
+      - name: Qualify pip before network package operations
+        run: python -I scripts/bootstrap_python_pip.py
       - name: "Installed Python workflow candidate: Install independent TypeScript fixture dependencies: py3.12"
         working-directory: sdk/typescript
         run: |
@@ -574,11 +618,25 @@ jobs:
       - name: "Tungsten migration comparisons: Execute TypeScript comparisons"
         run: |
           node --test sdk/tungsten/migration/typescript.test.mjs
+      - name: Stage hash-verified pip for offline interpreter setup
+        run: python -I scripts/bootstrap_python_pip.py --fetch-only --wheel-dir "${{ runner.temp }}/python-pip-bootstrap"
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        env:
+          PIP_CONFIG_FILE: ${{ runner.os == 'Windows' && 'nul' || '/dev/null' }}
+          PIP_NO_INDEX: '1'
+          PIP_FIND_LINKS: ${{ runner.temp }}/python-pip-bootstrap/pip-26.2.2-py3-none-any.whl
+          PIP_DISABLE_PIP_VERSION_CHECK: '1'
+        with:
+          python-version: '3.12.15'
+          check-latest: true
+      - name: Qualify pip before network package operations
+        run: python -I scripts/bootstrap_python_pip.py
       - name: "Tungsten migration comparisons: Install and execute Python comparisons"
         shell: bash
         run: |
           python3 -m venv "$RUNNER_TEMP/migration-python"
-          "$RUNNER_TEMP/migration-python/bin/python" -m pip install "$RUNNER_TEMP/tungsten/runtimes/python" ./sdk/tungsten/generated/python
+          "$RUNNER_TEMP/migration-python/bin/python" -I scripts/bootstrap_python_pip.py
+          "$RUNNER_TEMP/migration-python/bin/python" -m pip install --disable-pip-version-check "$RUNNER_TEMP/tungsten/runtimes/python" ./sdk/tungsten/generated/python
           "$RUNNER_TEMP/migration-python/bin/python" sdk/tungsten/migration/test_python.py
       - name: "Tungsten SDK generation: Test generation policy"
         run: |
@@ -856,10 +914,23 @@ jobs:
           ref: 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
           path: producer
           persist-credentials: false
+      - name: Stage hash-verified pip for offline interpreter setup
+        run: python -I scripts/bootstrap_python_pip.py --fetch-only --wheel-dir "${{ runner.temp }}/python-pip-bootstrap"
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        env:
+          PIP_CONFIG_FILE: ${{ runner.os == 'Windows' && 'nul' || '/dev/null' }}
+          PIP_NO_INDEX: '1'
+          PIP_FIND_LINKS: ${{ runner.temp }}/python-pip-bootstrap/pip-26.2.2-py3-none-any.whl
+          PIP_DISABLE_PIP_VERSION_CHECK: '1'
+        with:
+          python-version: '3.12.15'
+          check-latest: true
+      - name: Qualify pip before network package operations
+        run: python -I scripts/bootstrap_python_pip.py
       - name: "Managed authenticated original current proof [java]: Build independent signed producer and TLS fixture dependency"
         shell: pwsh
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm ci --ignore-scripts --prefix producer/sdk/typescript
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -887,7 +958,7 @@ jobs:
       - name: "Managed authenticated original current proof [csharp]: Build independent signed producer and TLS fixture dependency"
         shell: pwsh
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm ci --ignore-scripts --prefix producer/sdk/typescript
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -915,7 +986,7 @@ jobs:
       - name: "Managed authenticated original current proof [ruby]: Build independent signed producer and TLS fixture dependency"
         shell: pwsh
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm ci --ignore-scripts --prefix producer/sdk/typescript
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -980,7 +1051,7 @@ jobs:
           persist-credentials: false
       - name: "Managed original-grant HTTPS transport [java]: Install synthetic TLS certificate dependency"
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
       - name: "Managed original-grant HTTPS transport [java]: Exercise actual TLS requests and bounded failures"
         run: |
           python sdk/native/crypto-envelope/original-http-run.py --language java --fixture fixture
@@ -992,7 +1063,7 @@ jobs:
           persist-credentials: false
       - name: "Managed original-grant HTTPS transport [csharp]: Install synthetic TLS certificate dependency"
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
       - name: "Managed original-grant HTTPS transport [csharp]: Exercise actual TLS requests and bounded failures"
         run: |
           python sdk/native/crypto-envelope/original-http-run.py --language csharp --fixture fixture
@@ -1004,7 +1075,7 @@ jobs:
           persist-credentials: false
       - name: "Managed original-grant HTTPS transport [ruby]: Install synthetic TLS certificate dependency"
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
       - name: "Managed original-grant HTTPS transport [ruby]: Exercise actual TLS requests and bounded failures"
         run: |
           python sdk/native/crypto-envelope/original-http-run.py --language ruby --fixture fixture
@@ -1023,7 +1094,7 @@ jobs:
       - name: "Managed saved owner-review consumption and status [java]: Build independent signed producer and TLS fixture dependency"
         shell: pwsh
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm ci --ignore-scripts --prefix producer/sdk/typescript
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -1047,7 +1118,7 @@ jobs:
       - name: "Managed saved owner-review consumption and status [csharp]: Build independent signed producer and TLS fixture dependency"
         shell: pwsh
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm ci --ignore-scripts --prefix producer/sdk/typescript
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -1071,7 +1142,7 @@ jobs:
       - name: "Managed saved owner-review consumption and status [ruby]: Build independent signed producer and TLS fixture dependency"
         shell: pwsh
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm ci --ignore-scripts --prefix producer/sdk/typescript
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -1095,7 +1166,7 @@ jobs:
       - name: "Managed authenticated original page discovery [java]: Build independent signed producer and TLS fixture dependency"
         shell: pwsh
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm ci --ignore-scripts --prefix producer/sdk/typescript
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -1119,7 +1190,7 @@ jobs:
       - name: "Managed authenticated original page discovery [csharp]: Build independent signed producer and TLS fixture dependency"
         shell: pwsh
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm ci --ignore-scripts --prefix producer/sdk/typescript
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -1143,7 +1214,7 @@ jobs:
       - name: "Managed authenticated original page discovery [ruby]: Build independent signed producer and TLS fixture dependency"
         shell: pwsh
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm ci --ignore-scripts --prefix producer/sdk/typescript
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -1167,7 +1238,7 @@ jobs:
       - name: "Managed saved proposal consumption and status [java]: Build independent signed producer and TLS fixture dependency"
         shell: pwsh
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm ci --ignore-scripts --prefix producer/sdk/typescript
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -1191,7 +1262,7 @@ jobs:
       - name: "Managed saved proposal consumption and status [csharp]: Build independent signed producer and TLS fixture dependency"
         shell: pwsh
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm ci --ignore-scripts --prefix producer/sdk/typescript
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -1215,7 +1286,7 @@ jobs:
       - name: "Managed saved proposal consumption and status [ruby]: Build independent signed producer and TLS fixture dependency"
         shell: pwsh
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm ci --ignore-scripts --prefix producer/sdk/typescript
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -1239,7 +1310,7 @@ jobs:
       - name: "Managed verified original HTTPS reads [java]: Build independent signed producer and TLS fixture dependency"
         shell: pwsh
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm ci --ignore-scripts --prefix producer/sdk/typescript
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -1263,7 +1334,7 @@ jobs:
       - name: "Managed verified original HTTPS reads [csharp]: Build independent signed producer and TLS fixture dependency"
         shell: pwsh
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm ci --ignore-scripts --prefix producer/sdk/typescript
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -1287,7 +1358,7 @@ jobs:
       - name: "Managed verified original HTTPS reads [ruby]: Build independent signed producer and TLS fixture dependency"
         shell: pwsh
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm ci --ignore-scripts --prefix producer/sdk/typescript
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -1391,9 +1462,22 @@ jobs:
             npm run build --prefix "$source/sdk/typescript"
             if ($LASTEXITCODE) { exit $LASTEXITCODE }
           }
+      - name: Stage hash-verified pip for offline interpreter setup
+        run: python -I scripts/bootstrap_python_pip.py --fetch-only --wheel-dir "${{ runner.temp }}/python-pip-bootstrap"
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        env:
+          PIP_CONFIG_FILE: ${{ runner.os == 'Windows' && 'nul' || '/dev/null' }}
+          PIP_NO_INDEX: '1'
+          PIP_FIND_LINKS: ${{ runner.temp }}/python-pip-bootstrap/pip-26.2.2-py3-none-any.whl
+          PIP_DISABLE_PIP_VERSION_CHECK: '1'
+        with:
+          python-version: '3.12.15'
+          check-latest: true
+      - name: Qualify pip before network package operations
+        run: python -I scripts/bootstrap_python_pip.py
       - name: "Managed reviewed template authoring interoperability [java]: Install synthetic TLS certificate dependency"
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
       - name: "Managed reviewed template authoring interoperability [java]: Exercise immutable review and explicit-only preparation"
         run: |
           python sdk/native/crypto-envelope/template-authoring-run.py --language java --fixture fixture --producer producer --authoring-oracle authoring-oracle
@@ -1430,7 +1514,7 @@ jobs:
           }
       - name: "Managed reviewed template authoring interoperability [csharp]: Install synthetic TLS certificate dependency"
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
       - name: "Managed reviewed template authoring interoperability [csharp]: Exercise immutable review and explicit-only preparation"
         run: |
           python sdk/native/crypto-envelope/template-authoring-run.py --language csharp --fixture fixture --producer producer --authoring-oracle authoring-oracle
@@ -1467,7 +1551,7 @@ jobs:
           }
       - name: "Managed reviewed template authoring interoperability [ruby]: Install synthetic TLS certificate dependency"
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
       - name: "Managed reviewed template authoring interoperability [ruby]: Exercise immutable review and explicit-only preparation"
         run: |
           python sdk/native/crypto-envelope/template-authoring-run.py --language ruby --fixture fixture --producer producer --authoring-oracle authoring-oracle
@@ -1632,7 +1716,7 @@ jobs:
           }
       - name: "Managed current template opening interoperability [java]: Install synthetic TLS certificate dependency"
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
       - name: "Managed current template opening interoperability [java]: Exercise current opening and late plaintext refusal"
         run: |
           python sdk/native/crypto-envelope/template-opening-run.py --language java --fixture fixture --producer producer --opening-oracle opening-oracle
@@ -1665,7 +1749,7 @@ jobs:
           }
       - name: "Managed current template opening interoperability [csharp]: Install synthetic TLS certificate dependency"
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
       - name: "Managed current template opening interoperability [csharp]: Exercise current opening and late plaintext refusal"
         run: |
           python sdk/native/crypto-envelope/template-opening-run.py --language csharp --fixture fixture --producer producer --opening-oracle opening-oracle
@@ -1698,7 +1782,7 @@ jobs:
           }
       - name: "Managed current template opening interoperability [ruby]: Install synthetic TLS certificate dependency"
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
       - name: "Managed current template opening interoperability [ruby]: Exercise current opening and late plaintext refusal"
         run: |
           python sdk/native/crypto-envelope/template-opening-run.py --language ruby --fixture fixture --producer producer --opening-oracle opening-oracle
@@ -1731,7 +1815,7 @@ jobs:
           }
       - name: "Managed reviewed template save interoperability [java]: Install synthetic TLS certificate dependency"
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
       - name: "Managed reviewed template save interoperability [java]: Exercise reviewed saves, sticky uncertainty and explicit recovery"
         run: |
           python sdk/native/crypto-envelope/template-save-run.py --language java --fixture fixture --producer producer --save-oracle save-oracle
@@ -1764,7 +1848,7 @@ jobs:
           }
       - name: "Managed reviewed template save interoperability [csharp]: Install synthetic TLS certificate dependency"
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
       - name: "Managed reviewed template save interoperability [csharp]: Exercise reviewed saves, sticky uncertainty and explicit recovery"
         run: |
           python sdk/native/crypto-envelope/template-save-run.py --language csharp --fixture fixture --producer producer --save-oracle save-oracle
@@ -1797,7 +1881,7 @@ jobs:
           }
       - name: "Managed reviewed template save interoperability [ruby]: Install synthetic TLS certificate dependency"
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
       - name: "Managed reviewed template save interoperability [ruby]: Exercise reviewed saves, sticky uncertainty and explicit recovery"
         run: |
           python sdk/native/crypto-envelope/template-save-run.py --language ruby --fixture fixture --producer producer --save-oracle save-oracle
@@ -2176,9 +2260,23 @@ jobs:
       - name: "Managed native candidate packages [java]: Reject unexpected archive payloads"
         run: |
           python sdk/native/crypto-envelope/package-managed-test.py
+      - name: Stage hash-verified pip for offline interpreter setup
+        run: python -I scripts/bootstrap_python_pip.py --fetch-only --wheel-dir "${{ runner.temp }}/python-pip-bootstrap"
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        env:
+          PIP_CONFIG_FILE: ${{ runner.os == 'Windows' && 'nul' || '/dev/null' }}
+          PIP_NO_INDEX: '1'
+          PIP_FIND_LINKS: ${{ runner.temp }}/python-pip-bootstrap/pip-26.2.2-py3-none-any.whl
+          PIP_DISABLE_PIP_VERSION_CHECK: '1'
+        with:
+          # Keep Linux 3.12 coverage; current Windows installers use 3.13.
+          python-version: ${{ runner.os == 'Windows' && '3.13.17' || '3.12.15' }}
+          check-latest: true
+      - name: Qualify pip before network package operations
+        run: python -I scripts/bootstrap_python_pip.py
       - name: "Managed native candidate packages [java]: Install synthetic TLS certificate dependency"
         run: |
-          python -m pip install cryptography==46.0.5 ada-url==1.27.0
+          python -m pip install --disable-pip-version-check cryptography==46.0.5 ada-url==1.27.0
       - name: "Managed native candidate packages [java]: Build licensed origin asset on Linux"
         if: runner.os == 'Linux'
         run: |
@@ -2369,7 +2467,7 @@ jobs:
           python sdk/native/crypto-envelope/package-managed-test.py
       - name: "Managed native candidate packages [csharp]: Install synthetic TLS certificate dependency"
         run: |
-          python -m pip install cryptography==46.0.5 ada-url==1.27.0
+          python -m pip install --disable-pip-version-check cryptography==46.0.5 ada-url==1.27.0
       - name: "Managed native candidate packages [csharp]: Build licensed origin asset on Linux"
         if: runner.os == 'Linux'
         run: |
@@ -2560,7 +2658,7 @@ jobs:
           python sdk/native/crypto-envelope/package-managed-test.py
       - name: "Managed native candidate packages [ruby]: Install synthetic TLS certificate dependency"
         run: |
-          python -m pip install cryptography==46.0.5 ada-url==1.27.0
+          python -m pip install --disable-pip-version-check cryptography==46.0.5 ada-url==1.27.0
       - name: "Managed native candidate packages [ruby]: Build licensed origin asset on Linux"
         if: runner.os == 'Linux'
         run: |
@@ -2603,7 +2701,7 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: "Managed cold owner template interoperability [java]: Install synthetic TLS certificate dependency"
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
       - name: "Managed cold owner template interoperability [java]: Exercise cold loading, authority fences and transport lifecycle"
         run: |
           python sdk/native/crypto-envelope/owner-template-run.py --language java --fixture fixture --producer producer
@@ -2628,7 +2726,7 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: "Managed cold owner template interoperability [csharp]: Install synthetic TLS certificate dependency"
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
       - name: "Managed cold owner template interoperability [csharp]: Exercise cold loading, authority fences and transport lifecycle"
         run: |
           python sdk/native/crypto-envelope/owner-template-run.py --language csharp --fixture fixture --producer producer
@@ -2653,7 +2751,7 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: "Managed cold owner template interoperability [ruby]: Install synthetic TLS certificate dependency"
         run: |
-          python -m pip install cryptography==46.0.5
+          python -m pip install --disable-pip-version-check cryptography==46.0.5
       - name: "Managed cold owner template interoperability [ruby]: Exercise cold loading, authority fences and transport lifecycle"
         run: |
           python sdk/native/crypto-envelope/owner-template-run.py --language ruby --fixture fixture --producer producer
@@ -2871,9 +2969,19 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.22.1'
+      - name: Stage hash-verified pip for offline interpreter setup
+        run: python -I scripts/bootstrap_python_pip.py --fetch-only --wheel-dir "${{ runner.temp }}/python-pip-bootstrap"
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        env:
+          PIP_CONFIG_FILE: ${{ runner.os == 'Windows' && 'nul' || '/dev/null' }}
+          PIP_NO_INDEX: '1'
+          PIP_FIND_LINKS: ${{ runner.temp }}/python-pip-bootstrap/pip-26.2.2-py3-none-any.whl
+          PIP_DISABLE_PIP_VERSION_CHECK: '1'
         with:
-          python-version: '3.12'
+          python-version: '3.12.15'
+          check-latest: true
+      - name: Qualify pip before network package operations
+        run: python -I scripts/bootstrap_python_pip.py
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version: '1.26.10'
@@ -2930,7 +3038,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native original owner-review consumption [rust]"
         run: |
-          python -m pip install cryptography==46.0.4
+          python -m pip install --disable-pip-version-check cryptography==46.0.4
       - name: "Native original owner-review consumption [rust]"
         run: |
           rustup toolchain install 1.99.1 --profile minimal
@@ -2977,7 +3085,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native original owner-review consumption [go]"
         run: |
-          python -m pip install cryptography==46.0.4
+          python -m pip install --disable-pip-version-check cryptography==46.0.4
       - name: "Native original owner-review consumption [go]"
         run: |
           rustup toolchain install 1.99.1 --profile minimal
@@ -3024,7 +3132,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native authenticated original current proof [rust]"
         run: |
-          python -m pip install cryptography==46.0.4
+          python -m pip install --disable-pip-version-check cryptography==46.0.4
       - name: "Native authenticated original current proof [rust]"
         run: |
           rustup toolchain install 1.99.1 --profile minimal
@@ -3071,7 +3179,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native authenticated original current proof [go]"
         run: |
-          python -m pip install cryptography==46.0.4
+          python -m pip install --disable-pip-version-check cryptography==46.0.4
       - name: "Native authenticated original current proof [go]"
         run: |
           rustup toolchain install 1.99.1 --profile minimal
@@ -3118,7 +3226,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native original grant HTTPS transport [rust]"
         run: |
-          python -m pip install cryptography==46.0.4
+          python -m pip install --disable-pip-version-check cryptography==46.0.4
       - name: "Native original grant HTTPS transport [rust]"
         run: |
           rustup toolchain install 1.99.1 --profile minimal
@@ -3150,7 +3258,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native original grant HTTPS transport [go]"
         run: |
-          python -m pip install cryptography==46.0.4
+          python -m pip install --disable-pip-version-check cryptography==46.0.4
       - name: "Native original grant HTTPS transport [go]"
         run: |
           rustup toolchain install 1.99.1 --profile minimal
@@ -3182,7 +3290,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native authenticated original page discovery [rust]"
         run: |
-          python -m pip install cryptography==46.0.4
+          python -m pip install --disable-pip-version-check cryptography==46.0.4
       - name: "Native authenticated original page discovery [rust]"
         run: |
           rustup toolchain install 1.99.1 --profile minimal
@@ -3229,7 +3337,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native authenticated original page discovery [go]"
         run: |
-          python -m pip install cryptography==46.0.4
+          python -m pip install --disable-pip-version-check cryptography==46.0.4
       - name: "Native authenticated original page discovery [go]"
         run: |
           rustup toolchain install 1.99.1 --profile minimal
@@ -3276,7 +3384,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native original typed proposals [rust]"
         run: |
-          python -m pip install cryptography==46.0.4
+          python -m pip install --disable-pip-version-check cryptography==46.0.4
       - name: "Native original typed proposals [rust]"
         run: |
           rustup toolchain install 1.99.1 --profile minimal
@@ -3323,7 +3431,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native original typed proposals [go]"
         run: |
-          python -m pip install cryptography==46.0.4
+          python -m pip install --disable-pip-version-check cryptography==46.0.4
       - name: "Native original typed proposals [go]"
         run: |
           rustup toolchain install 1.99.1 --profile minimal
@@ -3370,7 +3478,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native verified original HTTPS read [rust]"
         run: |
-          python -m pip install cryptography==46.0.4
+          python -m pip install --disable-pip-version-check cryptography==46.0.4
       - name: "Native verified original HTTPS read [rust]"
         run: |
           rustup toolchain install 1.99.1 --profile minimal
@@ -3417,7 +3525,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native verified original HTTPS read [go]"
         run: |
-          python -m pip install cryptography==46.0.4
+          python -m pip install --disable-pip-version-check cryptography==46.0.4
       - name: "Native verified original HTTPS read [go]"
         run: |
           rustup toolchain install 1.99.1 --profile minimal
@@ -3523,9 +3631,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Stage hash-verified pip for offline interpreter setup
+        run: python -I scripts/bootstrap_python_pip.py --fetch-only --wheel-dir "${{ runner.temp }}/python-pip-bootstrap"
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        env:
+          PIP_CONFIG_FILE: ${{ runner.os == 'Windows' && 'nul' || '/dev/null' }}
+          PIP_NO_INDEX: '1'
+          PIP_FIND_LINKS: ${{ runner.temp }}/python-pip-bootstrap/pip-26.2.2-py3-none-any.whl
+          PIP_DISABLE_PIP_VERSION_CHECK: '1'
         with:
-          python-version: '3.12'
+          # Keep Linux 3.12 coverage; current Windows installers use 3.13.
+          python-version: ${{ runner.os == 'Windows' && '3.13.17' || '3.12.15' }}
+          check-latest: true
+      - name: Qualify pip before network package operations
+        run: python -I scripts/bootstrap_python_pip.py
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version: '1.26.10'
@@ -3568,7 +3687,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native reviewed template authoring [rust]"
         run: |
-          python -m pip install cryptography==46.0.4
+          python -m pip install --disable-pip-version-check cryptography==46.0.4
       - name: "Native reviewed template authoring [rust]: Build native owner template probe"
         env:
           RUSTUP_TOOLCHAIN: '1.99.1'
@@ -3634,7 +3753,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native reviewed template authoring [go]"
         run: |
-          python -m pip install cryptography==46.0.4
+          python -m pip install --disable-pip-version-check cryptography==46.0.4
       - name: "Native reviewed template authoring [go]: Build native owner template probe"
         env:
           RUSTUP_TOOLCHAIN: '1.99.1'
@@ -3884,7 +4003,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native explicit template opening [rust]"
         run: |
-          python -m pip install cryptography==46.0.4
+          python -m pip install --disable-pip-version-check cryptography==46.0.4
       - name: "Native explicit template opening [rust]: Build native owner template probe"
         env:
           RUSTUP_TOOLCHAIN: '1.99.1'
@@ -3960,7 +4079,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native explicit template opening [go]"
         run: |
-          python -m pip install cryptography==46.0.4
+          python -m pip install --disable-pip-version-check cryptography==46.0.4
       - name: "Native explicit template opening [go]: Build native owner template probe"
         env:
           RUSTUP_TOOLCHAIN: '1.99.1'
@@ -4036,7 +4155,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native reviewed template saves [rust]"
         run: |
-          python -m pip install cryptography==46.0.4
+          python -m pip install --disable-pip-version-check cryptography==46.0.4
       - name: "Native reviewed template saves [rust]: Build native owner template probe"
         env:
           RUSTUP_TOOLCHAIN: '1.99.1'
@@ -4102,7 +4221,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native reviewed template saves [go]"
         run: |
-          python -m pip install cryptography==46.0.4
+          python -m pip install --disable-pip-version-check cryptography==46.0.4
       - name: "Native reviewed template saves [go]: Build native owner template probe"
         env:
           RUSTUP_TOOLCHAIN: '1.99.1'
@@ -4144,9 +4263,19 @@ jobs:
         with:
           go-version: '1.26.10'
           cache: false
+      - name: Stage hash-verified pip for offline interpreter setup
+        run: python -I scripts/bootstrap_python_pip.py --fetch-only --wheel-dir "${{ runner.temp }}/python-pip-bootstrap"
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        env:
+          PIP_CONFIG_FILE: ${{ runner.os == 'Windows' && 'nul' || '/dev/null' }}
+          PIP_NO_INDEX: '1'
+          PIP_FIND_LINKS: ${{ runner.temp }}/python-pip-bootstrap/pip-26.2.2-py3-none-any.whl
+          PIP_DISABLE_PIP_VERSION_CHECK: '1'
         with:
-          python-version: '3.12'
+          python-version: '3.12.15'
+          check-latest: true
+      - name: Qualify pip before network package operations
+        run: python -I scripts/bootstrap_python_pip.py
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.22.1'
@@ -4517,7 +4646,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native current owner templates [rust]"
         run: |
-          python -m pip install cryptography==46.0.4
+          python -m pip install --disable-pip-version-check cryptography==46.0.4
       - name: "Native current owner templates [rust]: Build native owner template probe"
         env:
           RUSTUP_TOOLCHAIN: '1.99.1'
@@ -4568,7 +4697,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native current owner templates [go]"
         run: |
-          python -m pip install cryptography==46.0.4
+          python -m pip install --disable-pip-version-check cryptography==46.0.4
       - name: "Native current owner templates [go]: Build native owner template probe"
         env:
           RUSTUP_TOOLCHAIN: '1.99.1'
@@ -4724,9 +4853,20 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.22.1'
+      - name: Stage hash-verified pip for offline interpreter setup
+        run: python -I scripts/bootstrap_python_pip.py --fetch-only --wheel-dir "${{ runner.temp }}/python-pip-bootstrap"
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        env:
+          PIP_CONFIG_FILE: ${{ runner.os == 'Windows' && 'nul' || '/dev/null' }}
+          PIP_NO_INDEX: '1'
+          PIP_FIND_LINKS: ${{ runner.temp }}/python-pip-bootstrap/pip-26.2.2-py3-none-any.whl
+          PIP_DISABLE_PIP_VERSION_CHECK: '1'
         with:
-          python-version: '3.12'
+          # Keep Linux 3.12 coverage; current Windows installers use 3.13.
+          python-version: ${{ runner.os == 'Windows' && '3.13.17' || '3.12.15' }}
+          check-latest: true
+      - name: Qualify pip before network package operations
+        run: python -I scripts/bootstrap_python_pip.py
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version: '1.26.10'
@@ -4926,7 +5066,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native owner context persistence [rust]"
         run: |
-          python -m pip install cryptography==46.0.4
+          python -m pip install --disable-pip-version-check cryptography==46.0.4
       - name: "Native owner context persistence [rust]: Build native owner context probe"
         env:
           RUSTUP_TOOLCHAIN: '1.99.1'
@@ -4977,7 +5117,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native owner context persistence [go]"
         run: |
-          python -m pip install cryptography==46.0.4
+          python -m pip install --disable-pip-version-check cryptography==46.0.4
       - name: "Native owner context persistence [go]: Build native owner context probe"
         env:
           RUSTUP_TOOLCHAIN: '1.99.1'

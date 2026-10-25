@@ -398,3 +398,6 @@ pub async fn require<C: GenericClient + Sync>(db: &C) -> Result<()> {
 }
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) mod test_fixture;
