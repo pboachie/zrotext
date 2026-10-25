@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -184,6 +185,80 @@ def file_digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def file_identity(metadata):
+    return metadata.st_dev, metadata.st_ino
+
+
+def validate_local_metadata(metadata, *, directory=False, private=False):
+    """Check job-owned artifacts, not vendor installations or global stores.
+
+    Windows does not expose POSIX ownership/ACL semantics through stat. Its
+    runner-provisioned ACL remains a trust boundary; reject reparse points on
+    both platforms and do not pretend chmod bits validate a Windows ACL.
+    """
+    expected_type = stat.S_ISDIR if directory else stat.S_ISREG
+    if (not expected_type(metadata.st_mode)
+            or getattr(metadata, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+        raise ValueError("Job artifact must be an ordinary file or directory without reparse points")
+    if not directory and metadata.st_nlink != 1:
+        raise ValueError("Job artifact must not have hard-link aliases")
+    if os.name == "posix":
+        forbidden = 0o077 if private and directory else 0o022
+        if metadata.st_uid != os.geteuid() or metadata.st_mode & forbidden:
+            raise ValueError("Job artifact ownership or permissions are unqualified")
+
+
+def ordinary_directory(path, *, private=False):
+    if not path.is_absolute() or path != path.resolve(strict=True):
+        raise ValueError("Job directory must be absolute and must not traverse links")
+    metadata = path.lstat()
+    validate_local_metadata(metadata, directory=True, private=private)
+    return file_identity(metadata)
+
+
+def runner_temporary_root():
+    try:
+        root = Path(os.environ["RUNNER_TEMP"])
+        ordinary_directory(root)
+        return root
+    except (KeyError, OSError, RuntimeError) as error:
+        raise ValueError("An ordinary runner-owned temporary directory is required") from error
+
+
+def artifact_parent(root, directory):
+    if directory.parent != root or not directory.name.startswith(TRUST_DIRECTORY_PREFIX):
+        raise ValueError("Trust artifact is outside its per-job directory")
+    ordinary_directory(root)
+    return ordinary_directory(directory, private=True)
+
+
+def open_local_file(path, flags):
+    """Bind an existing ordinary file to a descriptor; never create a target.
+
+    O_NOFOLLOW/O_NONBLOCK strengthen POSIX opens. On Windows, lstat reparse
+    checks and before/opened/after file identities catch path replacement;
+    these checks are not a sandbox against a malicious same-user process.
+    """
+    if not path.is_absolute() or path != path.resolve(strict=True):
+        raise ValueError("Job file must be absolute and must not traverse links")
+    before = path.lstat()
+    validate_local_metadata(before)
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_BINARY", 0) | getattr(os, "O_NOINHERIT", 0)
+    descriptor = os.open(path, flags)
+    try:
+        opened = os.fstat(descriptor)
+        after = path.lstat()
+        validate_local_metadata(opened)
+        validate_local_metadata(after)
+        if file_identity(before) != file_identity(opened) or file_identity(after) != file_identity(opened):
+            raise ValueError("Job file identity changed while opening")
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
 def vendor_security(home):
     # Preserve the vendor algorithm policy and compromised-certificate blocklist.
     return {name: file_digest(home / name) for name in
@@ -215,22 +290,36 @@ def verify_effective(output, store, certificates):
 def load_manifest():
     try:
         manifest_path = Path(os.environ[TRUST_MANIFEST_ENV])
-        temporary_root = Path(os.environ["RUNNER_TEMP"]).resolve()
-        resolved = manifest_path.resolve()
-        if (manifest_path.is_symlink() or not resolved.is_file() or resolved.name != "trust.json"
-                or not resolved.parent.name.startswith(TRUST_DIRECTORY_PREFIX)
-                or resolved.parent.parent != temporary_root or resolved.stat().st_size > 1_000_000):
+        temporary_root = runner_temporary_root()
+        parent_identity = artifact_parent(temporary_root, manifest_path.parent)
+        if manifest_path.name != "trust.json":
             raise ValueError("Trust manifest is not an ordinary per-job artifact")
-        manifest = json.loads(resolved.read_text(encoding="utf-8"))
+        descriptor = open_local_file(manifest_path, os.O_RDONLY)
+        try:
+            before = os.fstat(descriptor)
+            if before.st_size > 1_000_000:
+                raise ValueError("Trust manifest is too large")
+            with os.fdopen(descriptor, "rb", closefd=False) as source:
+                data = source.read(1_000_001)
+            after = os.fstat(descriptor)
+            if (len(data) > 1_000_000 or before.st_size != after.st_size
+                    or before.st_mtime_ns != after.st_mtime_ns
+                    or file_identity(manifest_path.lstat()) != file_identity(before)):
+                raise ValueError("Trust manifest changed while reading")
+            manifest = json.loads(data.decode("utf-8"))
+        finally:
+            os.close(descriptor)
         if (set(manifest) != {"schema", "java_home", "source_sha256", "copy_sha256", "store_type",
                               "source_inventory", "copy_inventory", "vendor_security"} or manifest["schema"] != 2
                 or manifest["store_type"] not in {"JKS", "PKCS12"}):
             raise ValueError("Unexpected trust manifest schema")
-        store = resolved.parent / "cacerts"
-        if store.is_symlink() or not store.is_file():
-            raise ValueError("Qualified trust copy must be an ordinary file")
+        store = manifest_path.parent / "cacerts"
+        descriptor = open_local_file(store, os.O_RDONLY)
+        os.close(descriptor)
+        if artifact_parent(temporary_root, manifest_path.parent) != parent_identity:
+            raise ValueError("Trust artifact directory changed during inspection")
         return manifest, store
-    except (KeyError, OSError, TypeError, json.JSONDecodeError) as error:
+    except (KeyError, OSError, TypeError, UnicodeError, RuntimeError, json.JSONDecodeError) as error:
         raise ValueError("Job-local trust manifest is unavailable or malformed") from error
 
 

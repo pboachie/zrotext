@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import tempfile
 import subprocess
+import stat
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -56,7 +58,9 @@ class JavaTrustCopyTests(unittest.TestCase):
         (self.home / "conf/security").mkdir(parents=True)
         (self.home / "conf/security/java.security").write_bytes(b"synthetic vendor policy")
         (self.home / "lib/security/blocked.certs").write_bytes(b"synthetic vendor blocklist")
-        self.environment_file = self.root / "job-environment"
+        commands = self.root / "_runner_file_commands"
+        commands.mkdir()
+        self.environment_file = commands / "set_env_00000000-0000-0000-0000-000000000000"
         self.environment_file.touch()
         self.environment = patch.dict(os.environ, {"RUNNER_TEMP": str(self.root),
                                                   "GITHUB_ENV": str(self.environment_file)}, clear=True)
@@ -164,6 +168,7 @@ class JavaTrustCopyTests(unittest.TestCase):
         store.write_bytes(b"changed after preparation")
         with self.assertRaisesRegex(ValueError, "changed"):
             java.verify_copy("java", self.home, store, manifest)
+        (self.root / "other-job").mkdir()
         with patch.dict(os.environ, {"RUNNER_TEMP": str(self.root / "other-job")}), \
                 self.assertRaisesRegex(ValueError, "per-job"):
             java.load_manifest()
@@ -216,6 +221,159 @@ class JavaTrustCopyTests(unittest.TestCase):
                 1, "java", stderr="store integrity verification failed")), \
                 self.assertRaisesRegex(ValueError, "unverified"):
             java.probe("java", "inventory", self.source)
+
+    def test_environment_output_rejects_direct_protected_targets(self):
+        for target in (self.source, self.home / "conf/security/java.security",
+                       self.home / "lib/security/blocked.certs"):
+            before = target.read_bytes()
+            with self.subTest(target=target.name), patch.dict(os.environ, {"GITHUB_ENV": str(target)}), \
+                    self.assertRaisesRegex(ValueError, "per-step command"):
+                self.prepare()
+            self.assertEqual(target.read_bytes(), before)
+        with prepare.environment_output(self.root, []) as output, \
+                self.assertRaisesRegex(ValueError, "aliases"):
+            output.verify([self.environment_file])
+
+    def test_environment_output_hard_link_cannot_mutate_original_after_hash_checks(self):
+        for target in (self.source, self.home / "conf/security/java.security",
+                       self.home / "lib/security/blocked.certs"):
+            before = target.read_bytes()
+            self.environment_file.unlink()
+            os.link(target, self.environment_file)
+            with self.subTest(target=target.name), self.assertRaisesRegex(ValueError, "hard-link"):
+                self.prepare()
+            self.assertEqual(target.read_bytes(), before)
+            self.environment_file.unlink()
+            self.environment_file.touch()
+
+    def test_file_identity_swap_during_open_is_rejected_without_writing(self):
+        original_open = os.open
+        before = self.source.read_bytes()
+        def replace_before_open(path, flags, *args, **kwargs):
+            if Path(path) == self.environment_file:
+                self.environment_file.unlink()
+                os.link(self.source, self.environment_file)
+            return original_open(path, flags, *args, **kwargs)
+        with patch.object(java.os, "open", side_effect=replace_before_open), self.assertRaises(ValueError):
+            self.prepare()
+        self.assertEqual(self.source.read_bytes(), before)
+
+    def test_output_path_replacement_after_open_cannot_redirect_the_descriptor(self):
+        before = self.source.read_bytes()
+        swap_refused = False
+        def probe(executable, operation, *args, env=None):
+            nonlocal swap_refused
+            result = self.probe(executable, operation, *args, env=env)
+            if operation == "effective":
+                try:
+                    self.environment_file.rename(self.environment_file.with_suffix(".previous"))
+                except PermissionError:
+                    # Windows can deny replacement of an open descriptor.
+                    swap_refused = True
+                else:
+                    os.link(self.source, self.environment_file)
+            return result
+        try:
+            self.prepare(probe)
+        except ValueError:
+            self.assertFalse(swap_refused)
+        else:
+            self.assertTrue(swap_refused)
+        self.assertEqual(self.source.read_bytes(), before)
+
+    def test_source_hash_is_rechecked_after_environment_export(self):
+        original_append = prepare.EnvironmentOutput.append
+        def change_after_append(output, value, protected):
+            original_append(output, value, protected)
+            self.source.write_bytes(b"unexpected external change after export")
+        with patch.object(prepare.EnvironmentOutput, "append", new=change_after_append), \
+                self.assertRaisesRegex(ValueError, "final environment export"):
+            self.prepare()
+
+    def test_output_file_symlink_is_rejected(self):
+        before = self.source.read_bytes()
+        self.environment_file.unlink()
+        try:
+            self.environment_file.symlink_to(self.source)
+        except OSError as error:
+            if os.name == "nt" and getattr(error, "winerror", None) == 1314:
+                self.skipTest("Windows account lacks symlink privilege; reparse metadata checked separately")
+            raise
+        with self.assertRaisesRegex(ValueError, "links"):
+            self.prepare()
+        self.assertEqual(self.source.read_bytes(), before)
+
+    def test_output_swap_during_write_never_redirects_descriptor_to_source(self):
+        original_write = os.write
+        before = self.source.read_bytes()
+        swap_refused = False
+        def replace_after_write(descriptor, value):
+            nonlocal swap_refused
+            count = original_write(descriptor, value)
+            try:
+                self.environment_file.rename(self.environment_file.with_suffix(".previous"))
+            except PermissionError:
+                swap_refused = True
+            else:
+                os.link(self.source, self.environment_file)
+            return count
+        with patch.object(prepare.os, "write", side_effect=replace_after_write):
+            try:
+                self.prepare()
+            except ValueError:
+                self.assertFalse(swap_refused)
+            else:
+                self.assertTrue(swap_refused)
+        self.assertEqual(self.source.read_bytes(), before)
+
+    def test_manifest_and_copy_hard_links_are_rejected(self):
+        self.prepare()
+        self.export()
+        manifest_path = Path(os.environ[java.TRUST_MANIFEST_ENV])
+        for target in (manifest_path, self.store):
+            alias = target.with_name(target.name + ".alias")
+            os.link(target, alias)
+            with self.subTest(target=target.name), self.assertRaisesRegex(ValueError, "hard-link"):
+                java.load_manifest()
+            alias.unlink()
+
+    @unittest.skipUnless(os.name == "posix", "POSIX permissions are not Windows ACLs")
+    def test_unqualified_artifact_parent_permissions_are_rejected(self):
+        self.prepare()
+        self.export()
+        self.store.parent.chmod(0o777)
+        with self.assertRaisesRegex(ValueError, "permissions"):
+            java.load_manifest()
+        self.store.parent.chmod(0o700)
+        self.environment_file.parent.chmod(0o777)
+        with self.assertRaisesRegex(ValueError, "permissions"):
+            with prepare.environment_output(self.root, []):
+                self.fail("Unqualified command directory was accepted")
+
+    def test_windows_reparse_metadata_is_rejected_without_posix_acl_assumptions(self):
+        metadata = SimpleNamespace(st_mode=stat.S_IFDIR | 0o700,
+                                   st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT)
+        with self.assertRaisesRegex(ValueError, "reparse"):
+            java.validate_local_metadata(metadata, directory=True)
+        ordinary = SimpleNamespace(st_mode=stat.S_IFREG | 0o666, st_nlink=1, st_file_attributes=0)
+        with patch.object(java.os, "name", "nt"):
+            java.validate_local_metadata(ordinary)
+
+    def test_artifact_parent_symlink_is_rejected(self):
+        self.prepare()
+        self.export()
+        parent = self.store.parent
+        real_parent = parent.with_name(parent.name + "-original")
+        parent.rename(real_parent)
+        try:
+            parent.symlink_to(real_parent, target_is_directory=True)
+        except OSError as error:
+            real_parent.rename(parent)
+            if os.name == "nt" and getattr(error, "winerror", None) == 1314:
+                self.skipTest("Windows account cannot create symbolic links; reparse metadata checked separately")
+            raise
+        with self.assertRaisesRegex(ValueError, "links"):
+            java.load_manifest()
 
 
 if __name__ == "__main__":

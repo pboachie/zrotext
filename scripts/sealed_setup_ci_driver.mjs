@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Explicit compiled fixtures, never a product launcher or Node root signer.
 import assert from 'node:assert/strict';
-import {CleanupFailure,terminateOwnedTree,runOwnedProcess,ownedProcessFailureObservation,ownedProcessFailureStdout,ownedProcessFailureCleanup} from '../sdk/typescript/test/owned-process-fixture.mjs';
+import {CleanupFailure,terminateOwnedTree,runOwnedProcess,ownedProcessFailureObservation,ownedProcessFailureStdout,ownedProcessFailureCleanup,ownedProcessFailureGradleSignals} from '../sdk/typescript/test/owned-process-fixture.mjs';
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {createReadStream} from 'node:fs';
@@ -91,6 +91,13 @@ export function phoneConsumerBuildFailureDiagnostic(stage,error){
     return observation===null?null:'PHONE_CONSUMER_BUILD_FAILURE '+JSON.stringify(observation);
   }catch{return null;}
 }
+export function phoneConsumerBuildSignalsDiagnostic(stage,error){
+  try{
+    if(stage!=='phone-consumer-build')return null;
+    const observed=ownedProcessFailureGradleSignals(error);
+    return observed===null?null:'PHONE_CONSUMER_BUILD_SIGNALS '+JSON.stringify({observed});
+  }catch{return null;}
+}
 const phoneBuildMarkers=new Map([
   ['> Task :app:buildAndroidOwnerCustodyNative','native-custody'],
   ['> Task :app:preBuild','pre-build'],
@@ -137,7 +144,7 @@ export async function main(args=process.argv.slice(2)){
     stage='browser-package';assets=await createBrowserPackage();await capture(process.execPath,[path.join(repo,'scripts/package_conversation_browser.mjs'),'--owned-setup-fixture'],{timeoutMs:30000});
     // Cold Windows builds include all four native custody ABIs before Kotlin.
     // Bound compilation separately from the unchanged acceptance/cleanup deadlines.
-    stage='phone-consumer-build';await runOwnedProcess('cmd.exe',['/d','/c','gradlew.bat',':app:compileDebugUnitTestKotlin','--no-daemon','--max-workers=1'],{cwd:path.join(repo,'android'),timeoutMs:2400000,maximum:MAX_OUTPUT});
+    stage='phone-consumer-build';await runOwnedProcess('cmd.exe',['/d','/c','gradlew.bat',':app:compileDebugUnitTestKotlin','--no-daemon','--max-workers=1'],{cwd:path.join(repo,'android'),timeoutMs:2400000,maximum:MAX_OUTPUT,gradleFailureSignals:true});
     const origin=`https://owner.example.test:${await reservePort()}`;stage='server-readiness';let resolveReady,rejectReady;const readiness=new Promise((resolve,reject)=>{resolveReady=resolve;rejectReady=reject;});
     server=spawn(serverExecutable,['--exact',SERVER_TEST,'--ignored','--nocapture','--test-threads=1'],{cwd:repo,windowsHide:true,shell:false,detached:process.platform!=='win32',stdio:['ignore','pipe','pipe'],env:{...process.env,ZT_OWNER_SETUP_FIXTURE_ORIGIN:origin,ZT_OWNER_SETUP_BROWSER_ASSETS:assets}});
     exited=new Promise(resolve=>server.once('close',code=>{serverExit=code;if(!ready)rejectReady(Error('Fixture exited before readiness'));resolve(code);}));server.once('error',()=>rejectReady(Error('Fixture launch failed')));
@@ -155,7 +162,7 @@ export async function main(args=process.argv.slice(2)){
     assert.equal(await executableDigest(serverExecutable),serverSha256,'Server executable changed');assert.equal(await executableDigest(nativeExecutable),nativeSha256,'Native executable changed');
     console.log(JSON.stringify({stage:'PASS-COMPILED-SETUP-FIXTURE',result,driverSource,serverSourceLabel:options['server-source']||driverSource,nativeSourceLabel:options['native-source']||driverSource,serverSourceMode:options['server-executable']?'caller-supplied-source-label':'cargo-json-current-source',nativeSourceMode:options['native-executable']?'caller-supplied-source-label':'cargo-json-current-source',serverSha256,nativeSha256,physicalDevice:false,carrierSms:false}));return 0;
   }catch(error){if(error instanceof CleanupFailure)unsafeCleanup=true;
-    try{for(const diagnostic of [consumerProcessFailureDiagnostic(stage,error),phoneConsumerBuildFailureDiagnostic(stage,error),phoneConsumerBuildProgressDiagnostic(stage,error),phoneConsumerBuildSettlementDiagnostic(stage,error)])if(diagnostic!==null)console.error(diagnostic);}catch{}
+    try{for(const diagnostic of [consumerProcessFailureDiagnostic(stage,error),phoneConsumerBuildFailureDiagnostic(stage,error),phoneConsumerBuildSignalsDiagnostic(stage,error),phoneConsumerBuildProgressDiagnostic(stage,error),phoneConsumerBuildSettlementDiagnostic(stage,error)])if(diagnostic!==null)console.error(diagnostic);}catch{}
     console.error(`Sealed setup fixture failed at ${stage}; private readiness and signing material withheld.`);return unsafeCleanup?2:1;}
   finally{await browser?.close().catch(()=>{});if(ready&&serverExit===undefined)await fixtureControl(ready)('finish').catch(()=>{});if(server&&serverExit===undefined){try{await deadline(exited,15000);}catch{try{await terminateOwnedTree(server,exited);}catch{unsafeCleanup=true;}}}await termination;if(unsafeCleanup){process.exitCode=2;throw new CleanupFailure('Owned processes not confirmed stopped; staging retained');}if(assets){assert.ok(path.dirname(assets)===path.join(repo,'target')&&path.basename(assets)==='sealed-setup-browser-fixture');await rm(assets,{recursive:true,force:true});}}
 }

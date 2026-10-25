@@ -101,6 +101,14 @@ Before initialization it gives the current user and SYSTEM inheritable access to
 that empty fixture directory, so PostgreSQL's restricted token can create its data
 tree. It does not change ancestor permissions or existing databases and services.
 
+The sealed setup phone-build wrapper emits only fixed Gradle failure indicators:
+`dependency-verification`, `dependency-resolution`, `java-tls`, `gradle-daemon`,
+or `unknown`. These are observed fixed-string signals, not proof of a root cause.
+Its opt-in streaming matcher retains only integer match positions and category
+flags; no raw stderr is retained or exported. The first failure freezes these
+signals before process cleanup, and an output-bound failure reports `unknown`.
+Other subprocesses do not enable the matcher.
+
 `cargo test --locked --workspace` reports PostgreSQL-backed tests as **ignored**. They are separate from the unit tests so a missing database cannot look like a passing SQL test. Start a disposable PostgreSQL instance bound to your machine only:
 
 ```sh
