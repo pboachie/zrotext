@@ -45,24 +45,35 @@ export function boundedText(text: string, maximum: number): void {
  */
 export function validateTemplate(template: string): void {
   boundedText(template, templateLimits.template);
-  for (let index = 0; index < template.length; ) {
-    if (template[index] === "{") {
-      const rest = template.slice(index);
-      const match = /^\{\{([A-Za-z_][A-Za-z0-9_]{0,31})\}\}/.exec(rest);
-      if (!match || !validKey(match[1])) {
-        throw new Error(
-          "Use only {{identifier}} variables; braces must form a complete variable.",
-        );
-      }
-      index += match[0].length;
-    } else {
-      if (template[index] === "}") {
-        throw new Error(
-          "Use only {{identifier}} variables; braces must form a complete variable.",
-        );
-      }
-      index += 1;
+
+  // ⚡ Bolt: Fast Template Literal Parsing & Bounded Slices
+  // We use `indexOf` for structural boundary scanning (significantly faster than
+  // character-by-character iteration) and bound the `slice` length to O(1) expected max
+  // token size (36 chars) to prevent O(N^2) memory allocations on long templates.
+  let index = 0;
+  while (index < template.length) {
+    const nextOpen = template.indexOf("{", index);
+    const nextClose = template.indexOf("}", index);
+
+    if (nextOpen === -1 && nextClose === -1) {
+      break;
     }
+
+    if (nextClose !== -1 && (nextOpen === -1 || nextClose < nextOpen)) {
+      throw new Error(
+        "Use only {{identifier}} variables; braces must form a complete variable.",
+      );
+    }
+
+    index = nextOpen;
+    const rest = template.slice(index, index + 36);
+    const match = /^\{\{([A-Za-z_][A-Za-z0-9_]{0,31})\}\}/.exec(rest);
+    if (!match || !validKey(match[1])) {
+      throw new Error(
+        "Use only {{identifier}} variables; braces must form a complete variable.",
+      );
+    }
+    index += match[0].length;
   }
 }
 
