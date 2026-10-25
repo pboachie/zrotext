@@ -316,6 +316,104 @@ else:
         self.assertFalse((self.results / "one.json").exists())
 
 
+class ReceiptDestinationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.runner = self.root / "runner-temp"
+        self.runner.mkdir()
+        self.other = self.root / "other"
+        self.other.mkdir()
+        self.environment = mock.patch.dict(os.environ, {"RUNNER_TEMP": str(self.runner)})
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+
+    def test_output_is_created_only_below_the_explicit_root(self):
+        path = self.runner / "lane/coverage.json"
+        with ci.receipt_destination(path) as destination:
+            self.assertFalse(os.get_inheritable(destination[0]))
+            self.assertFalse(path.exists())
+            ci.write_receipt(destination, {"synthetic": True})
+        self.assertEqual(ci.read_json(path), {"synthetic": True})
+        with self.assertRaises(ValueError):
+            with ci.receipt_destination(path):
+                self.fail("Existing output was accepted")
+
+    def test_outside_relative_and_parent_traversal_paths_refuse_before_creation(self):
+        for path in (self.other / "coverage.json", Path("coverage.json"),
+                     self.runner / ".." / "other/coverage.json", self.runner):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                with ci.receipt_destination(path):
+                    self.fail("Invalid output was accepted")
+        self.assertEqual(list(self.other.iterdir()), [])
+        self.assertEqual(list(self.runner.iterdir()), [])
+
+    def test_linked_parents_refuse_without_creating_files_or_subdirectories(self):
+        alias = self.runner / "lane"
+        alias.symlink_to(self.other, target_is_directory=True)
+        for path in (alias / "coverage.json", alias / "nested/coverage.json"):
+            with self.subTest(path=path), self.assertRaises(OSError):
+                with ci.receipt_destination(path):
+                    self.fail("Linked parent was accepted")
+        self.assertEqual(list(self.other.iterdir()), [])
+
+    def test_existing_hardlink_and_dangling_symlink_leaves_are_not_overwritten(self):
+        original = self.other / "existing.json"
+        original.write_text("synthetic original")
+        hardlink = self.runner / "hardlink.json"
+        os.link(original, hardlink)
+        dangling = self.runner / "dangling.json"
+        dangling.symlink_to(self.other / "missing.json")
+        for path in (hardlink, dangling):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                with ci.receipt_destination(path):
+                    self.fail("Existing alias was accepted")
+        self.assertEqual(original.read_text(), "synthetic original")
+        self.assertFalse((self.other / "missing.json").exists())
+
+    def test_final_creation_remains_exclusive_after_the_initial_check(self):
+        path = self.runner / "coverage.json"
+        with ci.receipt_destination(path) as destination:
+            path.symlink_to(self.other / "missing.json")
+            with self.assertRaises(FileExistsError):
+                ci.write_receipt(destination, {"synthetic": True})
+        self.assertFalse((self.other / "missing.json").exists())
+
+    def test_a_later_parent_alias_does_not_redirect_the_held_descriptor(self):
+        parent = self.runner / "lane"
+        retained = self.runner / "retained"
+        with ci.receipt_destination(parent / "coverage.json") as destination:
+            parent.rename(retained)
+            parent.symlink_to(self.other, target_is_directory=True)
+            ci.write_receipt(destination, {"synthetic": True})
+        self.assertEqual(ci.read_json(retained / "coverage.json"), {"synthetic": True})
+        self.assertEqual(list(self.other.iterdir()), [])
+
+    def test_parent_descriptor_is_closed_after_success_and_failure(self):
+        with ci.receipt_destination(self.runner / "success.json") as destination:
+            descriptor = destination[0]
+        with self.assertRaises(OSError):
+            os.fstat(descriptor)
+        try:
+            with ci.receipt_destination(self.runner / "failure.json") as destination:
+                descriptor = destination[0]
+                raise RuntimeError("synthetic lane failure")
+        except RuntimeError:
+            pass
+        with self.assertRaises(OSError):
+            os.fstat(descriptor)
+        self.assertFalse((self.runner / "failure.json").exists())
+
+    def test_linked_missing_or_unspecified_runner_roots_refuse(self):
+        alias = self.root / "alias"
+        alias.symlink_to(self.runner, target_is_directory=True)
+        for value in (str(alias), str(self.root / "missing"), "relative", ""):
+            with mock.patch.dict(os.environ, {"RUNNER_TEMP": value}), self.assertRaises(ValueError):
+                with ci.receipt_destination(self.runner / "coverage.json"):
+                    self.fail("Invalid runner root was accepted")
+
+
 class WorkflowSourceTests(unittest.TestCase):
     def test_required_rust_is_an_always_strict_aggregator(self):
         aggregate = job("ci.yml", "rust")
@@ -377,6 +475,8 @@ def native_runner_smoke():
     """No dependencies or database: exercise the real pinned native Cargo hook."""
     with tempfile.TemporaryDirectory(prefix="ci-native-runner-") as directory:
         root = Path(directory)
+        runner_temp = root / "runner-temp"
+        runner_temp.mkdir()
         names = ("zrotext-delivery-store", "zrotext-server", "zrotext-migrator", "zrotext-empty")
         (root / "Cargo.toml").write_text('[workspace]\nresolver="3"\nmembers=' + json.dumps(names) + '\n')
         test = '''#[test]
@@ -424,12 +524,12 @@ fn cargo_runtime_is_preserved() {
         env = {"GITHUB_SHA": commit, "GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "1",
                "CI_RUNNER_SENTINEL": "unchanged", "LD_LIBRARY_PATH": "inherited-library-sentinel",
                "CI_DOCTEST_PROOF": str(root / "doctest-proof"), "CARGO_TARGET_DIR": str(root / "target"),
-               "CARGO_NET_OFFLINE": "true", "RUSTUP_TOOLCHAIN": toolchain}
+               "CARGO_NET_OFFLINE": "true", "RUSTUP_TOOLCHAIN": toolchain, "RUNNER_TEMP": str(runner_temp)}
         with mock.patch.dict(os.environ, env):
             for suite in ci.SUITES:
                 receipts = []
                 for lane in ci.LANES:
-                    path = root / (suite + "-" + lane + ".json")
+                    path = runner_temp / (suite + "-" + lane + ".json")
                     ci.run_lane(root, suite, lane, path)
                     receipts.append(ci.read_json(path))
                 inventory, targets = ci.workspace_inventory(ci.read_metadata(root), root, suite)
@@ -444,7 +544,7 @@ fn cargo_runtime_is_preserved() {
             subprocess.run([*git, "add", "zrotext-migrator/src/lib.rs"], cwd=root, check=True)
             subprocess.run([*git, "commit", "-qm", "Synthetic failing doctest"], cwd=root, check=True)
             os.environ["GITHUB_SHA"] = ci.capture(["git", "rev-parse", "HEAD"], root).strip()
-            refusal = root / "must-not-exist.json"
+            refusal = runner_temp / "must-not-exist.json"
             print("Expecting the following synthetic doctest failure; no receipt may be written.", flush=True)
             try:
                 ci.run_lane(root, "default", "remaining", refusal)

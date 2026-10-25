@@ -7,6 +7,7 @@ another lane. Ordinary Cargo, without that runner, retains default doctest cover
 Receipts contain structural test identities, never captured fixture output.
 """
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -45,6 +46,56 @@ def read_json(path):
     require(path.is_file() and not path.is_symlink(), "Missing or linked JSON input")
     require(path.stat().st_size <= MAX_OUTPUT, "Oversized JSON input")
     return decode(path.read_text(encoding="utf-8"))
+
+
+@contextmanager
+def receipt_destination(receipt):
+    """Hold a non-aliased parent below the runner's existing temporary root.
+
+    CLI output paths may not escape that root. Descriptor-relative traversal
+    refuses linked parents, including a linked final directory; exclusive final
+    creation also refuses existing files, hard links and dangling leaf symlinks.
+    This is an accidental-path boundary, not isolation from other same-job code.
+    """
+    value = os.environ.get("RUNNER_TEMP")
+    require(value, "RUNNER_TEMP is required for coverage output")
+    root = Path(value)
+    require(root.is_absolute() and ".." not in root.parts and root != root.parent,
+            "Runner temporary root must be an absolute directory")
+    require(root.is_dir() and root.resolve(strict=True) == root,
+            "Runner temporary root must not contain aliases")
+    require(receipt.is_absolute() and ".." not in receipt.parts,
+            "Coverage output must be an absolute path without parent traversal")
+    parts = receipt.relative_to(root).parts
+    require(parts, "Coverage output must be a file below runner temporary root")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    parent = os.open(root, flags)
+    try:
+        for component in parts[:-1]:
+            try:
+                os.mkdir(component, mode=0o700, dir_fd=parent)
+            except FileExistsError:
+                pass
+            child = os.open(component, flags, dir_fd=parent)
+            os.close(parent)
+            parent = child
+        try:
+            os.stat(parts[-1], dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise ValueError("Refusing an existing coverage output entry")
+        yield parent, parts[-1]
+    finally:
+        os.close(parent)
+
+
+def write_receipt(destination, result):
+    parent, name = destination
+    descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                         mode=0o600, dir_fd=parent)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        json.dump(result, stream, sort_keys=True)
 
 
 def digest(value):
@@ -299,7 +350,11 @@ def validate_records(records, targets, suite, lane):
 
 def run_lane(root, suite, lane, receipt):
     require(lane in LANES, "Unknown lane")
-    require(not receipt.exists(), "Refusing an existing receipt")
+    with receipt_destination(receipt) as destination:
+        _run_lane(root, suite, lane, destination)
+
+
+def _run_lane(root, suite, lane, destination):
     identity = source_identity(root)
     refuse_runner_overrides(root, os.environ)
     host = re.findall(r"^host: (.+)$", capture(["rustc", "-vV"], root), re.MULTILINE)
@@ -334,9 +389,7 @@ def run_lane(root, suite, lane, receipt):
     result["inventory_digest"] = digest({"workspace": inventory, "targets": {
         key: {k: v for k, v in item.items() if k not in ("executed", "passed")}
         for key, item in records.items()}})
-    receipt.parent.mkdir(parents=True, exist_ok=True)
-    with receipt.open("x", encoding="utf-8") as stream:
-        json.dump(result, stream, sort_keys=True)
+    write_receipt(destination, result)
     print(f"Verified PostgreSQL lane: {lane}")
 
 
