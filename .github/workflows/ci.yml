@@ -284,7 +284,9 @@ jobs:
     # Runs even if the change filter failed; its steps then run in full.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    # Allow cold native/Android compilation and one isolated JVM per test class.
+    # Keep every lint, unit-test and APK gate within a finite job budget.
+    timeout-minutes: 45
     env:
       RUN_ANDROID: ${{ needs.changes.outputs.android != 'false' }}
     steps:

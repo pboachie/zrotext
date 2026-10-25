@@ -109,6 +109,13 @@ flags; no raw stderr is retained or exported. The first failure freezes these
 signals before process cleanup, and an output-bound failure reports `unknown`.
 Other subprocesses do not enable the matcher.
 
+Later compiled setup failures expose only fixed fixture substages, such as
+browser launch, navigation, line challenge, native signing, or the aggregate
+deadline. Branded exception identity supplies these labels; exception messages,
+stacks, URLs, readiness and signing material are never diagnostic fields. Failed
+cleanup remains a failure and records its fixed substage alongside the original
+failure. Unconfirmed owned-process cleanup retains its stronger failure priority.
+
 `cargo test --locked --workspace` reports PostgreSQL-backed tests as **ignored**. They are separate from the unit tests so a missing database cannot look like a passing SQL test. Start a disposable PostgreSQL instance bound to your machine only:
 
 ```sh

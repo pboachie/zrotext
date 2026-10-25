@@ -4,7 +4,13 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { lookup } from 'node:dns/promises';
 import { createHash } from 'node:crypto';
-import { validateReady,parseNativeResult,nativeRequest,verifyIndependentScope,fixtureControl,allowFrontendRequest,fixtureFrontendHandler } from './conversation-setup-server-orchestration.mjs';
+import childProcess from 'node:child_process';
+import {syncBuiltinESMExports} from 'node:module';
+import {EventEmitter} from 'node:events';
+import path from 'node:path';
+import {ownedProcessFailureObservation} from './owned-process-fixture.mjs';
+import {setupFailureObservation} from './setup-failure-fixture.mjs';
+import { validateReady,parseNativeResult,nativeRequest,verifyIndependentScope,fixtureControl,allowFrontendRequest,fixtureFrontendHandler,runCompiledSetupAcceptance } from './conversation-setup-server-orchestration.mjs';
 const id='11111111-1111-4111-8111-111111111111',other='22222222-2222-4222-8222-222222222222';
 const origin='https://owner.example.test:4443';
 const hash=b=>createHash('sha256').update(b).digest('hex');
@@ -31,6 +37,21 @@ test('actual loopback control transport uses fixed endpoint/token and validates 
   const server=http.createServer(async(req,res)=>{let body='';for await(const chunk of req)body+=chunk;requests.push({method:req.method,path:req.url,controlHeader:req.headers['x-zrotext-fixture-token'],body:JSON.parse(body)});res.writeHead(200,{'content-type':'application/json'});res.end(big?'x'.repeat(16385):JSON.stringify({version:1,synthetic:true,operation:responseOperation,counters:{rootCompletions:0,lineRegistrations:0,lineApprovals:0,phoneAcknowledgments:0}}));});
   const address=(await lookup('localhost',{family:4})).address;await new Promise(resolve=>server.listen(0,address,resolve));
   try{const r=ready();r.port=server.address().port;const call=fixtureControl(r);await call('snapshot');assert.deepEqual(requests,[{method:'POST',path:'/__fixture/owner-setup',controlHeader:r.controlToken,body:{version:1,operation:'snapshot'}}]);responseOperation='finish';await assert.rejects(call('snapshot'));big=true;await assert.rejects(call('snapshot'));await assert.rejects(call('root_sign_scope','not-a-uuid'));assert.equal(requests.length,3);}finally{await new Promise(resolve=>server.close(resolve));}
+});
+test('failed fixture finish preserves the actual native process failure and both fixed contexts',async t=>{
+  const operations=[],server=http.createServer(async(req,res)=>{let body='';for await(const chunk of req)body+=chunk;operations.push(JSON.parse(body).operation);res.writeHead(503);res.end();});
+  const address=(await lookup('localhost',{family:4})).address;await new Promise(resolve=>server.listen(0,address,resolve));
+  const platform=Object.getOwnPropertyDescriptor(process,'platform'),systemRoot=process.env.SystemRoot;let launches=0;
+  Object.defineProperty(process,'platform',{...platform,value:'win32'});process.env.SystemRoot='synthetic-system-root';
+  t.mock.method(childProcess,'spawn',()=>{launches++;const child=new EventEmitter();child.stdout=new EventEmitter();child.stderr=new EventEmitter();queueMicrotask(()=>{child.stderr.emit('data',Buffer.from('synthetic-private-canary'));child.emit('close',7);});return child;});syncBuiltinESMExports();
+  try{
+    const r=ready();r.port=server.address().port;let failure;
+    try{await runCompiledSetupAcceptance({browser:{},ready:r,nativeExecutable:path.resolve('synthetic-fixture.exe'),tls:{}});}catch(error){failure=error;}
+    assert.equal(launches,1);assert.deepEqual(operations,['finish']);
+    assert.equal(ownedProcessFailureObservation(failure)?.category,'exit-failure');assert.equal(ownedProcessFailureObservation(failure)?.exit_code,7);
+    assert.deepEqual(setupFailureObservation(failure),{substage:'native-root-prepare',cleanup_substages:['fixture-finish']});
+    assert.equal(JSON.stringify(setupFailureObservation(failure)).includes('synthetic-private-canary'),false);
+  }finally{t.mock.restoreAll();syncBuiltinESMExports();Object.defineProperty(process,'platform',platform);if(systemRoot===undefined)delete process.env.SystemRoot;else process.env.SystemRoot=systemRoot;server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 });
 test('trickling control bytes cannot extend the absolute request deadline',async()=>{
   let writes=0,closed=false;const server=http.createServer((req,res)=>{res.writeHead(200,{'content-type':'application/json'});res.write('{');writes++;const interval=setInterval(()=>{res.write(' ');writes++;},5);res.on('close',()=>{closed=true;clearInterval(interval);});});

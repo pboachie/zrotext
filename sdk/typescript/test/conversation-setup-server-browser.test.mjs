@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
+import {setupStep,setupFailureObservation} from './setup-failure-fixture.mjs';
 import { copyAcceptanceFixture, validateAcceptanceProviders, runSetupServerAcceptance,readPublicDownload,assertContentInert } from './conversation-setup-server-browser.mjs';
 const hash=(...parts)=>createHash('sha256').update(Buffer.concat(parts.map(p=>Buffer.from(p)))).digest('hex');
 const id='11111111-1111-4111-8111-111111111111';
@@ -19,6 +20,13 @@ for(const [name,mutate] of [
 ])test(name+' refuses before context or provider invocation',async()=>{let touched=0;const f=fixture();mutate(f);await assert.rejects(runSetupServerAcceptance({fixture:f,browser:{newContext(){touched++;throw Error('must not run');}},...Object.fromEntries(['signRootCustody','signLineRegistration','snapshot','submitPhoneProof','acknowledgePhone'].map(name=>[name,()=>{touched++;}]))}));assert.equal(touched,0);});
 for(const name of ['browser','signRootCustody','signLineRegistration','snapshot','submitPhoneProof','acknowledgePhone'])test('missing '+name+' is a concrete fixture prerequisite',()=>{const input={browser:{newContext(){}},...Object.fromEntries(['signRootCustody','signLineRegistration','snapshot','submitPhoneProof','acknowledgePhone'].map(k=>[k,()=>{}]))};delete input[name];assert.throws(()=>validateAcceptanceProviders(input));});
 test('runner keeps actual requests and external custody/phone providers separate',async()=>{const source=await readFile(new URL('./conversation-setup-server-browser.mjs',import.meta.url),'utf8');assert.ok(!/route\.fulfill|globalThis\.fetch\s*=|ZtConversationOwnerSetup\s*=|ZtConversationSimulatorAdapter\s*=|privateKey\s*:\s*|recoverySecret|readiness/.test(source));assert.ok(source.includes("headers.origin"));assert.ok(source.includes('input.signRootCustody'));assert.ok(source.includes('input.signLineRegistration'));assert.ok(source.includes('input.submitPhoneProof'));assert.ok(source.includes('input.acknowledgePhone'));assert.ok(source.includes('await context.close()'));});
+test('browser context cleanup cannot replace the original acceptance failure',async()=>{
+  const primary=Error('synthetic private acceptance'),cleanup=Error('synthetic private cleanup');let closed=false;
+  const context={addCookies(){throw primary;},async close(){closed=true;throw cleanup;}};
+  const input={fixture:fixture(),browser:{newContext:async()=>context},snapshot:async()=>({rootCompletions:0,lineRegistrations:0,lineApprovals:0,phoneAcknowledgments:0}),...Object.fromEntries(['signRootCustody','signLineRegistration','submitPhoneProof','acknowledgePhone'].map(name=>[name,()=>assert.fail('No signing or phone operation expected')]))};
+  let error;try{await setupStep('browser-acceptance',()=>runSetupServerAcceptance(input));}catch(value){error=value;}
+  assert.equal(error,primary);assert.equal(closed,true);assert.deepEqual(setupFailureObservation(error),{substage:'browser-acceptance',cleanup_substages:['browser-context-close']});
+});
 function download(chunks,{failure=null}={}){const stream=Readable.from(chunks);let canceled=0,deleted=0;return {createReadStream:async()=>stream,failure:async()=>failure,cancel:async()=>{canceled++;},delete:async()=>{deleted++;},stream,get canceled(){return canceled;},get deleted(){return deleted;}};}
 test('public artifact reads actual download stream and deletes its temporary file',async()=>{const d=download([Buffer.from('pub'),Buffer.from('lic')]);assert.deepEqual(await readPublicDownload(d,6),new TextEncoder().encode('public'));assert.equal(d.deleted,1);assert.equal(d.canceled,0);assert.equal(d.stream.destroyed,true);});
 test('oversized public download is destroyed and canceled before publication',async()=>{const d=download([Buffer.alloc(4),Buffer.alloc(4)]);await assert.rejects(readPublicDownload(d,7),/size exceeded/);assert.equal(d.stream.destroyed,true);assert.equal(d.canceled,1);assert.equal(d.deleted,1);});
