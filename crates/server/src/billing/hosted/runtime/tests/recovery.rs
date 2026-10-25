@@ -202,6 +202,7 @@ async fn checkout_recovery_refuses_unstarted_known_terminal_unbound_expired_chan
         )
         .await
         .unwrap();
+    crate::runtime_db::settle_fixture_resets(&f.app_url).await;
     f.database
         .owner
         .execute(
@@ -219,6 +220,7 @@ async fn checkout_recovery_refuses_unstarted_known_terminal_unbound_expired_chan
             .status(),
         StatusCode::CONFLICT
     );
+    crate::runtime_db::settle_fixture_resets(&f.app_url).await;
     f.database
         .owner
         .execute(

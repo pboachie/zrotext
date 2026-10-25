@@ -12,7 +12,7 @@ use axum::{
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::{Value, json};
 use std::sync::Arc;
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::{Client, NoTls, Transaction};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -468,6 +468,12 @@ async fn configuration_absent_and_partial_schema_fail_closed_and_current_owner_i
         lifecycle::export(&mut f.db, &f.owner, None, None, None).await,
         Err(ConversationError::Unavailable)
     ));
+    let tx = f.db.transaction().await.unwrap();
+    assert!(matches!(
+        lifecycle::erase_account(&tx, f.owner.tenant.account_id()).await,
+        Err(ConversationError::Unavailable)
+    ));
+    tx.rollback().await.unwrap();
     let response = f
         .erasure()
         .oneshot(request(
@@ -514,7 +520,7 @@ async fn configuration_absent_and_partial_schema_fail_closed_and_current_owner_i
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; uses a unique disposable schema"]
-async fn configuration_owner_isolation_pagination_and_actual_account_erasure_are_composed() {
+async fn configuration_owner_isolation_pagination_and_historical_sql_erasure_are_composed() {
     let mut f = Fixture::new(true).await;
     let (other, _) =
         registered_owner(&mut f.db, &f.hasher, "other-configuration@example.test", 2).await;
@@ -587,6 +593,7 @@ async fn configuration_owner_isolation_pagination_and_actual_account_erasure_are
     assert_eq!(last.heads.items.len(), 1);
     assert_eq!(last.versions.items.len(), 1);
     assert_eq!(last.mutations.items.len(), 1);
+    let before = fixture_snapshot(&f.db).await;
     let app = f.erasure();
     let wrong = app
         .clone()
@@ -615,7 +622,47 @@ async fn configuration_owner_isolation_pagination_and_actual_account_erasure_are
         ))
         .await
         .unwrap();
-    let erased = json_response(response, StatusCode::OK).await;
+    // This unnumbered legacy proposal is not current/native erasure support.
+    let refusal = json_response(response, StatusCode::SERVICE_UNAVAILABLE).await;
+    assert_eq!(refusal["code"], "unavailable");
+    assert_eq!(fixture_snapshot(&f.db).await, before);
+
+    // Historical SQL contract only: the real candidate deletion primitive and
+    // shared ordered statements, not a substitute successful HTTP response.
+    let tx = f.db.transaction().await.unwrap();
+    crate::http_owner_conversations::lock_owner(&tx, &f.owner)
+        .await
+        .unwrap();
+    let account = f.owner.tenant.account_id();
+    tx.execute(
+        "UPDATE accounts SET disabled_at=clock_timestamp() WHERE id=$1",
+        &[&account],
+    )
+    .await
+    .unwrap();
+    let deleted = lifecycle::erase_account(&tx, account).await.unwrap();
+    assert_eq!(
+        deleted,
+        vec![
+            ("provider_configuration_mutations", 21),
+            ("provider_configuration_versions", 21),
+            ("provider_configuration_heads", 21),
+        ]
+    );
+    historical_delete_plan(&tx, account).await;
+    assert_eq!(
+        tx.execute("DELETE FROM users WHERE id=$1", &[&f.owner.user_id])
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        tx.execute("DELETE FROM accounts WHERE id=$1", &[&account])
+            .await
+            .unwrap(),
+        1
+    );
+    tx.commit().await.unwrap();
     for table in [
         "provider_configuration_mutations",
         "provider_configuration_versions",
@@ -631,11 +678,9 @@ async fn configuration_owner_isolation_pagination_and_actual_account_erasure_are
             .get(0);
         assert_eq!(count, 0);
         assert!(
-            erased["deleted"]
-                .as_array()
-                .unwrap()
+            deleted
                 .iter()
-                .any(|v| v["table"] == table && v["rows"] == 21)
+                .any(|(name, rows)| *name == table && *rows == 21)
         );
     }
     assert!(
@@ -757,4 +802,177 @@ async fn configuration_fixed_capacity_retains_duplicate_ack_and_reserved_withdra
         Err(ConversationError::Conflict)
     ));
     f.cleanup().await;
+}
+
+/// Compare all fixture business rows, including private declarations, without
+/// rendering their bytes. Password attempts legitimately update abuse budgets.
+async fn fixture_snapshot(db: &Client) -> Vec<(String, Vec<u8>)> {
+    let tables = db.query(
+        "SELECT c.relname FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=current_schema() AND c.relkind='r' AND c.relname<>'auth_abuse_counters' ORDER BY c.relname",
+        &[],
+    ).await.unwrap();
+    let mut snapshot = Vec::new();
+    for row in tables {
+        let name: String = row.get(0);
+        let sql = format!(
+            "SELECT sha256(convert_to(coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text),'[]'::jsonb)::text,'UTF8')) FROM {} t",
+            postgres_protocol::escape::escape_identifier(&name),
+        );
+        let digest = db.query_one(&sql, &[]).await.unwrap().get(0);
+        snapshot.push((name, digest));
+    }
+    assert!(!snapshot.is_empty());
+    snapshot
+}
+
+/// Historical SQL only; no current password/MFA/native admission is claimed.
+async fn historical_delete_plan(tx: &Transaction<'_>, account: Uuid) -> Vec<(&'static str, u64)> {
+    let android = crate::http_owner_conversations::android_proposal::lifecycle::prepare_erase(tx)
+        .await
+        .unwrap();
+    let managed = crate::managed_ai::lifecycle::installed(tx).await.unwrap();
+    let provider = crate::provider_sms::receipts::lifecycle::installed(tx)
+        .await
+        .unwrap();
+    let execution = crate::http_owner_conversations::channel::execution::lifecycle::installed(tx)
+        .await
+        .unwrap();
+    let confirmation = crate::http_owner_conversations::confirmation_records::installed(tx)
+        .await
+        .unwrap();
+    let integration = crate::workflow_runtime::lifecycle::installed(tx)
+        .await
+        .unwrap();
+    if execution {
+        assert!(
+            crate::http_owner_conversations::channel::execution::lifecycle::validate(tx)
+                .await
+                .unwrap()
+        );
+    }
+    if confirmation {
+        assert!(
+            crate::http_owner_conversations::confirmation_records::validate(tx)
+                .await
+                .unwrap()
+        );
+    }
+    let mut counts = Vec::new();
+    for &(table, sql) in crate::http_owner_erasure::DELETE_PLAN {
+        if (table == "owner_android_proposals" && !android)
+            || (crate::managed_ai::lifecycle::TABLES.contains(&table) && !managed)
+            || (["provider_receipt_events", "provider_receipt_attempts"].contains(&table)
+                && !provider)
+            || (table == "conversation_execution_records" && !execution)
+            || (table == "conversation_confirmation_records" && !confirmation)
+            || ([
+                "workflow_integration_access",
+                "workflow_connector_context_envelopes",
+                "workflow_integration_grants",
+            ]
+            .contains(&table)
+                && !integration)
+        {
+            continue;
+        }
+        counts.push((table, tx.execute(sql, &[&account]).await.unwrap()));
+    }
+    counts
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE on a disposable PostgreSQL cluster"]
+async fn absent_configuration_proposal_preserves_current_export_and_account_erasure() {
+    let mut fixture = crate::test_database::Fixture::for_store("ZT_AUTH_TEST_DATABASE_URL").await;
+    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(47)).unwrap());
+    let (owner, session) = registered_owner(
+        &mut fixture.runtime,
+        &hasher,
+        "current-configuration@example.test",
+        1,
+    )
+    .await;
+    let (other, _) = registered_owner(
+        &mut fixture.runtime,
+        &hasher,
+        "current-other-configuration@example.test",
+        2,
+    )
+    .await;
+    let tx = fixture.runtime.transaction().await.unwrap();
+    assert!(!lifecycle::installed(&tx).await.unwrap());
+    tx.rollback().await.unwrap();
+    let app = crate::http_owner_export::router(crate::http_owner_export::OwnerExportState {
+        database_url: fixture.runtime_url.clone(),
+        auth_hasher: hasher.clone(),
+        canonical_origin: ORIGIN.into(),
+        contacts_vault: None,
+    });
+    let exported = json_response(
+        app.oneshot(request(&session, "GET", "/v1/owner/export", ""))
+            .await
+            .unwrap(),
+        StatusCode::OK,
+    )
+    .await;
+    for page in ["heads", "versions", "mutations"] {
+        assert!(
+            exported["provider_configurations"][page]["items"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(exported["provider_configurations"][page]["next_cursor"].is_null());
+    }
+    let app = crate::http_owner_erasure::router(crate::http_owner_erasure::OwnerErasureState {
+        database_url: fixture.runtime_url.clone(),
+        auth_hasher: hasher,
+        canonical_origin: ORIGIN.into(),
+        mfa_cipher: None,
+    });
+    let response = app
+        .oneshot(request(
+            &session,
+            "POST",
+            "/v1/owner/erasure",
+            &json!({"current_password":crate::test_keys::password(1),"code":null}).to_string(),
+        ))
+        .await
+        .unwrap();
+    let erased = json_response(response, StatusCode::OK).await;
+    let deleted = erased["deleted"].as_array().unwrap();
+    for table in ["accounts", "users"] {
+        assert!(
+            deleted
+                .iter()
+                .any(|v| v["table"] == table && v["rows"] == 1)
+        );
+    }
+    assert!(!deleted.iter().any(|v| {
+        v["table"]
+            .as_str()
+            .unwrap()
+            .starts_with("provider_configuration_")
+    }));
+    assert!(
+        !fixture
+            .owner
+            .query_one(
+                "SELECT EXISTS(SELECT FROM accounts WHERE id=$1)",
+                &[&owner.tenant.account_id()]
+            )
+            .await
+            .unwrap()
+            .get::<_, bool>(0)
+    );
+    assert!(
+        auth::require_current_owner(&fixture.runtime, &other)
+            .await
+            .is_ok()
+    );
+    assert!(matches!(
+        read(&mut fixture.runtime, &owner, Uuid::new_v4()).await,
+        Err(ConversationError::Forbidden)
+    ));
+    fixture.finish().await;
 }

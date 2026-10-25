@@ -66,6 +66,29 @@ async fn wait_for(url: &str, idle: impl Fn(&Counts) -> bool) {
     .expect("all owned fixture clients must be dropped before database cleanup");
 }
 
+fn reusable_fixture_drivers(url: &str) -> usize {
+    [&POOLS.requests, &POOLS.devices, &POOLS.workers]
+        .iter()
+        .map(|pool| {
+            pool.idle()
+                .iter()
+                .filter(|entry| &*entry.url == url && !entry.client.is_closed())
+                .count()
+        })
+        .sum()
+}
+
+/// After this fixture's operations and checked-out clients have been dropped,
+/// wait for its resets and any nonreusable drivers still completing queued
+/// work. Keep reusable backends and the registered hosted binding intact.
+/// A timed-out reset can finish before its connection driver releases locks.
+pub(crate) async fn settle_fixture_resets(url: &str) {
+    wait_for(url, |counts| {
+        counts.resets == 0 && counts.drivers == reusable_fixture_drivers(url)
+    })
+    .await;
+}
+
 /// The caller has stopped its fixture operations and dropped its checked-out
 /// clients. Wait for only this URL's resets, discard only its idle clients,
 /// then await their drivers. Never terminate a backend or force-drop a DB.
@@ -83,15 +106,12 @@ async fn reset_completion_is_isolated_by_exact_fixture_url() {
     let first_reset = Activity::reset(first.clone());
     let second_reset = Activity::reset(second.clone());
     assert!(
-        timeout(
-            Duration::from_millis(1),
-            wait_for(&first, |counts| counts.resets == 0)
-        )
-        .await
-        .is_err()
+        timeout(Duration::from_millis(1), settle_fixture_resets(&first))
+            .await
+            .is_err()
     );
     drop(first_reset);
-    wait_for(&first, |counts| counts.resets == 0).await;
+    settle_fixture_resets(&first).await;
     assert_eq!(ACTIVE.lock().unwrap().get(&second).unwrap().resets, 1);
     drop(second_reset);
     assert!(!ACTIVE.lock().unwrap().contains_key(&first));
@@ -127,3 +147,5 @@ async fn closing_one_fixture_preserves_other_idle_backend_and_normal_database_cl
     drop(second_client);
     second.finish().await;
 }
+
+mod native_tests;

@@ -562,7 +562,7 @@ mod reset_tests;
 #[cfg(test)]
 mod test_fixture;
 #[cfg(test)]
-pub(crate) use test_fixture::close_fixture_connections;
+pub(crate) use test_fixture::{close_fixture_connections, settle_fixture_resets};
 
 /// Test-only: how many idle worker-class sockets exist for `url`. An entry in
 /// the idle list is reusable by any worker acquire without a permit, so its
