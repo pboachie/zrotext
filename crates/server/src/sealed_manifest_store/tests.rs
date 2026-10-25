@@ -23,6 +23,8 @@ pub(crate) struct Fixture {
     pub(crate) signer: [u8; 32],
     pub(crate) event_signer: SigningKey,
     pub(crate) archive_key: SigningKey,
+    current: Option<(crate::test_database::Fixture, crate::test_database::Driver)>,
+    current_connections: std::sync::Mutex<Vec<crate::test_database::Driver>>,
 }
 
 impl Fixture {
@@ -37,6 +39,44 @@ impl Fixture {
     }
     pub(crate) async fn before_role_reservations() -> Self {
         Self::build("sealed", true, false).await
+    }
+    /// Genuine current public schema and unchanged ordinary runtime privileges.
+    /// Legacy prerequisite-only constructors deliberately remain unchanged.
+    pub(crate) async fn current_without_authority() -> Self {
+        use futures_util::FutureExt;
+        use std::panic::{AssertUnwindSafe, resume_unwind};
+        let native = crate::test_database::Fixture::for_store("ZT_INBOUND_TEST_DATABASE_URL").await;
+        let (db, driver) = native.another_runtime().await;
+        let seeded = AssertUnwindSafe(Self::seed(
+            native.runtime_url.clone(),
+            "public".into(),
+            db,
+            "sealed",
+            false,
+        ))
+        .catch_unwind()
+        .await;
+        match seeded {
+            Ok(mut fixture) => {
+                fixture.current = Some((native, driver));
+                fixture
+            }
+            Err(panic) => {
+                Self::join_current_driver(driver).await;
+                native.finish().await;
+                resume_unwind(panic);
+            }
+        }
+    }
+    pub(crate) fn is_current(&self) -> bool {
+        self.current.is_some()
+    }
+    async fn join_current_driver(driver: crate::test_database::Driver) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), driver)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
     }
     async fn build(purpose: &str, provision: bool, role_reservations: bool) -> Self {
         let url = std::env::var("ZT_INBOUND_TEST_DATABASE_URL").expect("disposable test database");
@@ -145,6 +185,9 @@ impl Fixture {
             }
             db.batch_execute(sql).await.unwrap();
         }
+        Self::seed(url, schema, db, purpose, provision).await
+    }
+    async fn seed(url: String, schema: String, db: Client, purpose: &str, provision: bool) -> Self {
         let account = Uuid::new_v4();
         let device = Uuid::new_v4();
         let line = Uuid::new_v4();
@@ -241,6 +284,8 @@ impl Fixture {
             signer,
             event_signer: event_signer.unwrap(),
             archive_key: archive_key.unwrap(),
+            current: None,
+            current_connections: std::sync::Mutex::new(Vec::new()),
         };
         fixture.resign();
         // Test-only provisioning models an already independently compared root.
@@ -252,6 +297,11 @@ impl Fixture {
         fixture
     }
     pub(crate) async fn connect(&self) -> Client {
+        if let Some((native, _)) = &self.current {
+            let (db, driver) = native.another_runtime().await;
+            self.current_connections.lock().unwrap().push(driver);
+            return db;
+        }
         let (db, connection) = tokio_postgres::connect(&self.url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
         db.batch_execute(&format!(
@@ -304,7 +354,18 @@ impl Fixture {
         self.resign();
     }
     pub(crate) async fn cleanup(self) {
-        cleanup::drop_fixture(&self.db, &self.schema).await.unwrap();
+        if let Some((native, driver)) = self.current {
+            // Current storage is a whole disposable DB: public must never enter
+            // the historical per-schema teardown, even on a failed assertion.
+            drop(self.db);
+            Self::join_current_driver(driver).await;
+            for driver in self.current_connections.into_inner().unwrap() {
+                Self::join_current_driver(driver).await;
+            }
+            native.finish().await;
+        } else {
+            cleanup::drop_fixture(&self.db, &self.schema).await.unwrap();
+        }
     }
 }
 

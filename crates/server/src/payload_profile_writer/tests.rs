@@ -83,18 +83,15 @@ impl Fixture {
                 .unwrap()
                 .get::<_, Vec<u8>>(0)
         );
-        let role = escape_identifier(&runtime_role);
-        let database_identifier = escape_identifier(&name);
-        owner.batch_execute(&format!(
-            "REVOKE ALL ON DATABASE {database_identifier} FROM PUBLIC; GRANT CONNECT ON DATABASE {database_identifier} TO {role};
-             GRANT USAGE ON SCHEMA public TO {role};
-             GRANT SELECT ON ALL TABLES IN SCHEMA public TO {role};
-             REVOKE ALL ON public.schema_migrations,public.hosted_runtime_secrets,public.hosted_runtime_sessions,public.hosted_runtime_entries,public.hosted_runtime_requests,public.hosted_billing_resolutions FROM {role};
-             GRANT UPDATE(account_id) ON public.payload_profile_account_anchors TO {role};
-             GRANT UPDATE(review_required) ON public.hosted_billing_namespaces TO {role};
-             GRANT INSERT,UPDATE,DELETE ON public.accounts,public.users,public.memberships,public.devices,public.device_sessions,public.auth_abuse_counters TO {role};
-             GRANT EXECUTE ON FUNCTION public.payload_profile_account_fence_key(uuid),public.payload_profile_writer_json(json),public.payload_profile_writer_graph(),public.payload_profile_writer_version(),public.payload_profile_writer_ready(),public.auth_abuse_consume(text,bytea,bytea,integer,integer,integer,integer),public.conversation_profile03_grant_issue(uuid,uuid,uuid,uuid,text,text,bigint,bigint,bigint),public.conversation_profile03_grant_lock(uuid,uuid,uuid,text,text,bigint,bigint),public.conversation_profile03_grant_ready() TO {role};"
-        )).await.unwrap();
+        // Exercise the deployed ordinary runtime ACL, including the hosted
+        // projection called by current device writers, not a partial grant list.
+        owner
+            .batch_execute(&crate::test_database::Fixture::acl_text(
+                &name,
+                &runtime_role,
+            ))
+            .await
+            .unwrap();
         config.user(&runtime_role).password(&password);
         let (db, driver) = connect(&config).await;
         db.batch_execute("SET search_path TO pg_catalog, public; SET lock_timeout='2s'; SET statement_timeout='10s'").await.unwrap();
@@ -399,7 +396,8 @@ async fn complete_graph_rejects_unknown_missing_disabled_function_body_and_colum
         "CREATE OR REPLACE FUNCTION public.payload_profile_writer_ready() RETURNS boolean LANGUAGE sql STABLE SET search_path TO pg_catalog AS 'SELECT true'",
         "GRANT UPDATE(graph_sha256) ON public.payload_profile_writer_catalog TO PUBLIC",
         "GRANT EXECUTE ON FUNCTION public.payload_profile_writer_ready() TO PUBLIC",
-        "INSERT INTO public.schema_migrations(version,filename,checksum_sha256,kind) VALUES(111,'111_unknown.sql',decode(repeat('01',32),'hex'),'applied')",
+        // 120 is deliberately beyond this fixture's verified current119 ledger.
+        "INSERT INTO public.schema_migrations(version,filename,checksum_sha256,kind) VALUES(120,'120_unknown.sql',decode(repeat('01',32),'hex'),'applied')",
     ] {
         let tx = f.owner.transaction().await.unwrap();
         // A migration owner may mutate only its own ordinary objects. Disabling

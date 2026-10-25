@@ -18,7 +18,7 @@ import sys
 import tempfile
 import tomllib
 
-SERVER_LANES = ("server-0", "server-1")
+SERVER_LANES = ("server-0", "server-1", "server-2", "server-3")
 LANES = ("delivery-store", *SERVER_LANES, "remaining")
 SUITES = ("default", "conversation")
 LIB_KINDS = {"lib", "rlib", "cdylib", "dylib", "staticlib", "proc-macro"}
@@ -145,7 +145,7 @@ def assigned_tests(package, tests, lane):
     if package == "zrotext-server":
         # Unlike Python's randomized hash(), this assignment is identical in
         # every job and independent of enumeration order or newly added tests.
-        return [name for name in tests if SERVER_LANES[hashlib.sha256(name.encode("utf-8")).digest()[0] % 2] == lane]
+        return [name for name in tests if SERVER_LANES[hashlib.sha256(name.encode("utf-8")).digest()[0] % len(SERVER_LANES)] == lane]
     return tests
 
 

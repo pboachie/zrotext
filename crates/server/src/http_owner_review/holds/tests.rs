@@ -9,7 +9,7 @@ use axum::{
     http::{Request, header},
 };
 use serde_json::{Value, json};
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::Client;
 use tower::ServiceExt;
 
 const ORIGIN: &str = "https://test.example";
@@ -316,171 +316,57 @@ async fn suppression_active(db: &Client, account: Uuid, recipient: &str) -> bool
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn owner_holds_and_review_decisions_are_owner_bound_tenant_scoped_and_audited() {
-    let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
-        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
-    let (admin, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
-    tokio::spawn(async move { connection.await.unwrap() });
-    let schema = format!("owner_hold_http_test_{}", Uuid::new_v4().simple());
-    admin
-        .batch_execute(&format!("CREATE SCHEMA {schema}"))
+    // Preserve attempt-bound pre-native history, then use the complete current
+    // graph and ordinary runtime for both HTTP and DeliveryStore admission.
+    let (mut fixture, (hasher, owners, review_a, stop_a, review_b)) =
+        crate::test_database::Fixture::with_history("ZT_AUTH_TEST_DATABASE_URL", 107, async |db| {
+            let hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
+            let mut owners = Vec::new();
+            for label in ["hold-a", "hold-b"] {
+                let email = format!("{label}@example.test");
+                let password = Uuid::new_v4().to_string();
+                let signup = register(db, &hasher, &email, &password).await.unwrap();
+                verify_email(db, &hasher, &signup.verification_token)
+                    .await
+                    .unwrap();
+                let session = login(db, &hasher, &email, &password).await.unwrap();
+                let device = Uuid::new_v4();
+                db.execute(
+                    "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'hold test phone')",
+                    &[&device, &signup.account_id],
+                )
+                .await
+                .unwrap();
+                owners.push((signup.account_id, device, session));
+            }
+            let (account_a, device_a, _owner_a) = &owners[0];
+            let (account_b, device_b, _owner_b) = &owners[1];
+            let review_a =
+                signed_withdrawal(db, (*account_a, *device_a), "+15550201001", "sms_review", 1)
+                    .await;
+            let stop_a = signed_withdrawal(
+                db,
+                (*account_a, *device_a),
+                "+15550201002",
+                "sms_keyword",
+                2,
+            )
+            .await;
+            let review_b =
+                signed_withdrawal(db, (*account_b, *device_b), "+15550201003", "sms_review", 1)
+                    .await;
+
+            (hasher, owners, review_a, stop_a, review_b)
+        })
+        .await;
+    fixture.verify().await;
+    zrotext_delivery_store::hosted_runtime_identity::require(&fixture.runtime)
         .await
         .unwrap();
-    let separator = if base_url.contains('?') { '&' } else { '?' };
-    let database_url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
-    let (mut db, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
-    tokio::spawn(async move { connection.await.unwrap() });
-    for (name, migration) in LEGACY_TEST_MIGRATIONS {
-        if name == "070_message_summary_metadata.sql" {
-            db.batch_execute("CREATE INDEX CONCURRENTLY messages_summary_queue ON messages(account_id,state,created_at) WHERE state IN ('accepted','queued','claimed','submitting','submitted')").await.unwrap();
-            db.batch_execute("BEGIN").await.unwrap();
-            let result = db.batch_execute(migration).await;
-            db.batch_execute(if result.is_ok() { "COMMIT" } else { "ROLLBACK" })
-                .await
-                .unwrap();
-            result.unwrap();
-            continue;
-        }
-        if name == "052_admission_pending_index.sql" {
-            db.batch_execute(
-                "CREATE INDEX CONCURRENTLY messages_admission_pending \
-                     ON messages(account_id,device_id) \
-                     WHERE state IN ('queued','claimed')",
-            )
-            .await
-            .unwrap();
-        }
-        if name == "057_webhook_history_index.sql" {
-            db.batch_execute("CREATE INDEX CONCURRENTLY webhook_deliveries_history ON webhook_deliveries(endpoint_id,created_at DESC,id DESC)")
-                .await
-                .unwrap();
-        }
-        if name == "058_drop_abuse_counters_updated_index.sql" {
-            db.batch_execute("DROP INDEX IF EXISTS auth_abuse_counters_stale")
-                .await
-                .unwrap();
-        }
-        if name == "059_erasure_fk_indexes.sql" {
-            db.batch_execute("CREATE INDEX erasure_fk_webhook_deliveries_event ON webhook_deliveries(account_id,event_id); CREATE INDEX erasure_fk_suppressions_attempt ON recipient_suppressions(source_attempt_id); CREATE INDEX erasure_fk_suppressions_event ON recipient_suppressions(account_id,source_event_id); CREATE INDEX erasure_fk_holds_release_event ON owner_recipient_holds(account_id,release_event_id) WHERE release_event_id IS NOT NULL; CREATE INDEX erasure_fk_opt_out_audit_release_event ON owner_opt_out_audit(account_id,release_event_id) WHERE release_event_id IS NOT NULL")
-                .await
-                .unwrap();
-        }
-        if name == "060_optout_review_indexes.sql" {
-            db.batch_execute("CREATE INDEX recipient_suppressions_review_queue ON recipient_suppressions(account_id,changed_at DESC,recipient_e164 DESC) WHERE active AND source IN ('sms_review','sms_unsolicited_review')")
-                .await
-                .unwrap();
-            db.batch_execute("CREATE INDEX recipient_suppressions_review_event ON recipient_suppressions(account_id,COALESCE(source_event_id,source_unsolicited_event_id)) WHERE source IN ('sms_review','sms_unsolicited_review')")
-                .await
-                .unwrap();
-            db.batch_execute("DROP INDEX IF EXISTS recipient_suppressions_active")
-                .await
-                .unwrap();
-        }
-        if name == "061_inbound_events_attempt_fk_index.sql" {
-            db.batch_execute("CREATE INDEX erasure_fk_inbound_events_attempt ON inbound_events(account_id,device_id,message_id,attempt_id)")
-                .await
-                .unwrap();
-        }
-        if name == "062_pending_recipient_index.sql" {
-            db.batch_execute("CREATE INDEX messages_pending_recipient ON messages(recipient_e164,account_id) WHERE state IN ('queued','claimed') AND recipient_e164 IS NOT NULL")
-                .await
-                .unwrap();
-        }
-        if name == "034_delivery_sweep_index.sql" {
-            // Mirror the migrator's autocommit preparation before 034.
-            db.batch_execute(
-                "CREATE INDEX CONCURRENTLY messages_in_flight_updated \
-                 ON messages(updated_at,id) \
-                 WHERE state IN ('claimed','submitting','submitted')",
-            )
-            .await
-            .unwrap();
-        }
-        if name == "040_radio_evidence_index.sql" {
-            db.batch_execute(
-                "CREATE INDEX CONCURRENTLY message_events_attempt_evidence \
-                 ON message_events(attempt_id,evidence_code)",
-            )
-            .await
-            .unwrap();
-        }
-        if name == "066_conversation_interval_session_index.sql" {
-            db.batch_execute("CREATE INDEX erasure_fk_conversation_interval_session ON conversation_intervals(account_id,initiating_session_id)")
-                .await
-                .unwrap();
-        }
-        if name == "049_owner_queue_probe_indexes.sql" {
-            db.batch_execute(
-                "CREATE INDEX CONCURRENTLY messages_owner_pending_state \
-                 ON messages(device_id,state,created_at) \
-                 WHERE state IN ('accepted','queued','claimed')",
-            )
-            .await
-            .unwrap();
-            db.batch_execute(
-                "CREATE INDEX CONCURRENTLY messages_owner_in_flight_state \
-                 ON messages(device_id,state,created_at) \
-                 WHERE state IN ('submitting','submitted')",
-            )
-            .await
-            .unwrap();
-        }
-        if name == "050_message_attempts_recent_index.sql" {
-            db.batch_execute(
-                "CREATE INDEX CONCURRENTLY message_attempts_device_created \
-                 ON message_attempts(account_id,device_id,created_at)",
-            )
-            .await
-            .unwrap();
-        }
-        db.batch_execute(migration)
-            .await
-            .unwrap_or_else(|error| panic!("{name}: {error}"));
-    }
-    let hasher = Arc::new(TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap());
-    let mut owners = Vec::new();
-    for label in ["hold-a", "hold-b"] {
-        let email = format!("{label}@example.test");
-        let password = Uuid::new_v4().to_string();
-        let signup = register(&mut db, &hasher, &email, &password).await.unwrap();
-        verify_email(&mut db, &hasher, &signup.verification_token)
-            .await
-            .unwrap();
-        let session = login(&db, &hasher, &email, &password).await.unwrap();
-        let device = Uuid::new_v4();
-        db.execute(
-            "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'hold test phone')",
-            &[&device, &signup.account_id],
-        )
-        .await
-        .unwrap();
-        owners.push((signup.account_id, device, session));
-    }
+    let db = &fixture.owner;
+    let database_url = fixture.runtime_url.clone();
     let (account_a, device_a, owner_a) = &owners[0];
-    let (account_b, device_b, owner_b) = &owners[1];
-    let review_a = signed_withdrawal(
-        &db,
-        (*account_a, *device_a),
-        "+15550201001",
-        "sms_review",
-        1,
-    )
-    .await;
-    let stop_a = signed_withdrawal(
-        &db,
-        (*account_a, *device_a),
-        "+15550201002",
-        "sms_keyword",
-        2,
-    )
-    .await;
-    let review_b = signed_withdrawal(
-        &db,
-        (*account_b, *device_b),
-        "+15550201003",
-        "sms_review",
-        1,
-    )
-    .await;
+    let (_account_b, _device_b, owner_b) = &owners[1];
 
     let app = router(OwnerReviewState {
         database_url,
@@ -554,7 +440,7 @@ async fn owner_holds_and_review_decisions_are_owner_bound_tenant_scoped_and_audi
     assert_eq!(holds, 0, "rejected requests must not write a hold");
 
     let queued = Uuid::new_v4();
-    zrotext_delivery_store::DeliveryStore::new(&mut db)
+    zrotext_delivery_store::DeliveryStore::new(&mut fixture.runtime)
         .accept(zrotext_delivery_store::NewMessage {
             account_id: *account_a,
             device_id: *device_a,
@@ -695,8 +581,8 @@ async fn owner_holds_and_review_decisions_are_owner_bound_tenant_scoped_and_audi
     assert_eq!(again.status(), StatusCode::CONFLICT);
     assert_eq!(body(again).await["code"], "already_decided");
     // A decision never lifts a suppression, and a signed STOP stays in force.
-    assert!(suppression_active(&db, *account_a, "+15550201001").await);
-    assert!(suppression_active(&db, *account_a, "+15550201002").await);
+    assert!(suppression_active(db, *account_a, "+15550201001").await);
+    assert!(suppression_active(db, *account_a, "+15550201002").await);
     assert!(
         db.execute(
             "INSERT INTO owner_opt_out_review_decisions(account_id,review_event_id,recipient_e164,decision,decided_by) \
@@ -748,8 +634,5 @@ async fn owner_holds_and_review_decisions_are_owner_bound_tenant_scoped_and_audi
             "{statement}"
         );
     }
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
+    fixture.finish().await;
 }

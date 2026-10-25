@@ -6,12 +6,23 @@ The [dormant verifier](../../docs/PROVIDER-SMS.md) remains network-free.
 Phone SMS and phone MMS retain their existing authority and gates.
 
 The first #760 slice supplies dormant known-correlation receipt persistence and
-owner export/erasure integration using the unnumbered
+conditional owner export/erasure code using the unnumbered
 [storage proposal](provider-receipt-storage-proposal.sql). Ordinary migrations
 do not install it. Production has no permit issuer, correlation creator or
-receipt caller, so it cannot activate provider traffic. Tests install this
-proposal explicitly in isolated disposable PostgreSQL schemas. A future serial
-promotion follows preceding migrations; no gap migration is shipped here.
+receipt caller, so it cannot activate provider traffic. Current native runtime
+entry requires the exact numbered schema: adding this unpromoted candidate,
+even complete, is a refusal rather than permission for owner HTTP erasure.
+Ordinary current erasure remains available while the candidate is absent.
+
+Historical disposable schemas exercise the exact two conditional deletion
+statements, their counts and account isolation, consent-blocker preservation,
+rollback after a witnessed later failure, and the existing account-lock race
+against late receipts. Those are SQL/storage contracts, not evidence of current
+HTTP acceptance. Separate current-schema controls require installed and partial
+candidates to refuse without changing account or receipt rows. Unchanged stock
+DML defaults on newly created public tables do not authorize an unpinned graph.
+No extra candidate-specific privileges or graph re-pin are introduced. A future
+serial promotion follows preceding migrations; no gap migration is shipped here.
 
 ## One recorded route per exact action
 
@@ -111,7 +122,9 @@ callback/replay windows; expired timestamps still fail verification after
 compaction. Body deletion cannot delete the replay fence while evidence can
 still be accepted. The dormant known-correlation ledger erases linkage and
 events into an identity-only attempt fence retained for the account's lifetime;
-full account erasure removes it. It stores no raw callbacks. Retention policy
+the dormant full-account deletion plan removes it. That historical storage
+contract does not bypass the current native-entry refusal above. It stores no
+raw callbacks. Retention policy
 for any future early-callback quarantine must specify bounded durations before
 runtime activation; indefinite raw callback retention is not permitted.
 

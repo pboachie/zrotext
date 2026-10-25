@@ -192,7 +192,7 @@ cargo test --locked --workspace -- --ignored --skip real_stripe_ --test-threads=
 
 The `real_stripe_` exclusion is deliberate: those two ignored tests contact Stripe TEST and need separate explicit setup. The ordinary command plus the PostgreSQL command run the same Rust test sets as CI. Stop the container with Ctrl+C when finished.
 
-CI divides the ignored tests into four disjoint lanes: delivery store, two server
+CI divides the ignored tests into six disjoint lanes: delivery store, four server
 test-name shards, and every other workspace member. Each lane has its own disposable
 PostgreSQL service and retains four test threads. The required `rust` check is
 an aggregator, not just the residual workspace job: it requires all lanes and
@@ -205,7 +205,7 @@ its ignored harnesses through a command-local native Cargo runner. Cargo retains
 feature unification, package working directories and runtime library paths. Every
 workspace package and eligible target is discovered from current metadata; each
 lane inventories all harnesses. Nonserver packages stay together; server tests
-are assigned by the parity of the first SHA-256 byte of each UTF-8 test name.
+are assigned by the first SHA-256 byte of each UTF-8 test name, modulo four.
 This stable rule is independent of enumeration order and newly added tests.
 The original exclusion flags first establish the full selected inventory. Each
 server shard re-lists its exact native libtest multi-filter command and requires
@@ -221,12 +221,14 @@ compiled harness inventory is not treated as doctest execution evidence.
 The conversation workflow preserves its separate `conversation-simulator-tests`
 feature selection, complete nonignored tests, ignored binary/integration targets,
 ignored doctests, and external consumer fixtures. Its ignored libraries use the
-same four lanes and a strict prerequisite aggregator. The default workflow permits
+same six lanes and a strict prerequisite aggregator. The default workflow permits
 three matrix runners plus its residual core runner; the conversation workflow
 permits at most three lane runners after its workspace prerequisite. Together
 these paths permit at most seven active Rust test runners, without increasing
-runner sizes, account quotas or the existing 45/60-minute job budgets. Test-name
-sharding does not guarantee balanced runtimes or completion within those budgets;
+runner sizes, account quotas or the existing 45/60-minute job budgets. More server
+partitions reduce the test set per job, but add setup work and queued waves under
+the unchanged concurrency cap. Test-name sharding does not guarantee balanced
+runtimes or completion within those budgets;
 only hosted results establish that. Lane receipts contain only structural test
 identities, not fixture logs.
 Receipts are bound to one workflow attempt: after a failure, rerun the complete

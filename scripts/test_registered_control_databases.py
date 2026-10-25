@@ -28,10 +28,10 @@ class RegisteredControlProvisioningTest(unittest.TestCase):
                         self.assertIn('return args + ["--test-threads=4"]', helper)
                         self.assertIn("--lane", command)
                         if name == "rust-postgresql":
-                            self.assertIn("lane: [delivery-store, server-0, server-1]", block)
+                            self.assertIn("lane: [delivery-store, server-0, server-1, server-2, server-3]", block)
                             self.assertIn("max-parallel: 3", block)
                         elif name == "conversation-postgresql-lanes":
-                            self.assertIn("lane: [delivery-store, server-0, server-1, remaining]", block)
+                            self.assertIn("lane: [delivery-store, server-0, server-1, server-2, server-3, remaining]", block)
                             self.assertIn("max-parallel: 3", block)
                             self.assertIn("needs: [conversation-workspace]", block)
                     else:

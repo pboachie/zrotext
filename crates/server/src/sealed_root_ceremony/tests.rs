@@ -58,7 +58,15 @@ pub(crate) struct Owner {
 }
 impl Owner {
     pub(crate) async fn new() -> Self {
-        let f = Fixture::without_authority().await;
+        Self::from_fixture(Fixture::without_authority().await).await
+    }
+    pub(crate) async fn current() -> Self {
+        Self::from_fixture(Fixture::current_without_authority().await).await
+    }
+    async fn from_fixture(f: Fixture) -> Self {
+        use futures_util::FutureExt;
+        use std::panic::{AssertUnwindSafe, resume_unwind};
+        let seeded = AssertUnwindSafe(async {
         // Separate account without protected phone tombstones permits an exact
         // account-erasure cascade exercise alongside the complete parent schema.
         let account = Uuid::new_v4();
@@ -129,17 +137,26 @@ impl Owner {
         .concat()
         .try_into()
         .unwrap();
-        Self {
-            f,
-            principal,
-            hasher,
-            cipher: mfa::MfaCipher::new(key.to_vec()).unwrap(),
-            root,
-            pin,
-            recovery,
-            token,
-            csrf,
-            secret,
+            (principal, hasher, mfa::MfaCipher::new(key.to_vec()).unwrap(), root,
+                pin, recovery, token, csrf, secret)
+        }).catch_unwind().await;
+        match seeded {
+            Ok((principal, hasher, cipher, root, pin, recovery, token, csrf, secret)) => Self {
+                f,
+                principal,
+                hasher,
+                cipher,
+                root,
+                pin,
+                recovery,
+                token,
+                csrf,
+                secret,
+            },
+            Err(panic) => {
+                f.cleanup().await;
+                resume_unwind(panic);
+            }
         }
     }
     pub(crate) async fn challenge(&self) -> IssuedChallenge {

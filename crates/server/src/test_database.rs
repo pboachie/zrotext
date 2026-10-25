@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Disposable current public-schema fixture with separate migration-owner and
 //! ordinary runtime logins, using the real migrator and unchanged stock ACLs.
+use futures_util::FutureExt;
 use postgres_protocol::escape::{escape_identifier, escape_literal};
+use std::panic::{AssertUnwindSafe, resume_unwind};
 use tokio_postgres::{Client, Config};
 use uuid::Uuid;
 
@@ -38,13 +40,31 @@ impl Fixture {
     /// Current Store positives use the real migrator and stock ordinary role.
     pub async fn for_store(env_name: &str) -> Self {
         let fixture = Self::new(env_name).await;
-        fixture.verify().await;
-        zrotext_delivery_store::hosted_runtime_identity::require(&fixture.runtime)
-            .await
-            .unwrap();
+        let qualified = AssertUnwindSafe(async {
+            fixture.verify().await;
+            zrotext_delivery_store::hosted_runtime_identity::require(&fixture.runtime)
+                .await
+                .unwrap();
+        })
+        .catch_unwind()
+        .await;
+        if let Err(panic) = qualified {
+            fixture.finish().await;
+            resume_unwind(panic);
+        }
         fixture
     }
     pub async fn new(env_name: &str) -> Self {
+        Self::with_history(env_name, 0, async |_| {}).await.0
+    }
+    /// Seed genuine historical rows through a complete numbered prefix, then
+    /// run every remaining unchanged migration before creating the stock role.
+    /// The callback is never a way to alter or re-pin the current graph.
+    pub async fn with_history<T, F>(env_name: &str, through: usize, seed: F) -> (Self, T)
+    where
+        F: for<'a> std::ops::AsyncFnOnce(&'a mut Client) -> T,
+    {
+        assert!(through < 119);
         let base = std::env::var(env_name).expect("disposable CREATEDB/CREATEROLE cluster");
         let mut config = zrotext_postgres_connection::parse_config(&base).unwrap();
         config.connect_timeout(std::time::Duration::from_secs(5));
@@ -78,31 +98,76 @@ impl Fixture {
         let (mut owner, owner_driver) = connect(&config).await;
         let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../deploy/compose/migrations");
-        let applied = zrotext_migrator::apply(&mut owner, &directory, false)
-            .await
-            .unwrap();
-        assert_eq!(applied.last().unwrap().version, 119);
-        assert_eq!(applied.len(), 119);
-        let fixture_acl = Self::acl_text(&database, &runtime_role);
-        owner.batch_execute(&fixture_acl).await.unwrap();
-        config.user(&runtime_role).password(&runtime_password);
-        let runtime_url = runtime_url(&base, &database, &runtime_role, &runtime_password);
-        let (runtime, runtime_driver) = connect(&config).await;
-        Self {
-            owner,
-            runtime,
-            runtime_role,
-            owner_role,
-            config,
-            runtime_url,
-            admin,
-            admin_driver,
-            owner_driver,
-            runtime_driver,
-            database,
-        }
+        let initialized = AssertUnwindSafe(async {
+            let history = if through == 0 {
+                seed(&mut owner).await
+            } else {
+                let prefix = MigrationPrefix::new(&directory, through);
+                let applied = zrotext_migrator::apply(&mut owner, &prefix.0, false)
+                    .await
+                    .unwrap();
+                assert_eq!(applied.len(), through);
+                assert_eq!(applied.last().unwrap().version, through as i64);
+                seed(&mut owner).await
+            };
+            let applied = zrotext_migrator::apply(&mut owner, &directory, false)
+                .await
+                .unwrap();
+            assert_eq!(applied.last().unwrap().version, 119);
+            assert_eq!(applied.len(), 119 - through);
+            assert_eq!(
+                owner
+                    .query_one("SELECT count(*) FROM schema_migrations", &[])
+                    .await
+                    .unwrap()
+                    .get::<_, i64>(0),
+                119
+            );
+            let fixture_acl = Self::acl_text(&database, &runtime_role);
+            owner.batch_execute(&fixture_acl).await.unwrap();
+            config.user(&runtime_role).password(&runtime_password);
+            let runtime_url = runtime_url(&base, &database, &runtime_role, &runtime_password);
+            let (runtime, runtime_driver) = connect(&config).await;
+            (history, runtime, runtime_driver, runtime_url)
+        })
+        .catch_unwind()
+        .await;
+        let (history, runtime, runtime_driver, runtime_url) = match initialized {
+            Ok(value) => value,
+            Err(panic) => {
+                close(owner, owner_driver).await;
+                admin
+                    .batch_execute(&format!("DROP DATABASE {}", escape_identifier(&database)))
+                    .await
+                    .unwrap();
+                for role in [&runtime_role, &owner_role] {
+                    admin
+                        .batch_execute(&format!("DROP ROLE {}", escape_identifier(role)))
+                        .await
+                        .unwrap();
+                }
+                close(admin, admin_driver).await;
+                resume_unwind(panic);
+            }
+        };
+        (
+            Self {
+                owner,
+                runtime,
+                runtime_role,
+                owner_role,
+                config,
+                runtime_url,
+                admin,
+                admin_driver,
+                owner_driver,
+                runtime_driver,
+                database,
+            },
+            history,
+        )
     }
-    fn acl_text(database: &str, runtime: &str) -> String {
+    pub(crate) fn acl_text(database: &str, runtime: &str) -> String {
         // The stock SQL compares role-name text as well as identifiers. A quoted
         // identifier must never be substituted into those comparison literals.
         assert!(
@@ -153,6 +218,43 @@ impl Fixture {
                 .unwrap();
         }
         close(self.admin, self.admin_driver).await;
+    }
+}
+
+// Temporary files are exact copies, not rewritten migrations or a fake ledger.
+struct MigrationPrefix(std::path::PathBuf);
+impl MigrationPrefix {
+    fn new(directory: &std::path::Path, through: usize) -> Self {
+        let prefix = Self(std::env::temp_dir().join(format!(
+            "zrotext_migration_prefix_{}",
+            Uuid::new_v4().simple()
+        )));
+        std::fs::create_dir(&prefix.0).unwrap();
+        let mut versions = Vec::new();
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name().into_string().unwrap();
+            if !name.ends_with(".sql") {
+                continue;
+            }
+            let version: usize = name.split_once('_').unwrap().0.parse().unwrap();
+            if version > through {
+                continue;
+            }
+            let original = std::fs::read(entry.path()).unwrap();
+            let path = prefix.0.join(name);
+            std::fs::write(&path, &original).unwrap();
+            assert_eq!(std::fs::read(path).unwrap(), original);
+            versions.push(version);
+        }
+        versions.sort_unstable();
+        assert_eq!(versions, (1..=through).collect::<Vec<_>>());
+        prefix
+    }
+}
+impl Drop for MigrationPrefix {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).unwrap();
     }
 }
 

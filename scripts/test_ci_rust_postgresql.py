@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Fail-closed PostgreSQL partition tests and a tiny real Cargo runner smoke test."""
 import copy
+import itertools
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,8 @@ from unittest import mock
 import ci_rust_postgresql as ci
 
 ROOT = Path(__file__).resolve().parents[1]
+SERVER_CASES = ["server_case_a", "server_case_a_extra", "server_case_b", "server_case_c",
+                "server_case_d", "server_case_e", "server_case_f", "server_case_m"]
 
 
 def job(workflow, name):
@@ -58,7 +61,7 @@ class InventoryTests(unittest.TestCase):
             records = {}
             for key, target in targets.items():
                 package = target["description"]["package"]
-                tests = ["server_case_a", "server_case_b", "server_case_c", "server_case_d"] if package == "zrotext-server" else ["database_case"]
+                tests = SERVER_CASES.copy() if package == "zrotext-server" else ["database_case"]
                 assigned = ci.assigned_tests(package, tests, lane)
                 executed = lane in ci.lanes_for(package) and (package != "zrotext-server" or bool(assigned))
                 features = ["conversation-simulator-tests"] if suite == "conversation" and package == "zrotext-server" else []
@@ -175,11 +178,14 @@ class InventoryTests(unittest.TestCase):
             server = next(key for key, target in targets.items() if target["description"]["package"] == "zrotext-server")
             shards = [r["records"][server] for r in receipts if r["lane"] in ci.SERVER_LANES]
             self.assertTrue(all(len(r["passed"]) == 2 for r in shards))
-            self.assertFalse(set(shards[0]["passed"]) & set(shards[1]["passed"]))
-            self.assertEqual(sorted(shards[0]["passed"] + shards[1]["passed"]), shards[0]["tests"])
-            for mutation in ("omission", "duplicate", "wrong-shard", "invented", "empty-lane"):
+            for first, second in itertools.combinations(shards, 2):
+                self.assertFalse(set(first["passed"]) & set(second["passed"]))
+            self.assertEqual(sorted(name for shard in shards for name in shard["passed"]), shards[0]["tests"])
+            for index, mutation in itertools.product(range(len(ci.SERVER_LANES)),
+                                                      ("omission", "duplicate", "wrong-shard", "invented", "empty-lane")):
                 broken = copy.deepcopy(receipts)
-                first, second = [r["records"][server] for r in broken if r["lane"] in ci.SERVER_LANES]
+                shards = [r["records"][server] for r in broken if r["lane"] in ci.SERVER_LANES]
+                first, second = shards[index], shards[(index + 1) % len(shards)]
                 if mutation == "omission":
                     first["passed"] = first["passed"][1:]
                 elif mutation == "duplicate":
@@ -191,16 +197,39 @@ class InventoryTests(unittest.TestCase):
                     first["passed"] = [*first["passed"], "unlisted_case"]
                 else:
                     first.update(assigned=[], passed=[], executed=False)
-                with self.subTest(suite=suite, mutation=mutation), self.assertRaises(ValueError):
+                with self.subTest(suite=suite, lane=ci.SERVER_LANES[index], mutation=mutation), self.assertRaises(ValueError):
                     ci.verify_receipts(broken, suite, identity, inventory, targets)
 
     def test_an_entire_server_lane_without_tests_refuses_even_consistent_records(self):
         receipts, _, _, targets = self.receipts()
-        records = next(r["records"] for r in receipts if r["lane"] == "server-1")
-        server = next(r for r in records.values() if r["description"]["package"] == "zrotext-server")
-        server.update(tests=["server_case_a"], assigned=[], passed=[], executed=False)
-        with self.assertRaisesRegex(ValueError, "zero tests"):
-            ci.validate_records(records, targets, "default", "server-1")
+        for index, lane in enumerate(ci.SERVER_LANES):
+            records = copy.deepcopy(next(r["records"] for r in receipts if r["lane"] == lane))
+            server = next(r for r in records.values() if r["description"]["package"] == "zrotext-server")
+            other_lane = ci.SERVER_LANES[(index + 1) % len(ci.SERVER_LANES)]
+            names = ci.assigned_tests("zrotext-server", SERVER_CASES, other_lane)
+            server.update(tests=names, assigned=[], passed=[], executed=False)
+            with self.subTest(lane=lane), self.assertRaisesRegex(ValueError, "zero tests"):
+                ci.validate_records(records, targets, "default", lane)
+
+    def test_old_two_shard_receipt_sets_and_assignments_refuse(self):
+        for suite in ci.SUITES:
+            receipts, identity, inventory, targets = self.receipts(suite)
+            old = [r for r in receipts if r["lane"] not in ("server-2", "server-3")]
+            with self.assertRaisesRegex(ValueError, "Missing or additional"):
+                ci.verify_receipts(old, suite, identity, inventory, targets)
+            # Even with all new lane labels, old modulo-two assignment cannot
+            # masquerade as current proof with unchanged schema version two.
+            for receipt in receipts:
+                if receipt["lane"] not in ci.SERVER_LANES:
+                    continue
+                for item in receipt["records"].values():
+                    if item["description"]["package"] != "zrotext-server":
+                        continue
+                    assigned = [name for name in item["tests"]
+                                if "server-" + str(ci.hashlib.sha256(name.encode()).digest()[0] % 2) == receipt["lane"]]
+                    item.update(assigned=assigned, passed=assigned, executed=bool(assigned))
+            with self.assertRaisesRegex(ValueError, "Incorrect deterministic test assignment"):
+                ci.verify_receipts(receipts, suite, identity, inventory, targets)
 
     def test_aggregate_checks_union_even_if_per_lane_validation_regresses(self):
         receipts, identity, inventory, targets = self.receipts()
@@ -210,6 +239,26 @@ class InventoryTests(unittest.TestCase):
             broken[1]["records"][server]["passed"] = names
             with mock.patch.object(ci, "validate_records"), self.assertRaisesRegex(ValueError, "disjoint complete union"):
                 ci.verify_receipts(broken, "default", identity, inventory, targets)
+
+    def test_every_server_shard_requires_unique_current_invocation_proof(self):
+        for suite in ci.SUITES:
+            receipts, identity, inventory, targets = self.receipts(suite)
+            for lane in ci.SERVER_LANES:
+                index = next(i for i, receipt in enumerate(receipts) if receipt["lane"] == lane)
+                for field, stale in (("commit", "c" * 40), ("tree", "d" * 40),
+                                     ("run", "8"), ("attempt", "2")):
+                    broken = copy.deepcopy(receipts)
+                    broken[index]["source"] = {**identity, field: stale}
+                    with self.subTest(suite=suite, lane=lane, stale=field), self.assertRaisesRegex(ValueError, "Foreign workflow"):
+                        ci.verify_receipts(broken, suite, identity, inventory, targets)
+                for mutation in ("missing", "duplicate"):
+                    broken = copy.deepcopy(receipts)
+                    if mutation == "missing":
+                        broken.pop(index)
+                    else:
+                        broken[index] = copy.deepcopy(broken[(index + 1) % len(broken)])
+                    with self.subTest(suite=suite, lane=lane, mutation=mutation), self.assertRaises(ValueError):
+                        ci.verify_receipts(broken, suite, identity, inventory, targets)
 
     def test_artifact_inventory_is_exact_and_uses_cargo_paths_not_globs(self):
         _, targets = self.inventory()
@@ -234,9 +283,12 @@ class InventoryTests(unittest.TestCase):
 
 class HarnessAndStatusTests(unittest.TestCase):
     def test_sharding_is_stable_and_native_arguments_preserve_exclusions(self):
-        self.assertEqual(ci.LANES, ("delivery-store", "server-0", "server-1", "remaining"))
-        names = ["server_case_a", "server_case_b", "server_case_c", "server_case_d"]
-        expected = {"server-0": ["server_case_a", "server_case_d"], "server-1": ["server_case_b", "server_case_c"]}
+        self.assertEqual(ci.LANES, ("delivery-store", "server-0", "server-1", "server-2", "server-3", "remaining"))
+        names = SERVER_CASES.copy()
+        expected = {"server-0": ["server_case_a", "server_case_f"],
+                    "server-1": ["server_case_a_extra", "server_case_m"],
+                    "server-2": ["server_case_d", "server_case_e"],
+                    "server-3": ["server_case_b", "server_case_c"]}
         for lane, assigned in expected.items():
             self.assertEqual(ci.assigned_tests("zrotext-server", names, lane), assigned)
             self.assertEqual(ci.assigned_tests("zrotext-server", list(reversed(names)), lane), list(reversed(assigned)))
@@ -352,7 +404,7 @@ else:
 ''')
         self.executable.chmod(0o700)
         self.arguments = [*ci.selection("default"), "--format=pretty", "--color=never"]
-        self.state = {"root": str(self.root), "suite": "default", "lane": "server-1", "arguments": self.arguments,
+        self.state = {"root": str(self.root), "suite": "default", "lane": "server-3", "arguments": self.arguments,
                       "results": str(self.results), "artifacts": {"one": {"executable": str(self.executable),
                       "manifest": "package/Cargo.toml", "description": {"package": "zrotext-server"}, "features": []}}}
         self.state_path = self.root / "state.json"
@@ -515,6 +567,26 @@ class ReceiptDestinationTests(unittest.TestCase):
 
 
 class WorkflowSourceTests(unittest.TestCase):
+    def test_partition_matrices_match_the_verifier_without_expanding_runner_bounds(self):
+        for workflow, matrix_name, aggregate_name, budget in (
+                ("ci.yml", "rust-postgresql", "rust", 45),
+                ("conversation-simulator.yml", "conversation-postgresql-lanes", "conversation-postgresql", 60)):
+            source = (ROOT / ".github/workflows" / workflow).read_text()
+            matrix = job(workflow, matrix_name)
+            aggregate = job(workflow, aggregate_name)
+            lanes = re.findall(r"^        lane: \[(.+)\]$", matrix, re.MULTILINE)
+            expected = ci.LANES[:-1] if workflow == "ci.yml" else ci.LANES
+            self.assertEqual(lanes, [", ".join(expected)])
+            self.assertEqual(re.findall(r"^      max-parallel: (.+)$", matrix, re.MULTILINE), ["3"])
+            self.assertIn("    runs-on: ubuntu-24.04\n", matrix)
+            self.assertIn(f"    timeout-minutes: {budget}\n", matrix)
+            self.assertIn("    timeout-minutes: 10\n", aggregate)
+            self.assertEqual(re.findall(r"^ *permissions:.*\n(?: +[^\n]+\n)*", source, re.MULTILINE),
+                             ["permissions:\n  contents: read\n"])
+            self.assertNotIn("continue-on-error", aggregate)
+        documentation = (ROOT / "CONTRIBUTING.md").read_text()
+        self.assertIn("rerun the complete\nworkflow rather than only failed jobs", documentation)
+
     def test_required_rust_is_an_always_strict_aggregator(self):
         aggregate = job("ci.yml", "rust")
         for required in ("    name: rust\n", "    if: ${{ always() }}\n", "    needs: [changes, rust-workspace, rust-postgresql]\n",
@@ -526,7 +598,7 @@ class WorkflowSourceTests(unittest.TestCase):
     def test_fixed_lane_bounds_and_all_previous_core_gates_remain(self):
         core = job("ci.yml", "rust-workspace")
         matrix = job("ci.yml", "rust-postgresql")
-        self.assertIn("lane: [delivery-store, server-0, server-1]", matrix)
+        self.assertIn("lane: [delivery-store, server-0, server-1, server-2, server-3]", matrix)
         self.assertIn("max-parallel: 3", matrix)
         self.assertIn("fail-fast: false", matrix)
         for source in (core, matrix):
@@ -554,7 +626,7 @@ class WorkflowSourceTests(unittest.TestCase):
                      "--features conversation-simulator-tests --bins --test '*' -- --ignored",
                      "--features conversation-simulator-tests --doc -- --ignored"):
             self.assertIn(gate, workspace)
-        for gate in ("lane: [delivery-store, server-0, server-1, remaining]", "max-parallel: 3", "fail-fast: false",
+        for gate in ("lane: [delivery-store, server-0, server-1, server-2, server-3, remaining]", "max-parallel: 3", "fail-fast: false",
                      "timeout-minutes: 60", "--suite conversation --lane '${{ matrix.lane }}'"):
             self.assertIn(gate, lanes)
         self.assertIn("needs: [conversation-workspace]", lanes)
@@ -597,6 +669,8 @@ fn server_case_a() { assert!(std::env::var_os("CI_SHARD_FORCE_FAILURE").is_none(
 #[test] #[ignore] fn server_case_b() {}
 #[test] #[ignore] fn server_case_c() {}
 #[test] #[ignore] fn server_case_d() {}
+#[test] #[ignore] fn server_case_e() {}
+#[test] #[ignore] fn server_case_f() {}
 #[test] #[ignore] fn real_stripe_excluded() { panic!("original Stripe exclusion escaped"); }
 #[test] fn ordinary_not_selected() { panic!("nonignored selection escaped"); }
 #[test] #[ignore] #[cfg(feature="conversation-simulator-tests")]
@@ -652,8 +726,9 @@ fn ordinary_setup_server_browser_fixture_excluded() { panic!("original browser e
                 for key, target in targets.items():
                     if target["description"]["package"] != "zrotext-server":
                         continue
-                    first, second = [r["records"][key] for r in server_receipts]
-                    if not all(len(r["passed"]) >= 2 for r in (first, second)):
+                    shards = [r["records"][key] for r in server_receipts]
+                    first, second = shards[:2]
+                    if not all(len(r["passed"]) >= 2 for r in shards):
                         raise AssertionError("Native smoke did not execute multiple exact filters per shard")
                     if "server_case_a" not in first["passed"] or "server_case_a_extra" not in second["passed"]:
                         raise AssertionError("Native exact selection did not separate overlapping names")

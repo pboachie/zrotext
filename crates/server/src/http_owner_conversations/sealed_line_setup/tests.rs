@@ -34,8 +34,17 @@ impl Case {
     pub(crate) async fn without_root() -> Self {
         Self::build(false).await
     }
+    /// Real producer fixture on the complete current numbered public schema.
+    pub(crate) async fn current() -> Self {
+        Self::from_owner(Owner::current().await, true, false).await
+    }
     async fn build(install_root: bool) -> Self {
-        let mut owner = Owner::new().await;
+        Self::from_owner(Owner::new().await, install_root, true).await
+    }
+    async fn from_owner(mut owner: Owner, install_root: bool, legacy_setup: bool) -> Self {
+        use futures_util::FutureExt;
+        use std::panic::{AssertUnwindSafe, resume_unwind};
+        let seeded = AssertUnwindSafe(async {
         let account = owner.principal.tenant.account_id();
         let device = Uuid::new_v4();
         let line = Uuid::new_v4();
@@ -43,21 +52,28 @@ impl Case {
         let approval = SigningKey::generate_from_rng(&mut rand::rng());
         // This prerequisite-only manifest fixture does not replay the full inventory.
         // Apply the actual draft migrations in their dependency order.
-        for sql in [
-            include_str!(
-                "../../../../../deploy/compose/migrations/086_sealed_line_key_registration.sql"
-            ),
-            include_str!(
-                "../../../../../deploy/compose/migrations/087_sealed_line_activation_exchanges.sql"
-            ),
-            include_str!(
-                "../../../../../deploy/compose/migrations/094_line_activation_protocol_version.sql"
-            ),
-            include_str!(
-                "../../../../../deploy/compose/migrations/096_line_activation_v2_exchanges.sql"
-            ),
-        ] {
-            owner.f.db.batch_execute(sql).await.unwrap();
+        if legacy_setup {
+            for sql in [
+                include_str!(
+                    "../../../../../deploy/compose/migrations/086_sealed_line_key_registration.sql"
+                ),
+                include_str!(
+                    "../../../../../deploy/compose/migrations/087_sealed_line_activation_exchanges.sql"
+                ),
+                include_str!(
+                    "../../../../../deploy/compose/migrations/094_line_activation_protocol_version.sql"
+                ),
+                include_str!(
+                    "../../../../../deploy/compose/migrations/096_line_activation_v2_exchanges.sql"
+                ),
+            ] {
+                owner.f.db.batch_execute(sql).await.unwrap();
+            }
+        } else {
+            assert!(owner.f.is_current());
+            crate::hosted_runtime_identity::require(&owner.f.db)
+                .await
+                .unwrap();
         }
         // Synthetic existing independently pinned v0 authority and real paired role.
         let rootfp = zrotext_root_material::sealed_root_enrollment::root_fingerprint(
@@ -104,12 +120,20 @@ impl Case {
             crate::auth::authenticate_session(&owner.f.db, &owner.hasher, &owner.token)
                 .await
                 .unwrap();
-        Self {
-            owner,
-            device,
-            line,
-            paired,
-            approval,
+            (device, line, paired, approval)
+        }).catch_unwind().await;
+        match seeded {
+            Ok((device, line, paired, approval)) => Self {
+                owner,
+                device,
+                line,
+                paired,
+                approval,
+            },
+            Err(panic) => {
+                owner.f.cleanup().await;
+                resume_unwind(panic);
+            }
         }
     }
     pub(crate) fn session(&self) -> InboundSession<'_> {
@@ -222,10 +246,14 @@ impl Case {
         };
         SetupState {
             owner: OwnerConversationsState {
-                database_url: format!(
-                    "{}{sep}options=-csearch_path%3D{}",
-                    self.owner.f.url, self.owner.f.schema
-                ),
+                database_url: if self.owner.f.is_current() {
+                    self.owner.f.url.clone()
+                } else {
+                    format!(
+                        "{}{sep}options=-csearch_path%3D{}",
+                        self.owner.f.url, self.owner.f.schema
+                    )
+                },
                 auth_hasher: Arc::new(TokenHasher::new(crate::test_keys::key(93)).unwrap()),
                 canonical_origin: ORIGIN.into(),
             },
