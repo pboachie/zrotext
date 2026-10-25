@@ -2,6 +2,7 @@
 use super::{fixture::*, *};
 use axum::{body::to_bytes, http::StatusCode};
 use serde_json::{Value, json};
+use tokio_postgres::error::SqlState;
 use tower::ServiceExt;
 
 async fn value(response: axum::response::Response) -> Value {
@@ -22,7 +23,7 @@ async fn status(f: &Fixture, r: &Arc<Runtime>) -> Value {
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; ordinary owner HTTP and cached catalog fixture"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; ordinary owner HTTP and cached catalog fixture"]
 async fn owner_status_accepts_normal_get_without_origin_and_public_catalog_never_spends_provider_requests()
  {
     let f = Fixture::new(Mode::Live).await;
@@ -102,7 +103,7 @@ async fn owner_status_accepts_normal_get_without_origin_and_public_catalog_never
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated due-customer fairness fixture"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; isolated due-customer fairness fixture"]
 async fn disabled_earliest_customer_does_not_starve_an_active_customer() {
     let f = Fixture::new(Mode::Live).await;
     let r = f.runtime(Mode::Live).await;
@@ -114,19 +115,22 @@ async fn disabled_earliest_customer_does_not_starve_an_active_customer() {
     )
     .await;
     let disabled = Uuid::new_v4();
-    f.admin
+    f.database
+        .owner
         .execute("INSERT INTO accounts(id) VALUES($1)", &[&disabled])
         .await
         .unwrap();
-    f.admin.execute("INSERT INTO hosted_billing_customers(namespace_id,account_id,customer_id,next_attempt_at) VALUES($1,$2,'cus_disabled',0)",&[&f.namespace,&disabled]).await.unwrap();
-    f.admin
+    f.database.owner.execute("INSERT INTO hosted_billing_customers(namespace_id,account_id,customer_id,next_attempt_at) VALUES($1,$2,'cus_disabled',0)",&[&f.namespace,&disabled]).await.unwrap();
+    f.database
+        .owner
         .execute(
             "UPDATE accounts SET disabled_at=clock_timestamp() WHERE id=$1",
             &[&disabled],
         )
         .await
         .unwrap();
-    f.admin
+    f.database
+        .owner
         .execute(
             "UPDATE hosted_billing_customers SET next_attempt_at=1 WHERE account_id=$1",
             &[&f.owner.tenant.account_id()],
@@ -135,7 +139,8 @@ async fn disabled_earliest_customer_does_not_starve_an_active_customer() {
         .unwrap();
     assert!(worker::run_one(&r).await.unwrap());
     let processed: i64 = f
-        .admin
+        .database
+        .owner
         .query_one(
             "SELECT processed_generation FROM hosted_billing_customers WHERE account_id=$1",
             &[&f.owner.tenant.account_id()],
@@ -145,7 +150,8 @@ async fn disabled_earliest_customer_does_not_starve_an_active_customer() {
         .get(0);
     assert!(processed > 0);
     assert_eq!(
-        f.admin
+        f.database
+            .owner
             .query_one(
                 "SELECT processed_generation FROM hosted_billing_customers WHERE account_id=$1",
                 &[&disabled]
@@ -160,7 +166,7 @@ async fn disabled_earliest_customer_does_not_starve_an_active_customer() {
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; provider-confirmed expired attempt fixture"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; provider-confirmed expired attempt fixture"]
 async fn expired_checkout_is_replaceable_only_after_complete_reconciliation_and_explicit_post() {
     let f = Fixture::new(Mode::Live).await;
     let r = f.runtime(Mode::Live).await;
@@ -209,11 +215,11 @@ async fn expired_checkout_is_replaceable_only_after_complete_reconciliation_and_
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated fake-provider PostgreSQL runtime"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; disposable public-schema fake-provider runtime"]
 async fn protected_backend_proof_rejects_forged_settings_wrong_keys_shadow_tables_and_privileged_roles()
  {
     let f = Fixture::new(Mode::Live).await;
-    let app = connect(&f.app_url).await;
+    let (app, app_driver) = f.database.another_runtime().await;
     assert!(
         app.query_one("SELECT hosted_runtime_role_safe()", &[])
             .await
@@ -236,7 +242,57 @@ async fn protected_backend_proof_rejects_forged_settings_wrong_keys_shadow_table
             .await
             .is_err()
     );
-    app.batch_execute("CREATE TEMP TABLE hosted_runtime_secrets(namespace_id uuid,runtime_key bytea); CREATE TEMP TABLE hosted_runtime_sessions(backend_pid int,verified bool)").await.unwrap();
+    // Stock runtime-role.sql denies TEMP, which native identity116+ requires.
+    assert_eq!(
+        app.batch_execute(
+            "CREATE TEMP TABLE hosted_runtime_secrets(namespace_id uuid,runtime_key bytea)"
+        )
+        .await
+        .unwrap_err()
+        .code(),
+        Some(&SqlState::INSUFFICIENT_PRIVILEGE)
+    );
+    // Also retain the defense-in-depth shadow lookup case. Only these separate
+    // synthetic objects receive SELECT/USAGE; public's stock ACLs stay intact.
+    let runtime_role = postgres_protocol::escape::escape_identifier(&f.database.runtime_role);
+    f.database.owner.batch_execute(&format!(
+        "CREATE SCHEMA hosted_shadow; CREATE TABLE hosted_shadow.hosted_runtime_secrets(namespace_id uuid,runtime_key bytea); CREATE TABLE hosted_shadow.hosted_runtime_sessions(backend_pid int,verified bool); GRANT USAGE ON SCHEMA hosted_shadow TO {runtime_role}; GRANT SELECT ON ALL TABLES IN SCHEMA hosted_shadow TO {runtime_role}"
+    )).await.unwrap();
+    f.database
+        .owner
+        .execute(
+            "INSERT INTO hosted_shadow.hosted_runtime_secrets VALUES($1,$2)",
+            &[&f.namespace, &&[0u8; 32][..]],
+        )
+        .await
+        .unwrap();
+    let app_pid: i32 = app
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    f.database
+        .owner
+        .execute(
+            "INSERT INTO hosted_shadow.hosted_runtime_sessions VALUES($1,true)",
+            &[&app_pid],
+        )
+        .await
+        .unwrap();
+    app.batch_execute("SET search_path TO hosted_shadow,pg_catalog,public")
+        .await
+        .unwrap();
+    assert_eq!(app.query_one("SELECT count(*) FROM hosted_runtime_sessions WHERE backend_pid=pg_backend_pid() AND verified", &[]).await.unwrap().get::<_,i64>(0), 1);
+    assert_eq!(
+        app.query_one(
+            "SELECT runtime_key FROM hosted_runtime_secrets WHERE namespace_id=$1",
+            &[&f.namespace]
+        )
+        .await
+        .unwrap()
+        .get::<_, Vec<u8>>(0),
+        vec![0; 32]
+    );
     app.query_one("SELECT hosted_runtime_challenge($1,1)", &[&f.namespace])
         .await
         .unwrap();
@@ -269,19 +325,33 @@ async fn protected_backend_proof_rejects_forged_settings_wrong_keys_shadow_table
             .is_err()
     );
     assert!(
-        f.admin
+        f.database
+            .owner
             .query_one("SELECT hosted_runtime_challenge($1,1)", &[&f.namespace])
             .await
             .is_err()
     );
     let r = f.runtime(Mode::Live).await;
-    let db = crate::runtime_db::connect(&f.app_url).await.unwrap();
-    let namespace: Uuid = db
+    let mut db = crate::runtime_db::connect(&f.app_url).await.unwrap();
+    // Migration116 binds authority to the actual transaction, not checkout.
+    assert!(
+        db.query_one("SELECT hosted_runtime_marker()", &[])
+            .await
+            .is_err()
+    );
+    let tx = db.native_transaction().await.unwrap();
+    let namespace: Uuid = tx
         .query_one("SELECT (hosted_runtime_marker()).namespace_id", &[])
         .await
         .unwrap()
         .get(0);
     assert_eq!(namespace, f.namespace);
+    tx.commit().await.unwrap();
+    assert!(
+        db.query_one("SELECT hosted_runtime_marker()", &[])
+            .await
+            .is_err()
+    );
     // Freshening a checkout consumes the old trust before verifying the next.
     db.query_one("SELECT hosted_runtime_challenge($1,1)", &[&f.namespace])
         .await
@@ -291,6 +361,7 @@ async fn protected_backend_proof_rejects_forged_settings_wrong_keys_shadow_table
             .await
             .is_err()
     );
+    assert!(db.native_transaction().await.is_err());
     drop(db);
     // A raw/older connection cannot gain paid admission by naming the public
     // namespace. Only the protected proof registry can admit this backend.
@@ -302,25 +373,29 @@ async fn protected_backend_proof_rejects_forged_settings_wrong_keys_shadow_table
         .await
         .is_err()
     );
-    let db = crate::runtime_db::connect(&f.app_url).await.unwrap();
+    let mut db = crate::runtime_db::connect(&f.app_url).await.unwrap();
+    let tx = db.native_transaction().await.unwrap();
     assert!(
-        db.query_one("SELECT (hosted_runtime_marker()).namespace_id", &[])
+        tx.query_one("SELECT (hosted_runtime_marker()).namespace_id", &[])
             .await
             .is_ok()
     );
+    tx.commit().await.unwrap();
     let pid: i32 = db
         .query_one("SELECT pg_backend_pid()", &[])
         .await
         .unwrap()
         .get(0);
-    f.admin.execute("UPDATE hosted_runtime_sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE backend_pid=$1",&[&pid]).await.unwrap();
+    f.database.owner.execute("UPDATE hosted_runtime_sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE backend_pid=$1",&[&pid]).await.unwrap();
+    assert!(db.native_transaction().await.is_err());
     assert!(
         db.query_one("SELECT (hosted_runtime_marker()).namespace_id", &[])
             .await
             .is_err()
     );
     drop(db);
-    f.admin
+    f.database
+        .owner
         .execute(
             "UPDATE hosted_billing_namespaces SET policy_revision=2",
             &[],
@@ -329,12 +404,12 @@ async fn protected_backend_proof_rejects_forged_settings_wrong_keys_shadow_table
         .unwrap();
     assert!(crate::runtime_db::connect(&f.app_url).await.is_err());
     drop(r);
-    drop(app);
+    crate::test_database::Fixture::close_connection(app, app_driver).await;
     f.cleanup().await;
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated fake-provider PostgreSQL runtime"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; disposable public-schema fake-provider runtime"]
 async fn hosted_checkout_recovers_lost_results_and_restart_without_duplicate_attempts_then_meters_paid_access()
  {
     let f = Fixture::new(Mode::Live).await;
@@ -410,23 +485,31 @@ async fn hosted_checkout_recovers_lost_results_and_restart_without_duplicate_att
     let d1 = Uuid::new_v4();
     let d2 = Uuid::new_v4();
     for device in [d1, d2] {
-        db.execute(
+        let tx = db.native_transaction().await.unwrap();
+        tx.execute(
             "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'Synthetic phone')",
             &[&device, &account],
         )
         .await
         .unwrap();
+        tx.commit().await.unwrap();
     }
-    assert!(
-        db.execute(
-            "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'Over cap')",
-            &[&Uuid::new_v4(), &account]
-        )
-        .await
-        .is_err()
+    let tx = db.native_transaction().await.unwrap();
+    tx.execute(
+        "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'Over cap')",
+        &[&Uuid::new_v4(), &account],
+    )
+    .await
+    .unwrap();
+    // The device-cap trigger is deferred to the transaction's final state.
+    let error = tx.commit().await.unwrap_err();
+    assert_eq!(error.code(), Some(&SqlState::CHECK_VIOLATION));
+    assert_eq!(
+        error.as_db_error().unwrap().constraint(),
+        Some("hosted_device_cap")
     );
     for _ in 0..10 {
-        let tx = db.transaction().await.unwrap();
+        let tx = db.native_transaction().await.unwrap();
         tx.execute("INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) VALUES($1,$2,$3,'+'||'1'||repeat('0',8)||'1',decode(repeat('00',32),'hex'),'synthetic_alpha',decode('01','hex'),decode(repeat('01',32),'hex'),'queued',clock_timestamp()+interval '1 hour')",&[&Uuid::new_v4(),&account,&d1]).await.unwrap();
         tx.commit().await.unwrap();
     }
@@ -440,14 +523,21 @@ async fn hosted_checkout_recovers_lost_results_and_restart_without_duplicate_att
         .get::<_, i64>(0),
         10
     );
-    assert!(db.execute("INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) VALUES($1,$2,$3,'+'||'1'||repeat('0',8)||'1',decode(repeat('00',32),'hex'),'synthetic_alpha',decode('01','hex'),decode(repeat('01',32),'hex'),'queued',clock_timestamp()+interval '1 hour')",&[&Uuid::new_v4(),&account,&d1]).await.is_err());
+    let tx = db.native_transaction().await.unwrap();
+    let error = tx.execute("INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) VALUES($1,$2,$3,'+'||'1'||repeat('0',8)||'1',decode(repeat('00',32),'hex'),'synthetic_alpha',decode('01','hex'),decode(repeat('01',32),'hex'),'queued',clock_timestamp()+interval '1 hour')",&[&Uuid::new_v4(),&account,&d1]).await.unwrap_err();
+    assert_eq!(error.code(), Some(&SqlState::CHECK_VIOLATION));
+    assert_eq!(
+        error.as_db_error().unwrap().constraint(),
+        Some("hosted_outbound_quota")
+    );
+    tx.rollback().await.unwrap();
     drop(db);
     drop(r);
     f.cleanup().await;
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated fake-provider PostgreSQL runtime"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; disposable public-schema fake-provider runtime"]
 async fn startup_identity_mismatch_and_colliding_test_live_provider_ids_never_share_authority() {
     let f = Fixture::new(Mode::Live).await;
     let start = |o| {
@@ -501,12 +591,14 @@ async fn startup_identity_mismatch_and_colliding_test_live_provider_ids_never_sh
     );
     // Same opaque customer/session/price IDs exist in separate mode databases.
     assert_eq!(
-        f.admin
+        f.database
+            .owner
             .query_one("SELECT customer_id FROM hosted_billing_customers", &[])
             .await
             .unwrap()
             .get::<_, String>(0),
-        test.admin
+        test.database
+            .owner
             .query_one("SELECT customer_id FROM hosted_billing_customers", &[])
             .await
             .unwrap()
@@ -561,7 +653,7 @@ async fn event(
         .status()
 }
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated fake-provider PostgreSQL runtime"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; disposable public-schema fake-provider runtime"]
 async fn signed_failure_grace_survives_duplicate_invoice_change_restart_and_outage_without_extension()
  {
     let f = Fixture::new(Mode::Live).await;
@@ -601,7 +693,8 @@ async fn signed_failure_grace_survives_duplicate_invoice_change_restart_and_outa
     let anchor = first["entitlement"]["first_failure_at_ms"].clone();
     assert!(!anchor.is_null());
     let generation: i64 = f
-        .admin
+        .database
+        .owner
         .query_one("SELECT queue_generation FROM hosted_billing_customers", &[])
         .await
         .unwrap()
@@ -619,7 +712,8 @@ async fn signed_failure_grace_survives_duplicate_invoice_change_restart_and_outa
         StatusCode::NO_CONTENT
     );
     assert_eq!(
-        f.admin
+        f.database
+            .owner
             .query_one("SELECT queue_generation FROM hosted_billing_customers", &[])
             .await
             .unwrap()
@@ -656,7 +750,8 @@ async fn signed_failure_grace_survives_duplicate_invoice_change_restart_and_outa
     f.due().await;
     assert_eq!(worker::run_one(&r).await, Err(Error::Provider));
     assert_eq!(
-        f.admin
+        f.database
+            .owner
             .query_one(
                 "SELECT first_failure_at FROM hosted_billing_projections",
                 &[]
@@ -683,10 +778,22 @@ async fn signed_failure_grace_survives_duplicate_invoice_change_restart_and_outa
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; in-flight generation and bounded provider list fixture"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; in-flight generation and bounded provider list fixture"]
 async fn intervening_event_invalidates_in_flight_reads_and_partial_lists_cannot_restore_access() {
     let f = Fixture::new(Mode::Live).await;
-    let r = f.runtime(Mode::Live).await;
+    // This race deliberately holds a provider response until the signed
+    // webhook completes current-schema DB guards. Give only that artificial
+    // barrier a bounded deadline below the worker's 90-second lease; ordinary
+    // fake requests remain 2 seconds and production requests remain 5 seconds.
+    let r = Runtime::start_with(
+        f.auth.clone(),
+        options(Mode::Live),
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(Notify::new()),
+        provider::Provider::fake_with_timeout(f.base.clone(), Duration::from_secs(30)),
+    )
+    .await
+    .unwrap();
     value(
         r.router()
             .oneshot(f.request("/checkout", "POST"))
@@ -743,7 +850,7 @@ async fn intervening_event_invalidates_in_flight_reads_and_partial_lists_cannot_
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; durable review and operator resolution fixture"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; durable review and operator resolution fixture"]
 async fn unbound_risk_blocks_access_and_only_audited_operator_resolution_then_fresh_read_can_restore_it()
  {
     let f = Fixture::new(Mode::Live).await;
@@ -813,14 +920,15 @@ async fn unbound_risk_blocks_access_and_only_audited_operator_resolution_then_fr
         .is_err()
     );
     drop(app);
-    f.admin
+    f.database
+        .owner
         .query_one(
             "SELECT hosted_resolve_review($1,1,'evt_unbound','not_subscription_risk')",
             &[&f.namespace],
         )
         .await
         .unwrap();
-    assert_eq!(f.admin.query_one("SELECT count(*) FROM hosted_billing_resolutions WHERE operator_role=session_user AND reason='not_subscription_risk'",&[]).await.unwrap().get::<_,i64>(0),1);
+    assert_eq!(f.database.owner.query_one("SELECT count(*) FROM hosted_billing_resolutions WHERE operator_role=session_user AND reason='not_subscription_risk'",&[]).await.unwrap().get::<_,i64>(0),1);
     f.fake.inner.lock().unwrap().outage = false;
     assert_eq!(
         status(&f, &r).await["entitlement"]["phase"],

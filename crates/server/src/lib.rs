@@ -229,3 +229,6 @@ pub mod workflow_templates;
 
 #[cfg(test)]
 mod test_migration_inventory;
+
+#[cfg(test)]
+pub(crate) mod test_database;

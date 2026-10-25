@@ -434,8 +434,12 @@ impl Drop for PooledClient {
         let url = self.url.clone();
         let created = self.created;
         let registration = ResetRegistration::new(pool.clone());
+        #[cfg(test)]
+        let fixture_reset = test_fixture::Activity::reset(url.clone());
         runtime.spawn(async move {
             let _registration = registration;
+            #[cfg(test)]
+            let _fixture_reset = fixture_reset;
             // DISCARD ALL runs after any statement still queued on this socket
             // and fails inside a transaction block. Either way an unready
             // socket is closed rather than handed to another caller. It also
@@ -555,6 +559,11 @@ pub(crate) fn discard_fixture_idle(url: &str) {
 #[path = "runtime_db/reset_tests.rs"]
 mod reset_tests;
 
+#[cfg(test)]
+mod test_fixture;
+#[cfg(test)]
+pub(crate) use test_fixture::close_fixture_connections;
+
 /// Test-only: how many idle worker-class sockets exist for `url`. An entry in
 /// the idle list is reusable by any worker acquire without a permit, so its
 /// presence proves the previous holder released the socket.
@@ -662,7 +671,11 @@ async fn open(
         }
         ConnectError::Timeout
     })??;
+    #[cfg(test)]
+    let fixture_driver = test_fixture::Activity::driver(url.clone());
     tokio::spawn(async move {
+        #[cfg(test)]
+        let _fixture_driver = fixture_driver;
         // A dropped request/client need not mean its query has stopped. Keep
         // the permit until the PostgreSQL driver actually releases the socket.
         let _permit = permit;

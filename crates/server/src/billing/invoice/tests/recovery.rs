@@ -2,7 +2,7 @@
 use super::*;
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; uses a unique disposable schema"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; disposable current public database"]
 async fn legitimate_pre_grant_cancellation_refunds_the_original_invoice_unit_once() {
     let mut case = Case::new().await;
     let paid = case.observation("active", "paid", "subscription_cycle");
@@ -39,7 +39,7 @@ async fn legitimate_pre_grant_cancellation_refunds_the_original_invoice_unit_onc
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; uses a unique disposable schema"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; disposable current public database"]
 async fn cancellation_blocks_new_spend_while_preserving_consumption_and_unknown_liability() {
     let mut case = Case::new().await;
     let paid = case.observation("active", "paid", "subscription_cycle");
@@ -57,7 +57,7 @@ async fn cancellation_blocks_new_spend_while_preserving_consumption_and_unknown_
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; uses a unique disposable schema"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; disposable current public database"]
 async fn failed_payment_then_paid_and_late_failure_current_paid_reads_preserve_consumption() {
     let mut case = Case::new().await;
     let paid = case.observation("active", "paid", "subscription_cycle");
@@ -89,7 +89,7 @@ async fn failed_payment_then_paid_and_late_failure_current_paid_reads_preserve_c
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; uses a unique disposable schema"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; disposable current public database"]
 async fn newer_invoice_period_carries_unknown_work_and_historical_paid_cannot_roll_it_back() {
     let mut case = Case::new().await;
     let now: i64 = case

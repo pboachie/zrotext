@@ -2,7 +2,7 @@
 use super::*;
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; uses a unique disposable schema"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; disposable current public database"]
 async fn live_owner_exports_populated_invoice_planes_and_atomic_erasure_removes_all_four() {
     let mut case = Case::new().await;
     let paid = case.observation("active", "paid", "subscription_cycle");
@@ -50,7 +50,7 @@ async fn live_owner_exports_populated_invoice_planes_and_atomic_erasure_removes_
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; uses a unique disposable schema"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; disposable current public database"]
 async fn invoice_export_rechecks_live_owner_and_retention_preserves_unknown_liabilities() {
     let mut case = Case::new().await;
     let paid = case.observation("active", "paid", "subscription_cycle");
