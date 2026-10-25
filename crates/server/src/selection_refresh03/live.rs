@@ -240,7 +240,10 @@ impl<'held, 'db> Scope<'held, 'db> {
         // Check the original physical reader's full accepted/install interval;
         // present continuous identity/lifetime is checked by Scope separately.
         let readers: Vec<_> = row.manifest[153..row.manifest.len() - 64]
-            .chunks_exact(149)
+            .as_chunks::<149>()
+            .0
+            .iter()
+            .map(|chunk| chunk.as_slice())
             .filter(|r| {
                 r[0] == 1
                     && r[1..33] == h.accepted.selected_reader_key_id

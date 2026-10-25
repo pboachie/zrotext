@@ -53,7 +53,10 @@ fn main() {
     let order = "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551";
     let order: Vec<u8> = order
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|chunk| chunk.as_slice())
         .map(|v| u8::from_str_radix(std::str::from_utf8(v).unwrap(), 16).unwrap())
         .collect();
     for which in [false, true] {

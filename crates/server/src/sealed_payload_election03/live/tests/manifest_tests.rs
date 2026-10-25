@@ -102,7 +102,10 @@ pub(super) async fn packet(
     let prior = &h.tip_signed;
     let expires = now + 3_600_000;
     let mut keys: Vec<Vec<u8>> = prior[153..prior.len() - 64]
-        .chunks_exact(149)
+        .as_chunks::<149>()
+        .0
+        .iter()
+        .map(|chunk| chunk.as_slice())
         .map(|b| b.to_vec())
         .collect();
     let point = key.verifying_key().to_sec1_point(false);
@@ -202,7 +205,10 @@ async fn real_four_role_setup_enrolls_renews_and_replaces_browser_without_rewrit
     let (mut c, first) = elected().await;
     assert_eq!(
         first[153..first.len() - 64]
-            .chunks_exact(149)
+            .as_chunks::<149>()
+            .0
+            .iter()
+            .map(|chunk| chunk.as_slice())
             .map(|r| r[0])
             .collect::<Vec<_>>(),
         vec![1, 2, 4, 6]

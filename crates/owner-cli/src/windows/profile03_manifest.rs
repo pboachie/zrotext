@@ -49,7 +49,10 @@ fn parse(args: &[String]) -> Result<Input> {
     if args.len() != 33
         || args[0] != "profile03-manifest"
         || args[1..]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|chunk| chunk.as_slice())
             .zip(FLAGS)
             .any(|(p, flag)| p[0] != flag)
     {
@@ -177,9 +180,17 @@ pub(super) fn run(args: &[String], parent: PathBuf) -> Result<()> {
     )?;
     let old = &proposal.predecessor()[153..proposal.predecessor().len() - 64];
     let next = &proposal.unsigned()[153..];
-    for row in old.chunks_exact(149) {
+    for row in old
+        .as_chunks::<149>()
+        .0
+        .iter()
+        .map(|chunk| chunk.as_slice())
+    {
         let after = next
-            .chunks_exact(149)
+            .as_chunks::<149>()
+            .0
+            .iter()
+            .map(|chunk| chunk.as_slice())
             .find(|candidate| candidate[..33] == row[..33])
             .ok_or(())?;
         if row != after {

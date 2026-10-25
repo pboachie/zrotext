@@ -201,7 +201,10 @@ pub fn verify_statement02(
     let m = verify_manifest(&accepted.raw, &root, Some(&previous), 2, issued)?;
     let reader = key(&m, 2, &rid).ok_or(Error::Authentication)?;
     let writer = m.raw[151..m.raw.len() - 64]
-        .chunks_exact(149)
+        .as_chunks::<149>()
+        .0
+        .iter()
+        .map(|record| record.as_slice())
         .find(|w| w[0] == 6)
         .ok_or(Error::Authentication)?;
     need(
@@ -376,7 +379,7 @@ where
 {
     need(cancel.live())?;
     OUTSTANDING
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+        .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
             if n < 4 { Some(n + 1) } else { None }
         })
         .map_err(|_| Error::Shape)?;

@@ -198,7 +198,12 @@ fn records(unsigned: &[u8]) -> Result<Vec<&[u8]>> {
     {
         return Err("manifest unsigned framing");
     }
-    Ok(unsigned[153..].chunks_exact(149).collect())
+    Ok(unsigned[153..]
+        .as_chunks::<149>()
+        .0
+        .iter()
+        .map(|record| record.as_slice())
+        .collect())
 }
 fn parse_unsigned(bytes: &[u8], now: u64) -> Result<Parsed03> {
     positive(now)?;

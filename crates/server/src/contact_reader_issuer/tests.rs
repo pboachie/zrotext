@@ -305,7 +305,10 @@ impl Owner {
         manifest[45..53].copy_from_slice(&(now as u64 + 3_600_000).to_be_bytes());
         manifest[150] = 2;
         for record in schema.bytes[151..schema.bytes.len() - 64]
-            .chunks_exact(149)
+            .as_chunks::<149>()
+            .0
+            .iter()
+            .map(|chunk| chunk.as_slice())
             .filter(|r| r[0] == 2 || r[0] == 6)
         {
             let mut r = record.to_vec();

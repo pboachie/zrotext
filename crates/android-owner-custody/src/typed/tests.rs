@@ -12,7 +12,10 @@ fn hex(bytes: &[u8]) -> String {
 }
 fn unhex(text: &str) -> Vec<u8> {
     text.as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|chunk| chunk.as_slice())
         .map(|b| u8::from_str_radix(std::str::from_utf8(b).unwrap(), 16).unwrap())
         .collect()
 }
@@ -431,7 +434,10 @@ fn successors(kit: &Kit, kind: OperationKind) -> (Vec<u8>, Value, Vec<u8>) {
         ]
         .concat();
         let mut records = unsigned[151..]
-            .chunks_exact(149)
+            .as_chunks::<149>()
+            .0
+            .iter()
+            .map(|chunk| chunk.as_slice())
             .map(<[u8]>::to_vec)
             .collect::<Vec<_>>();
         records.push(new_record);
@@ -461,10 +467,18 @@ fn activation_and_role5_refresh_preserve_current_manifest_records() {
         assert_eq!(&signed[..signed.len() - 64], unsigned);
         verify_manifest(&signed, &kit.pin);
         let old = predecessor(&kit);
-        for record in old[151..old.len() - 64].chunks_exact(149) {
+        for record in old[151..old.len() - 64]
+            .as_chunks::<149>()
+            .0
+            .iter()
+            .map(|chunk| chunk.as_slice())
+        {
             assert!(
                 signed[151..signed.len() - 64]
-                    .chunks_exact(149)
+                    .as_chunks::<149>()
+                    .0
+                    .iter()
+                    .map(|chunk| chunk.as_slice())
                     .any(|r| r == record)
             );
         }

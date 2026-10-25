@@ -305,7 +305,14 @@ jobs:
         if: env.RUN_ANDROID == 'true'
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '21.0.13+9'
+          check-latest: true
+      - name: Prepare job-local Java TLS trust
+        if: env.RUN_ANDROID == 'true'
+        run: python scripts/prepare_java_ci_trust.py --major 21
+      - name: Verify patched Java runtime and trust roots
+        if: env.RUN_ANDROID == 'true'
+        run: python scripts/check_java_toolchain.py --major 21
       - name: Cache Gradle distribution and dependencies
         if: env.RUN_ANDROID == 'true'
         # Open-source GitHub Actions cache provider; only main writes it.

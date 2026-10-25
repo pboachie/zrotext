@@ -140,7 +140,12 @@ fn records(bytes: &[u8]) -> Check<Vec<&[u8]>> {
     {
         return Err("manifest policy framing");
     }
-    Ok(bytes[153..bytes.len() - 64].chunks_exact(149).collect())
+    Ok(bytes[153..bytes.len() - 64]
+        .as_chunks::<149>()
+        .0
+        .iter()
+        .map(|chunk| chunk.as_slice())
+        .collect())
 }
 pub(crate) struct Predecessor03<'a> {
     pub signed: &'a [u8],

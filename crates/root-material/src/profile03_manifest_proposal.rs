@@ -242,7 +242,10 @@ fn verify(proposal: &Proposal, expected: &Expected, now: u64) -> Result<Verified
         return Err(Error);
     }
     let selected: Vec<_> = proposal.unsigned()[153..]
-        .chunks_exact(149)
+        .as_chunks::<149>()
+        .0
+        .iter()
+        .map(|chunk| chunk.as_slice())
         .filter(|record| {
             record[0] == 1
                 && record[1..33] == scope.phone_reader

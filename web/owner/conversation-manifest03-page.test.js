@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 "use strict";
-const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), vm = require("node:vm");
+const test = require("node:test"), assert = require("node:assert/strict");
 function page() {
   const elements = new Map(), calls = []; let closed = false, durable = false, version = null, phase = "unprepared", onClose;
   function el(id) { if (!elements.has(id)) elements.set(id, { checked: false, value: "", files: [{}], disabled: false, listeners: {}, addEventListener(k, fn) { this.listeners[k] = fn; } }); return elements.get(id); }
@@ -9,7 +9,7 @@ function page() {
     async open() { calls.push("open"); phase = "reading_history"; version = "2"; },
     async next() { calls.push("next"); durable = true; version = "3"; phase = "verified_history"; },
     async current() { calls.push("current"); phase = "current_selection"; } };
-  vm.runInNewContext(fs.readFileSync(__dirname + "/conversation-manifest03-page.js", "utf8"), {
+  require("./conversation-manifest03-page.js").mount({
     document: { getElementById: el }, window: { addEventListener() {} }, ZtManifest03History: { create(options) { calls.push(options.readSelection()); closed = false; durable = false; version = null; phase = "unprepared"; return c; } },
   });
   return { calls, el, click: id => el(id).listeners.click(), input: id => el("owner-setup").listeners.input({ target: { id } }) };

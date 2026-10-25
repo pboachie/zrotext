@@ -386,7 +386,10 @@ impl OwnerContextAuthoring {
         let phone = key(m, 1, &b.phone_reader).ok_or(OwnerError::OwnerChanged)?;
         let reader = key(m, 2, &b.archive_reader).ok_or(OwnerError::OwnerChanged)?;
         let signer = m.raw[151..m.raw.len() - 64]
-            .chunks_exact(149)
+            .as_chunks::<149>()
+            .0
+            .iter()
+            .map(|record| record.as_slice())
             .find(|w| {
                 w[0] == 4
                     && active(w, c.now, 2)
@@ -594,7 +597,7 @@ impl OwnerContextAuthoring {
             }
         }
         if AUTHORS
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
                 (n < 4).then_some(n + 1)
             })
             .is_err()

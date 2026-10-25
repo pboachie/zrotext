@@ -15,7 +15,7 @@ python3 sdk/tungsten/conformance/managed/run.py --source /path/to/tungsten --tar
 python3 sdk/tungsten/conformance/managed/run.py --source /path/to/tungsten --target ruby
 ```
 
-Requirements: Python 3.10+, JDK 17+, .NET SDK 10.0.401, Ruby 3.3.9. Java compiles
+Requirements: Python 3.10+, JDK 17+, .NET SDK 10.0.402, Ruby 3.3.13. Java compiles
 with `--release 17 -Xlint:all -Werror`; C# treats warnings as errors. `--generated`
 can point to another build directory; reviewed hashes are still mandatory.
 `--dotnet` and `--ruby` select executable paths. The harness uses two ephemeral

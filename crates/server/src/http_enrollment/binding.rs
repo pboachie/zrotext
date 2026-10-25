@@ -21,11 +21,11 @@ fn now() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-async fn admitted(s: &EnrollmentHttpState, db: &Client) -> Result<(), Response> {
+async fn admitted(s: &EnrollmentHttpState, db: &Client) -> Result<(), Box<Response>> {
     match abuse_limits::consume(db, &s.auth_hasher, Limit::PairBinding, None).await {
         Ok(true) => Ok(()),
-        Ok(false) => Err(StatusCode::TOO_MANY_REQUESTS.into_response()),
-        Err(_) => Err(StatusCode::SERVICE_UNAVAILABLE.into_response()),
+        Ok(false) => Err(Box::new(StatusCode::TOO_MANY_REQUESTS.into_response())),
+        Err(_) => Err(Box::new(StatusCode::SERVICE_UNAVAILABLE.into_response())),
     }
 }
 
@@ -43,10 +43,10 @@ pub(super) async fn challenge(
     };
     let db = match connect(&s).await {
         Ok(v) => v,
-        Err(e) => return e,
+        Err(e) => return *e,
     };
     if let Err(e) = admitted(&s, &db).await {
-        return e;
+        return *e;
     }
     match binding::issue(&db,&s.enrollment_hasher,id,fp,now()).await {
         Ok(c)=>Json(serde_json::json!({"schema_version":1,"account_id":c.account_id,"pairing_id":c.pairing_id,"challenge_id":c.challenge_id,"challenge_nonce":URL_SAFE_NO_PAD.encode(c.nonce),"key_fingerprint":body.key_fingerprint})).into_response(),
@@ -80,10 +80,10 @@ pub(super) async fn read(
     };
     let db = match connect(&s).await {
         Ok(v) => v,
-        Err(e) => return e,
+        Err(e) => return *e,
     };
     if let Err(e) = admitted(&s, &db).await {
-        return e;
+        return *e;
     }
     // Derive the original key fingerprint from a server-issued challenge's
     // candidate. Neither browser nor phone supplies replacement key material.

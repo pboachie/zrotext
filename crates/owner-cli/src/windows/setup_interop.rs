@@ -104,7 +104,10 @@ fn hex_bytes(value: &str, maximum: usize) -> Result<Vec<u8>> {
     }
     value
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|chunk| chunk.as_slice())
         .map(|p| hex::<1>(p).map(|b| b[0]))
         .collect()
 }

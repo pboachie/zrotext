@@ -12,7 +12,10 @@ fn bytes(value: &Value) -> Vec<u8> {
         .as_str()
         .unwrap()
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|chunk| chunk.as_slice())
         .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
         .collect()
 }
@@ -210,7 +213,10 @@ fn typed_one_use_signing_requires_the_genuinely_matching_recovered_root_and_fres
     let replace_root = |bytes: &mut [u8]| {
         bytes[87..152].copy_from_slice(point.as_bytes());
         let record = bytes[153..]
-            .chunks_exact_mut(149)
+            .as_chunks_mut::<149>()
+            .0
+            .iter_mut()
+            .map(|chunk| chunk.as_mut_slice())
             .find(|row| row[0] == 6)
             .unwrap();
         record[33..98].copy_from_slice(point.as_bytes());

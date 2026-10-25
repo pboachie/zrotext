@@ -50,6 +50,43 @@ The schema test requires `jsonschema==4.25.1`, as installed in a separate virtua
 
 On Windows, use `gradlew.bat` and `python` where appropriate. Return to the repository root after the `sdk/typescript` or `android` commands before running the next check.
 
+### CI toolchain qualification
+
+Java CI keeps the existing JDK 17 and 21 major lines. Linux selects Temurin
+`17.0.21+9` or `21.0.13+9` with `check-latest`. Until the corresponding Temurin
+Windows builds are available, Windows uses official Corretto `17.0.21.0.10` or
+`21.0.13.0.10` archives, verified against pinned vendor SHA-256 checksums before
+installation. The runtime gate checks the actual vendor and same-major patch
+floor; it does not infer patch status from a major selector or cached JDK.
+
+Immediately after selection, `scripts/prepare_java_ci_trust.py` creates a new
+per-job copy of `cacerts` under `RUNNER_TEMP`. It removes **every alias** matching
+the four certificate DER fingerprints (emSign G1/G2/G3 and AAA) in the
+[Java trust advisory](https://www.oracle.com/security-alerts/alert-cve-2026-114820.html).
+G1/G2 belong to that additional advisory, not the older compromised-parent
+finding. Every other alias, certificate, trusted-entry type and entry attribute must be
+unchanged (including trust-usage attributes). A fresh copy enforces password
+integrity even if the vendor source is passwordless PKCS12; the public vendor
+integrity default is not an application secret. The installed store,
+vendor security policy and certificate blocklist remain byte-for-byte unchanged.
+Only after the effective default JSSE `TrustManager` matches the qualified copy
+does the helper export its `JAVA_TOOL_OPTIONS` selection to subsequent job steps.
+`scripts/check_java_toolchain.py` independently repeats the read-only checks.
+
+This mitigation is **JSSE/TLS-only**: it does not change global/installed stores,
+code-signing trust, custom trust managers, or other applications' trust stores.
+HTTPS connections relying on the removed roots fail, as intended. Pre-existing
+custom trust/security overrides, unreadable stores, or an unavailable qualified
+runtime fail closed; no platform falls back to an older JDK or skips its checks.
+Vendor archive availability and static checks do not establish runtime success
+on every platform.
+
+Go CI and native archive qualification use `1.26.10`, while existing `go.mod`
+source-language floors remain unchanged. This does not qualify the unsupported
+Go 1.22 compiler. Managed SDK CI uses Ruby `3.3.13`; exact .NET 10 SDK selectors
+use `10.0.402` without changing target frameworks. A toolchain check is not
+application exploitability, deployment, or all-platform runtime qualification.
+
 ### PostgreSQL-backed Rust tests
 
 Some isolated-schema tests deliberately apply migrations001 through107. Their

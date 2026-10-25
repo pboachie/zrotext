@@ -27,13 +27,28 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.22.1'
+      # Temurin's patched Windows build is unavailable; retain the same Java major.
+      - name: Download checksum-pinned Corretto JDK
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'corretto-17.0.21.0.10.zip'
+          Invoke-WebRequest -Uri 'https://corretto.aws/downloads/resources/17.0.21.0.10/amazon-corretto-17.0.21.0.10-windows-x64-jdk.zip' -OutFile $archive
+          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant() -ne '8681393133cde8d2fd0d52ccae48e8096b6eed11fc119eaf9cf1c84721311322') {
+            throw 'Corretto archive checksum mismatch'
+          }
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
         with:
-          distribution: temurin
-          java-version: '17'
-      - uses: ruby/setup-ruby@b1da4809b005e0178fe08a1d57317bffc00b7b4c
+          distribution: jdkfile
+          java-version: '17.0.21+10'
+          jdk-file: ${{ runner.temp }}/corretto-17.0.21.0.10.zip
+          force-download: true
+      - name: Prepare job-local Java TLS trust
+        run: python scripts/prepare_java_ci_trust.py --major 17 --distribution corretto
+      - name: Verify patched Java runtime and trust roots
+        run: python scripts/check_java_toolchain.py --major 17 --distribution corretto
+      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
         with:
-          ruby-version: '3.3.9'
+          ruby-version: '3.3.13'
       - name: "Csharp protected candidate composition: Checkout pinned fixtures"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -153,7 +168,7 @@ jobs:
           python-version: '3.12'
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
           cache: false
       - name: "Native candidate installed archives: Checkout pinned context_oracle"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -306,15 +321,7 @@ jobs:
           RUSTUP_TOOLCHAIN: '1.88.0'
         shell: pwsh
         run: |
-          $goRoot = Join-Path $env:RUNNER_TEMP 'go1.22.12'
-          if (-not (Test-Path (Join-Path $goRoot 'bin\go.exe'))) {
-            $url = 'https://go.dev/dl/go1.22.12.windows-amd64.zip'
-            $zip = Join-Path $env:RUNNER_TEMP 'go1.22.12.zip'
-            Invoke-WebRequest -Uri $url -OutFile $zip
-            Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP -Force
-            Rename-Item -Path (Join-Path $env:RUNNER_TEMP 'go') -NewName 'go1.22.12'
-          }
-          $env:Path = "$(Join-Path $goRoot 'bin');$env:Path"
+          # Use the supported setup-go compiler; the module retains its Go 1.22 language floor.
           go version
           python sdk/native/package-webhooks-native.py --language 'go' --vectors "$env:RUNNER_TEMP/vectors-2" --output "$env:RUNNER_TEMP/webhook-package-2"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -525,13 +532,18 @@ jobs:
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '17.0.21+9'
+          check-latest: true
+      - name: Prepare job-local Java TLS trust
+        run: python scripts/prepare_java_ci_trust.py --major 17
+      - name: Verify patched Java runtime and trust roots
+        run: python scripts/check_java_toolchain.py --major 17
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
-          dotnet-version: '10.0.401'
-      - uses: ruby/setup-ruby@b1da4809b005e0178fe08a1d57317bffc00b7b4c
+          dotnet-version: '10.0.402'
+      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
         with:
-          ruby-version: '3.3.9'
+          ruby-version: '3.3.13'
       - name: "Local Tungsten workflow adapter"
         working-directory: sdk/typescript
         run: |
@@ -669,13 +681,18 @@ jobs:
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '17.0.21+9'
+          check-latest: true
+      - name: Prepare job-local Java TLS trust
+        run: python scripts/prepare_java_ci_trust.py --major 17
+      - name: Verify patched Java runtime and trust roots
+        run: python scripts/check_java_toolchain.py --major 17
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           dotnet-version: '8.0.x'
-      - uses: ruby/setup-ruby@b1da4809b005e0178fe08a1d57317bffc00b7b4c
+      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
         with:
-          ruby-version: '3.3.9'
+          ruby-version: '3.3.13'
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.22.1'
@@ -821,7 +838,12 @@ jobs:
         uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '17.0.21+9'
+          check-latest: true
+      - name: Prepare job-local Java TLS trust
+        run: python scripts/prepare_java_ci_trust.py --major 17
+      - name: Verify patched Java runtime and trust roots
+        run: python scripts/check_java_toolchain.py --major 17
       - name: "Managed authenticated original current proof: Checkout pinned fixtures"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -875,9 +897,9 @@ jobs:
         run: |
           python sdk/native/crypto-envelope/original-current-run.py --language csharp --fixture fixture --producer producer
       - name: "Managed authenticated original current proof [ruby]: Toolchain for ruby"
-        uses: ruby/setup-ruby@b1da4809b005e0178fe08a1d57317bffc00b7b4c
+        uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
         with:
-          ruby-version: '3.3.9'
+          ruby-version: '3.3.13'
       - name: "Managed authenticated original current proof: Checkout pinned fixtures"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -1336,7 +1358,12 @@ jobs:
         uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '17.0.21+9'
+          check-latest: true
+      - name: Prepare job-local Java TLS trust
+        run: python scripts/prepare_java_ci_trust.py --major 17
+      - name: Verify patched Java runtime and trust roots
+        run: python scripts/check_java_toolchain.py --major 17
       - name: "Managed reviewed template authoring interoperability: Checkout pinned fixtures"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -1408,9 +1435,9 @@ jobs:
         run: |
           python sdk/native/crypto-envelope/template-authoring-run.py --language csharp --fixture fixture --producer producer --authoring-oracle authoring-oracle
       - name: "Managed reviewed template authoring interoperability [ruby]: Toolchain for ruby"
-        uses: ruby/setup-ruby@b1da4809b005e0178fe08a1d57317bffc00b7b4c
+        uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
         with:
-          ruby-version: '3.3.9'
+          ruby-version: '3.3.13'
       - name: "Managed reviewed template authoring interoperability: Checkout pinned fixtures"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -1790,16 +1817,33 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.22.1'
+      # Temurin's patched Windows build is unavailable; retain the same Java major.
+      - name: Download checksum-pinned Corretto JDK
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'corretto-17.0.21.0.10.zip'
+          Invoke-WebRequest -Uri 'https://corretto.aws/downloads/resources/17.0.21.0.10/amazon-corretto-17.0.21.0.10-windows-x64-jdk.zip' -OutFile $archive
+          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant() -ne '8681393133cde8d2fd0d52ccae48e8096b6eed11fc119eaf9cf1c84721311322') {
+            throw 'Corretto archive checksum mismatch'
+          }
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
         with:
-          distribution: temurin
-          java-version: '17'
+          distribution: ${{ runner.os == 'Windows' && 'jdkfile' || 'temurin' }}
+          java-version: ${{ runner.os == 'Windows' && '17.0.21+10' || '17.0.21+9' }}
+          check-latest: true
+          jdk-file: ${{ runner.temp }}/corretto-17.0.21.0.10.zip
+          force-download: ${{ runner.os == 'Windows' }}
+      - name: Prepare job-local Java TLS trust
+        run: python scripts/prepare_java_ci_trust.py --major 17 --distribution ${{ runner.os == 'Windows' && 'corretto' || 'temurin' }}
+      - name: Verify patched Java runtime and trust roots
+        run: python scripts/check_java_toolchain.py --major 17 --distribution ${{ runner.os == 'Windows' && 'corretto' || 'temurin' }}
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
-          dotnet-version: '10.0.401'
-      - uses: ruby/setup-ruby@b1da4809b005e0178fe08a1d57317bffc00b7b4c
+          dotnet-version: '10.0.402'
+      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
         with:
-          ruby-version: '3.3.9'
+          ruby-version: '3.3.13'
       - name: "Managed contact statement and field interoperability: Checkout pinned fixtures"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -2832,7 +2876,7 @@ jobs:
           python-version: '3.12'
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
           cache: false
       - name: "Native original reply checkpoint [rust]"
         run: |
@@ -3484,7 +3528,7 @@ jobs:
           python-version: '3.12'
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
           cache: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
@@ -4098,7 +4142,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
-          go-version: '1.22'
+          go-version: '1.26.10'
           cache: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
@@ -4109,13 +4153,18 @@ jobs:
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '17.0.21+9'
+          check-latest: true
+      - name: Prepare job-local Java TLS trust
+        run: python scripts/prepare_java_ci_trust.py --major 17
+      - name: Verify patched Java runtime and trust roots
+        run: python scripts/check_java_toolchain.py --major 17
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           dotnet-version: '8.0.x'
-      - uses: ruby/setup-ruby@b1da4809b005e0178fe08a1d57317bffc00b7b4c
+      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
         with:
-          ruby-version: '3.3.9'
+          ruby-version: '3.3.13'
       - name: "Native body text parity"
         run: |
           rustup toolchain install 1.88.0 --profile minimal --component clippy --component rustfmt
@@ -4562,7 +4611,7 @@ jobs:
           node-version: '24.22.1'
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
           cache: false
       - name: "Native HPKE recipient interop"
         run: |
@@ -4680,13 +4729,30 @@ jobs:
           python-version: '3.12'
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
           cache: false
+      # Temurin's patched Windows build is unavailable; retain the same Java major.
+      - name: Download checksum-pinned Corretto JDK
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'corretto-17.0.21.0.10.zip'
+          Invoke-WebRequest -Uri 'https://corretto.aws/downloads/resources/17.0.21.0.10/amazon-corretto-17.0.21.0.10-windows-x64-jdk.zip' -OutFile $archive
+          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant() -ne '8681393133cde8d2fd0d52ccae48e8096b6eed11fc119eaf9cf1c84721311322') {
+            throw 'Corretto archive checksum mismatch'
+          }
       - name: "Managed contact mutation and transition interoperability [java]: Toolchain for java"
         uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
         with:
-          distribution: temurin
-          java-version: '17'
+          distribution: ${{ runner.os == 'Windows' && 'jdkfile' || 'temurin' }}
+          java-version: ${{ runner.os == 'Windows' && '17.0.21+10' || '17.0.21+9' }}
+          check-latest: true
+          jdk-file: ${{ runner.temp }}/corretto-17.0.21.0.10.zip
+          force-download: ${{ runner.os == 'Windows' }}
+      - name: Prepare job-local Java TLS trust
+        run: python scripts/prepare_java_ci_trust.py --major 17 --distribution ${{ runner.os == 'Windows' && 'corretto' || 'temurin' }}
+      - name: Verify patched Java runtime and trust roots
+        run: python scripts/check_java_toolchain.py --major 17 --distribution ${{ runner.os == 'Windows' && 'corretto' || 'temurin' }}
       - name: "Managed contact mutation and transition interoperability: Checkout pinned fixtures"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -4770,9 +4836,9 @@ jobs:
         run: |
           python sdk/native/crypto-envelope/contact-mutation-run.py --language csharp --fixture fixture --producer producer --origin-asset "$env:RUNNER_TEMP/contact-origin-mutation-csharp"
       - name: "Managed contact mutation and transition interoperability [ruby]: Toolchain for ruby"
-        uses: ruby/setup-ruby@b1da4809b005e0178fe08a1d57317bffc00b7b4c
+        uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
         with:
-          ruby-version: '3.3.9'
+          ruby-version: '3.3.13'
       - name: "Managed contact mutation and transition interoperability: Checkout pinned fixtures"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:

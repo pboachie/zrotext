@@ -129,7 +129,12 @@ async fn bootstrap(
     let bytes = &candidate.snapshot.bytes;
     // This is parsing already verified canonical public records, never promoting relay bytes.
     let now = candidate.snapshot.accepted_ms;
-    let records: Vec<_> = bytes[151..bytes.len() - 64].chunks_exact(149).collect();
+    let records: Vec<_> = bytes[151..bytes.len() - 64]
+        .as_chunks::<149>()
+        .0
+        .iter()
+        .map(|chunk| chunk.as_slice())
+        .collect();
     let active = |r: &&[u8]| {
         r[148] == 1
             && i64::from_be_bytes(r[132..140].try_into().unwrap()) <= now

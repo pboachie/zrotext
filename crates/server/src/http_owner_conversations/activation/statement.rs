@@ -316,7 +316,10 @@ mod tests {
             .as_str()
             .unwrap()
             .as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|chunk| chunk.as_slice())
             .map(|c| u8::from_str_radix(std::str::from_utf8(c).unwrap(), 16).unwrap())
             .collect();
         let mut statement = Statement::decode(&bytes).unwrap();
@@ -372,7 +375,10 @@ mod tests {
         .unwrap();
         let decode = |s: &str| {
             s.as_bytes()
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|chunk| chunk.as_slice())
                 .map(|c| u8::from_str_radix(std::str::from_utf8(c).unwrap(), 16).unwrap())
                 .collect::<Vec<_>>()
         };

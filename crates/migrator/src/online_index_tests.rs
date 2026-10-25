@@ -17,7 +17,7 @@ fn database_name(process_id: u32, timestamp_nanos: u128) -> String {
     static NEXT_DATABASE: AtomicU64 = AtomicU64::new(0);
     // A wall clock can return the same tick to concurrent callers or move back.
     let sequence = NEXT_DATABASE
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
             value.checked_add(1)
         })
         .expect("disposable database sequence exhausted");

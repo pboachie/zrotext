@@ -224,7 +224,10 @@ fn child(stage: &str, parent: PathBuf) {
             assert!(value.len() <= refresh::MAX_PROPOSAL * 2 && value.len().is_multiple_of(2));
             value
                 .as_bytes()
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|chunk| chunk.as_slice())
                 .map(|pair| hex::<1>(pair).unwrap()[0])
                 .collect::<Vec<_>>()
         }

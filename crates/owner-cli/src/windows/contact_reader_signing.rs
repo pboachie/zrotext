@@ -51,7 +51,13 @@ fn fixed<const N: usize>(value: &str) -> Result<[u8; N]> {
 fn parse(args: &[String]) -> Result<Input> {
     if args.len() != 17
         || args[0] != "contact-reader-sign"
-        || args[1..].chunks_exact(2).zip(FLAGS).any(|(p, f)| p[0] != f)
+        || args[1..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|chunk| chunk.as_slice())
+            .zip(FLAGS)
+            .any(|(p, f)| p[0] != f)
     {
         return Err(());
     }

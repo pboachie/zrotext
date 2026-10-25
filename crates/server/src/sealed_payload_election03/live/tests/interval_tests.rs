@@ -57,7 +57,10 @@ async fn genuine_owner_request_and_phone_install_activate_then_device_stop_prese
     tx.commit().await.unwrap();
     let key = |role| -> [u8; 32] {
         signed[153..signed.len() - 64]
-            .chunks_exact(149)
+            .as_chunks::<149>()
+            .0
+            .iter()
+            .map(|chunk| chunk.as_slice())
             .find(|r| r[0] == role && r[148] == 1)
             .unwrap()[1..33]
             .try_into()

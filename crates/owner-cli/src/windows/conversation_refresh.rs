@@ -48,7 +48,10 @@ fn parse(args: &[String]) -> Result<Input> {
     if args.len() != 37
         || args[0] != "conversation-refresh"
         || args[1..]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|chunk| chunk.as_slice())
             .zip(FLAGS)
             .any(|(p, flag)| p[0] != flag)
     {

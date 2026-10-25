@@ -39,8 +39,8 @@ failures return `unavailable`. Neither error exposes a URL, token, response body
 nor an underlying library error. Grant/header memory follows the HTTP libraries'
 ordinary lifetime; this API does not claim guaranteed secret-memory erasure.
 
-Go requires 1.26.9 for this candidate's existing SQLite dependency; Rust requires
-1.97.1. Rust adds the public reqwest 0.13.5 dependency already used by the server
+Go requires 1.26.10 for this candidate's existing SQLite dependency; Rust requires
+1.99.1. Rust adds the public reqwest 0.13.5 dependency already used by the server
 for TLS and request deadlines, and promotes the existing JSON/base64 test
 dependencies to runtime. It uses no Tungsten runtime or private dependency feed.
 Rust is a blocking API: call it from a blocking thread, not inside an asynchronous

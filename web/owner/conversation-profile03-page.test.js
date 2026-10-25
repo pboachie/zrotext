@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 "use strict";
-const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), vm = require("node:vm");
+const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs");
 function page() {
   const elements = new Map(), listeners = {}, urls = [], calls = []; let phase = "unprepared", opening = null, closed = false, closeListener, pending;
   function el(id) {
@@ -15,7 +15,7 @@ function page() {
     async check() { calls.push("check"); phase = "awaiting_owner"; }, async approve(credentials) { calls.push({ approve: credentials }); phase = "accepted_pending_current"; },
     async find() { phase = "choose_recovery"; return { openings: ["synthetic-original"] }; }, async recover(id) { opening = id; phase = "recovery_loaded"; } };
   const context = { Blob, document: { getElementById: el, createElement: () => ({}) }, window: { addEventListener(type, fn) { listeners[type] = fn; } }, URL: { createObjectURL() { urls.push("public"); return "blob:public"; }, revokeObjectURL() {} }, ZtProfile03Setup: { create(options) { calls.push({ selection: options.readSelection() }); phase = "unprepared"; closed = false; return controller; } } };
-  vm.runInNewContext(fs.readFileSync(__dirname + "/conversation-profile03-page.js", "utf8"), context);
+  require("./conversation-profile03-page.js").mount(context);
   return { el, calls, controller, urls, async click(id) { await el(id).listeners.click(); }, input(id) { el("owner-setup").listeners.input({ target: { id } }); }, hold(promise) { pending = promise; }, state };
 }
 test("actual profile page requires separate unchecked decisions and clears transient factors after each explicit action", async () => {
