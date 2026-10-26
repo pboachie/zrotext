@@ -4,7 +4,7 @@
 SET LOCAL lock_timeout = '3s';
 SET LOCAL statement_timeout = '30s';
 
--- Closed canonical arrays: traverse five array levels per invocation, then
+-- Closed canonical arrays: traverse two array levels per invocation, then
 -- recurse on proper subtrees. Preserve original scalar bytes and object refusal.
 CREATE FUNCTION public.payload_profile_writer_json(value json) RETURNS text
 LANGUAGE plpgsql IMMUTABLE STRICT SET search_path TO pg_catalog AS $function$
@@ -12,17 +12,8 @@ DECLARE result text;
 BEGIN
 IF json_typeof(value)='array' THEN
 SELECT '['||coalesce(string_agg(CASE json_typeof(element)
-WHEN 'array' THEN (SELECT '['||coalesce(string_agg(CASE json_typeof(child4)
-WHEN 'array' THEN (SELECT '['||coalesce(string_agg(CASE json_typeof(child3)
-WHEN 'array' THEN (SELECT '['||coalesce(string_agg(CASE json_typeof(child2)
 WHEN 'array' THEN (SELECT '['||coalesce(string_agg(CASE WHEN json_typeof(child1) IN ('array','object') THEN public.payload_profile_writer_json(child1) ELSE child1::text END,',' ORDER BY ordinal1),'')||']'
-FROM json_array_elements(child2) WITH ORDINALITY items1(child1,ordinal1))
-WHEN 'object' THEN public.payload_profile_writer_json(child2) ELSE child2::text END,',' ORDER BY ordinal2),'')||']'
-FROM json_array_elements(child3) WITH ORDINALITY items2(child2,ordinal2))
-WHEN 'object' THEN public.payload_profile_writer_json(child3) ELSE child3::text END,',' ORDER BY ordinal3),'')||']'
-FROM json_array_elements(child4) WITH ORDINALITY items3(child3,ordinal3))
-WHEN 'object' THEN public.payload_profile_writer_json(child4) ELSE child4::text END,',' ORDER BY ordinal4),'')||']'
-FROM json_array_elements(element) WITH ORDINALITY items4(child4,ordinal4))
+FROM json_array_elements(element) WITH ORDINALITY items1(child1,ordinal1))
 WHEN 'object' THEN public.payload_profile_writer_json(element) ELSE element::text END,',' ORDER BY ordinal),'')||']'
 INTO result FROM json_array_elements(value) WITH ORDINALITY items(element,ordinal);
 RETURN result;

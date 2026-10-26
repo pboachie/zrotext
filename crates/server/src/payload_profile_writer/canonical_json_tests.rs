@@ -25,12 +25,74 @@ END;
 $function$;
 "#;
 
+// Plan the array SELECT from the installed function, without executing it or
+// changing planner settings. A tiny value must not inherit the multiplicative
+// cost of deep correlated subplans and trigger default JIT compilation.
+async fn assert_serializer_plan_stays_below_default_jit_cost(db: &tokio_postgres::Client) {
+    let installed: String = db
+        .query_one(
+            "SELECT prosrc FROM pg_proc WHERE oid='public.payload_profile_writer_json(json)'::regprocedure",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let compiled = zrotext_delivery_store::hosted_runtime_identity::declared_function_body(
+        include_str!("../../../../deploy/compose/migrations/108_payload_profile_writer_fences.sql"),
+        "payload_profile_writer_json",
+        "$function$",
+    )
+    .unwrap();
+    assert_eq!(
+        installed, compiled,
+        "installed serializer differs from source"
+    );
+    let (_, query) = compiled.split_once("SELECT '['").unwrap();
+    let (query, _) = query
+        .split_once(
+            "INTO result FROM json_array_elements(value) WITH ORDINALITY items(element,ordinal);",
+        )
+        .unwrap();
+    db.batch_execute(
+        "CREATE TEMP TABLE writer_plan_input(value json); \
+         INSERT INTO writer_plan_input VALUES ('[[1,2,[],[3,4]]]'::json); \
+         ANALYZE writer_plan_input;",
+    )
+    .await
+    .unwrap();
+    let rows = db
+        .simple_query(&format!(
+            "EXPLAIN (FORMAT JSON) SELECT '['{query} \
+             FROM json_array_elements((SELECT value FROM pg_temp.writer_plan_input)) \
+             WITH ORDINALITY items(element,ordinal);"
+        ))
+        .await
+        .unwrap();
+    let text = rows
+        .iter()
+        .find_map(|row| match row {
+            tokio_postgres::SimpleQueryMessage::Row(row) => row.get(0),
+            _ => None,
+        })
+        .unwrap();
+    let plan: serde_json::Value = serde_json::from_str(text).unwrap();
+    let cost = plan[0]["Plan"]["Total Cost"].as_f64().unwrap();
+    assert!(
+        cost.is_finite() && cost < 100_000.0,
+        "serializer cost {cost} reaches default JIT threshold"
+    );
+    db.batch_execute("DROP TABLE pg_temp.writer_plan_input")
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 #[ignore = "requires disposable ZT_AUTH_TEST_DATABASE_URL; compares installed canonical JSON with the original serializer"]
 async fn bounded_array_serialization_preserves_legacy_bytes_and_object_refusals() {
     let fixture = Fixture::for_store("ZT_AUTH_TEST_DATABASE_URL").await;
     let outcome = AssertUnwindSafe(async {
         fixture.owner.batch_execute(LEGACY).await.unwrap();
+        assert_serializer_plan_stays_below_default_jit_cost(&fixture.owner).await;
         let mut vectors = [
             r#"[""]"#, "null", "true", "false", "0", "-0", "1.00", "1e+2", "1E-02", "1e9999",
             "[]", "[[],[[]]]", r#""\u0041""#, r#""\ud83d\ude03""#,

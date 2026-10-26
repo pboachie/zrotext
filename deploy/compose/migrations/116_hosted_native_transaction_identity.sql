@@ -8,7 +8,7 @@ BEGIN
  IF to_regclass('accounts') IS DISTINCT FROM 'public.accounts'::regclass OR pg_is_in_recovery() THEN
   RAISE EXCEPTION 'native hosted identity requires exact primary namespace' USING ERRCODE='23514'; END IF;
 FOR writer_expected IN SELECT * FROM (VALUES
-            ('payload_profile_writer_json(json)','33c468e0b9077291b6b6cd4f0816952d32aa8848ddf74141eed3379c1a237227','text','plpgsql','i',true,false,ARRAY['search_path=pg_catalog']),
+            ('payload_profile_writer_json(json)','fa9b79ea943397063fffabc2ca20b33c9a988d6cd0768a8774c7eb9713619bba','text','plpgsql','i',true,false,ARRAY['search_path=pg_catalog']),
             ('payload_profile_writer_guard()',CASE WHEN writer_installation IN(110,111,112,113,114,115) THEN 'e17595d3e26a9d87766539c90dcc55f036fb8cd1a31037a59154a7659087da23' ELSE 'f47f6d64ef583f2f5272128aa02c7bd5974d2e9f06b6bfff743a5b0a29e3c18a' END,'trigger','plpgsql','v',false,true,ARRAY['search_path=pg_catalog','lock_timeout=3s']),
             ('payload_profile_writer_global_guard()','b8837a0f8a53c45722524ff8082ffaebb3d992cac441a69f02e9750b2a9ee106','trigger','plpgsql','v',false,false,ARRAY['search_path=pg_catalog']),
             ('payload_profile_writer_catalog_guard()','07fb697ab77abd9ae2142bb44ca59d0fdf3515a5507f0ab74c57b2d42d73bc8a','trigger','plpgsql','v',false,false,ARRAY['search_path=pg_catalog']),
