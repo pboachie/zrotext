@@ -305,7 +305,9 @@ async fn proposal_rejects_root_signed_successor_without_selected_live_reader_or_
         f.advance();
         let at = 151
             + f.bytes[151..f.bytes.len() - 64]
-                .chunks_exact(149)
+                .as_chunks::<149>()
+                .0
+                .iter()
                 .position(|record| record[0] == role)
                 .unwrap()
                 * 149;
@@ -379,7 +381,9 @@ async fn proposal_rejects_current_reader_rotation_and_real_origin_expiry() {
                     .into();
             let at = 151
                 + f.bytes[151..f.bytes.len() - 64]
-                    .chunks_exact(149)
+                    .as_chunks::<149>()
+                    .0
+                    .iter()
                     .position(|r| r[0] == 2)
                     .unwrap()
                     * 149;

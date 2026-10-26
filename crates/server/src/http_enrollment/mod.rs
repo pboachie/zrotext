@@ -106,6 +106,7 @@ async fn no_store(request: axum::extract::Request, next: Next) -> Response {
     response
 }
 
+#[allow(clippy::result_large_err)] // early-return axum Response error pattern, established in these handlers
 async fn connect(state: &EnrollmentHttpState) -> Result<crate::runtime_db::PooledClient, Response> {
     crate::runtime_db::connect(&state.database_url)
         .await
@@ -115,6 +116,7 @@ async fn connect(state: &EnrollmentHttpState) -> Result<crate::runtime_db::Poole
 /// `live` runs only after anonymous callers exhaust the route budget, so junk
 /// identifiers cannot lock out a phone that holds a real pairing's one-use
 /// secret.
+#[allow(clippy::result_large_err)] // early-return axum Response error pattern, established in these handlers
 async fn public_admission(
     state: &EnrollmentHttpState,
     client: &Client,

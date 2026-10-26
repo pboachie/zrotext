@@ -571,7 +571,9 @@ async fn loopback_journal_bridge() {
     let browser_key = SigningKey::generate_from_rng(&mut rand::rng());
     let phone_key = SigningKey::generate_from_rng(&mut rand::rng());
     let mut records: Vec<Vec<u8>> = f.bytes[151..f.bytes.len() - 64]
-        .chunks_exact(149)
+        .as_chunks::<149>()
+        .0
+        .iter()
         .map(|r| r.to_vec())
         .collect();
     records.iter_mut().find(|r| r[0] == 2).unwrap()[130..132].copy_from_slice(&12u16.to_be_bytes());

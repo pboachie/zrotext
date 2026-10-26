@@ -13,7 +13,9 @@ fn vector() -> Value {
 fn hex(value: &str) -> Vec<u8> {
     value
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
         .collect()
 }
@@ -260,8 +262,10 @@ fn genuinely_accepted_replacement_reader_does_not_make_retired_reader_valid() {
     let v = vector();
     let bytes = field(&v, "accepted_manifest_hex");
     let mut records: Vec<Vec<u8>> = bytes[151..bytes.len() - 64]
-        .chunks_exact(149)
-        .map(<[u8]>::to_vec)
+        .as_chunks::<149>()
+        .0
+        .iter()
+        .map(|record| record.to_vec())
         .collect();
     records[1][148] = 2;
     let mut scalar = [0; 32];

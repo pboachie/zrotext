@@ -144,7 +144,9 @@ fn unhex(text: &str) -> Vec<u8> {
     }
     assert_eq!(text.len() % 2, 0);
     text.as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| digit(pair[0]) * 16 + digit(pair[1]))
         .collect()
 }

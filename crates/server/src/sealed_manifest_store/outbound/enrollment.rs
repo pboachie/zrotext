@@ -19,7 +19,9 @@ impl CurrentAuthority<'_, '_> {
             return Err("enrollment record count/expiry".into());
         }
         let added = bytes[151..bytes.len() - 64]
-            .chunks_exact(149)
+            .as_chunks::<149>()
+            .0
+            .iter()
             .find(|k| k[0] == 5 && k[1..33] == r.signer)
             .ok_or("enrollment signer")?;
         if added[33..98] != r.public_point
@@ -44,11 +46,17 @@ impl CurrentAuthority<'_, '_> {
             return Err("enrollment lifetime".into());
         }
         let remaining: Vec<&[u8]> = bytes[151..bytes.len() - 64]
-            .chunks_exact(149)
+            .as_chunks::<149>()
+            .0
+            .iter()
+            .map(|k| k.as_slice())
             .filter(|k| *k != added)
             .collect();
         let original: Vec<&[u8]> = self.bytes[151..self.bytes.len() - 64]
-            .chunks_exact(149)
+            .as_chunks::<149>()
+            .0
+            .iter()
+            .map(|k| k.as_slice())
             .collect();
         if remaining != original {
             return Err("enrollment changed existing authority".into());

@@ -411,7 +411,10 @@ fn valid_id<'a>(id: &'a str, prefix: &str) -> Result<&'a str, BillingError> {
 
 fn decode_hex_32(value: &str) -> Option<[u8; 32]> {
     let mut result = [0u8; 32];
-    for (slot, pair) in result.iter_mut().zip(value.as_bytes().chunks_exact(2)) {
+    for (slot, pair) in result
+        .iter_mut()
+        .zip(value.as_bytes().as_chunks::<2>().0.iter())
+    {
         let high = (pair[0] as char).to_digit(16)?;
         let low = (pair[1] as char).to_digit(16)?;
         *slot = ((high << 4) | low) as u8;

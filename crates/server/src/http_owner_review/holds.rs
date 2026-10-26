@@ -180,6 +180,7 @@ fn now_ms() -> Option<i64> {
 }
 
 /// Delivery admission and signed suppression writers take this lock first.
+#[allow(clippy::result_large_err)] // early-return axum Response error pattern, established in these handlers
 async fn lock_account(tx: &Transaction<'_>, account_id: Uuid) -> Result<bool, Response> {
     tx.query_opt(
         "SELECT id FROM accounts WHERE id=$1 AND disabled_at IS NULL FOR NO KEY UPDATE",

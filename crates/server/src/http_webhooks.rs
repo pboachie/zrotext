@@ -125,6 +125,7 @@ async fn connect(
         .map_err(|_| EndpointError::Unavailable)
 }
 
+#[allow(clippy::result_large_err)] // early-return axum Response error pattern, established in these handlers
 async fn owner(
     client: &Client,
     state: &WebhookHttpState,
@@ -144,6 +145,7 @@ async fn owner(
 
 /// Reads that return callback URLs or delivery history also need the CSRF
 /// header, not only the session cookie.
+#[allow(clippy::result_large_err)] // early-return axum Response error pattern, established in these handlers
 async fn owner_read(
     client: &Client,
     state: &WebhookHttpState,

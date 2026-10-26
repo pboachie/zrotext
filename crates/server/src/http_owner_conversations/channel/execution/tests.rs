@@ -1195,7 +1195,9 @@ async fn execution_raw_sql_requires_actual_envelope_reader_not_another_live_key(
         .await
         .unwrap();
     let other_reader = case.f.bytes[151..case.f.bytes.len() - 64]
-        .chunks_exact(149)
+        .as_chunks::<149>()
+        .0
+        .iter()
         .find(|entry| entry[0] == 1 && entry[1..33] != case.phone_reader.key_id)
         .unwrap()[1..33]
         .to_vec();
