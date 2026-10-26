@@ -53,6 +53,7 @@ class ConversationEntryOptInDeviceTest {
         fun awaitVisible(
             label: String,
             enabled: Boolean? = null,
+            settleBeforeAction: Boolean = false,
             find: () -> AccessibilityNodeInfo?,
         ): AccessibilityNodeInfo {
             val deadline = SystemClock.elapsedRealtime() + 5000
@@ -60,9 +61,22 @@ class ConversationEntryOptInDeviceTest {
             var scrollAttempts = 0
             var lastScroll = 0L
             var result = find()
-            while ((result == null || !result.isVisibleToUser ||
-                    (enabled != null && result.isEnabled != enabled)) &&
-                SystemClock.elapsedRealtime() < deadline) {
+            var settled = false
+            while (SystemClock.elapsedRealtime() < deadline) {
+                if (result != null && result.isVisibleToUser &&
+                    (enabled == null || result.isEnabled == enabled)) {
+                    if (!settleBeforeAction) break
+                    // Recomposition can replace the selected accessibility node.
+                    // Wait for events to settle and reacquire the current action.
+                    instrumentation.uiAutomation.waitForIdle(100,
+                        maxOf(1, deadline - SystemClock.elapsedRealtime()))
+                    result = find()
+                    if (result != null && result.refresh() && result.isVisibleToUser &&
+                        result.isEnabled == enabled) {
+                        settled = true
+                        break
+                    }
+                }
                 // Offscreen Compose nodes are omitted from the accessibility viewport.
                 // Search the real scroll container in both directions; never click coordinates.
                 if ((result == null || !result.isVisibleToUser) && scrollAttempts < 20 &&
@@ -79,6 +93,7 @@ class ConversationEntryOptInDeviceTest {
                 Thread.sleep(25)
                 result = find()
             }
+            assertTrue("Control did not settle: $label", !settleBeforeAction || settled)
             val visible = checkNotNull(result) { "Missing control: $label" }
             assertTrue("Control is not visible: $label", visible.isVisibleToUser)
             return visible
@@ -86,7 +101,8 @@ class ConversationEntryOptInDeviceTest {
         fun awaitNode(label: String, enabled: Boolean): AccessibilityNodeInfo =
             awaitVisible(label, enabled) { node(label) }
         fun click(label: String) {
-            val action = awaitNode(label, enabled = true)
+            instrumentation.waitForIdleSync()
+            val action = awaitVisible(label, enabled = true, settleBeforeAction = true) { node(label) }
             assertTrue("Control is not enabled: $label", action.isEnabled)
             assertTrue("Control did not accept click: $label", action.performAction(AccessibilityNodeInfo.ACTION_CLICK))
             instrumentation.waitForIdleSync()
