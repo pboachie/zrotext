@@ -4,6 +4,8 @@
 //! Root material stays transient in native memory. The encrypted owner bundle and
 //! separate recovery token are not hardware-backed root custody. Device/content
 //! keys retain their existing, separate hardware requirements.
+#![allow(clippy::chunks_exact_to_as_chunks)]
+
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod bridge;

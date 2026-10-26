@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+#![allow(clippy::result_large_err)]
+
+#![allow(clippy::chunks_exact_to_as_chunks)]
+
 pub mod agent_authority;
 pub mod alpha_policy;
 pub mod api_json;

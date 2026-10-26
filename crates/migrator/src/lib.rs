@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+#![allow(deprecated)]
+
 //! Explicit, single-writer schema migration runner for the public Compose stack.
 
 use sha2::{Digest, Sha256};

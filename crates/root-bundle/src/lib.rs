@@ -1,3 +1,5 @@
+#![allow(clippy::chunks_exact_to_as_chunks)]
+
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Dormant local Windows NTFS adapter for immutable encrypted/public bundles.
 //! No root generation, recovery token, decryption, terminal or network operations.

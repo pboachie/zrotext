@@ -10,3 +10,7 @@
 ## 2024-05-19 - Fast template literal parsing
 **Learning:** In Javascript environments (like Node.js or browsers), character-by-character string building within a `for` loop is extremely slow and acts as a significant bottleneck when rendering large text blocks.
 **Action:** Replace single-character iteration and concatenation with `indexOf` to find the next structural boundary, then use `String.prototype.slice` to extract large string segments at once. When parsing token delimiters, always safely bound the `indexOf` lookup with the current index appropriately so an unmatched delimiter doesn't result in an infinite loop.
+
+## 2026-10-26 - Rust 1.99.1 Upgrade and Iterators
+**Learning:** In the Zrotext Rust workspaces, blindly using `sed` or regex to refactor `.chunks_exact(N)` into the newly-recommended `as_chunks::<N>().0.iter()` (as suggested by the new Rust 1.99.1 clippy lint `chunks_exact_to_as_chunks`) causes massive cascading type failures. The new method produces an iterator over array references `&[u8; N]` instead of slice references `&[u8]`. This severely breaks down-stream method calls like `.collect::<Vec<_>>()` and `extend_from_slice()`.
+**Action:** When migrating across this specific lint globally, it's safer and less invasive to use `#![allow(clippy::chunks_exact_to_as_chunks)]` on root modules rather than attempting automatic source-code regex refactoring which changes iterator types.
