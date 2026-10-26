@@ -85,14 +85,7 @@ impl<'de, const N: usize> Deserialize<'de> for Hex<N> {
             _ => None,
         };
         let mut result = [0; N];
-        for (index, pair) in text
-            .as_bytes()
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|chunk| chunk.as_slice())
-            .enumerate()
-        {
+        for (index, pair) in text.as_bytes().as_chunks::<2>().0.iter().enumerate() {
             result[index] = digit(pair[0])
                 .zip(digit(pair[1]))
                 .map(|(a, b)| a * 16 + b)

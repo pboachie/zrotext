@@ -162,7 +162,6 @@ fn synthetic_token() -> zrotext_root_material::recovery_kit::RecoveryToken {
         .as_chunks::<2>()
         .0
         .iter()
-        .map(|chunk| chunk.as_slice())
         .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
         .collect();
     let expected = ExpectedIdentity {

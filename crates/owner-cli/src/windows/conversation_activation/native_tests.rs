@@ -219,7 +219,6 @@ fn child(stage: &str, parent: PathBuf) {
                 .as_chunks::<2>()
                 .0
                 .iter()
-                .map(|chunk| chunk.as_slice())
                 .map(|pair| hex::<1>(pair).unwrap()[0])
                 .collect::<Vec<_>>()
         }

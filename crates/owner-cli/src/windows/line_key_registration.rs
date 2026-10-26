@@ -56,7 +56,6 @@ fn parse(args: &[String]) -> Result<Input> {
             .as_chunks::<2>()
             .0
             .iter()
-            .map(|chunk| chunk.as_slice())
             .zip(FLAGS)
             .any(|(p, f)| p[0] != f)
     {

@@ -57,13 +57,7 @@ fn hex<const N: usize>(input: &[u8]) -> Result<[u8; N]> {
         return Err(());
     }
     let mut result = [0; N];
-    for (out, pair) in result.iter_mut().zip(
-        input
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|chunk| chunk.as_slice()),
-    ) {
+    for (out, pair) in result.iter_mut().zip(input.as_chunks::<2>().0.iter()) {
         let digit = |b| match b {
             b'0'..=b'9' => Ok(b - b'0'),
             b'a'..=b'f' => Ok(b - b'a' + 10),

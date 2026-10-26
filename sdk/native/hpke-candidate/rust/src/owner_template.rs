@@ -237,10 +237,9 @@ impl OwnerCall {
                 .as_chunks::<149>()
                 .0
                 .iter()
-                .map(|record| record.as_slice())
                 .find(|k| {
                     k[0] == 4
-                        && active(k, a.now, 2)
+                        && active(k.as_slice(), a.now, 2)
                         && k[98..114] == b.device
                         && k[114..130] == b.line
                 })

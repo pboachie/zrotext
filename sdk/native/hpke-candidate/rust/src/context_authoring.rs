@@ -389,10 +389,9 @@ impl OwnerContextAuthoring {
             .as_chunks::<149>()
             .0
             .iter()
-            .map(|record| record.as_slice())
             .find(|w| {
                 w[0] == 4
-                    && active(w, c.now, 2)
+                    && active(w.as_slice(), c.now, 2)
                     && w[130..132] == [0, 2]
                     && w[98..114] == b.device
                     && w[114..130] == b.line

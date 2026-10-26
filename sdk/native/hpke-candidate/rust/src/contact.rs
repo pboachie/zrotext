@@ -204,7 +204,6 @@ pub fn verify_statement02(
         .as_chunks::<149>()
         .0
         .iter()
-        .map(|record| record.as_slice())
         .find(|w| w[0] == 6)
         .ok_or(Error::Authentication)?;
     need(
