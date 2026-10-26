@@ -292,27 +292,129 @@ CREATE CONSTRAINT TRIGGER payload_profile_v2_receipt_after_insert
  AFTER INSERT ON public.payload_profile_v2_activation_receipts DEFERRABLE INITIALLY DEFERRED
  FOR EACH ROW EXECUTE FUNCTION public.payload_profile_v2_receipt_complete();
 
+-- Every JSON leaf below is a catalog scalar or typed SQL array; all JSON
+-- containers are constructed here. Do not add arbitrary json/jsonb leaves.
+-- Aggregate constructed json or scalar text, since aggregating SQL arrays
+-- changes empty-array and dimensional semantics. Preserve exact leaf types.
 CREATE OR REPLACE FUNCTION public.payload_profile_writer_graph() RETURNS bytea
 LANGUAGE sql STABLE SET search_path TO pg_catalog AS $function$
- SELECT sha256(convert_to(public.payload_profile_writer_json(json_build_array(
-  (SELECT json_agg(json_build_array(c.relname,c.relkind,c.relpersistence,pg_get_userbyid(c.relowner),c.relrowsecurity,c.relforcerowsecurity,
-    (SELECT json_agg(json_build_array(a.attname,format_type(a.atttypid,a.atttypmod),a.attnotnull,a.attidentity,a.attgenerated,pg_get_expr(d.adbin,d.adrelid)) ORDER BY a.attnum) FROM pg_attribute a LEFT JOIN pg_attrdef d ON(d.adrelid,d.adnum)=(a.attrelid,a.attnum) WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped),
-    (SELECT json_agg(json_build_array(k.conname,k.contype,CASE WHEN c.relname='sealed_inbound_events' AND k.conname='sealed_inbound_events_envelope_check' AND pg_get_constraintdef(k.oid) IN ('CHECK (((envelope IS NULL) OR (((octet_length(envelope) >= 426) AND (octet_length(envelope) <= 34082)) AND (((envelope_profile = 1) AND (SUBSTRING(envelope FROM 1 FOR 6) = decode(''5a5453450102''::text, ''hex''::text))) OR ((envelope_profile = 2) AND (SUBSTRING(envelope FROM 1 FOR 6) = decode(''5a5453450202''::text, ''hex''::text)))))))','CHECK (((envelope IS NULL) OR ((octet_length(envelope) >= 426) AND (octet_length(envelope) <= 34082) AND (((envelope_profile = 1) AND (SUBSTRING(envelope FROM 1 FOR 6) = decode(''5a5453450102''::text, ''hex''::text))) OR ((envelope_profile = 2) AND (SUBSTRING(envelope FROM 1 FOR 6) = decode(''5a5453450202''::text, ''hex''::text)))))))') THEN 'CHECK (((envelope IS NULL) OR ((octet_length(envelope) >= 426) AND (octet_length(envelope) <= 34082) AND (((envelope_profile = 1) AND (SUBSTRING(envelope FROM 1 FOR 6) = decode(''5a5453450102''::text, ''hex''::text))) OR ((envelope_profile = 2) AND (SUBSTRING(envelope FROM 1 FOR 6) = decode(''5a5453450202''::text, ''hex''::text)))))))' WHEN c.relname='webhook_endpoints' AND k.conname='webhook_endpoints_callback_url_check' AND pg_get_constraintdef(k.oid) IN ('CHECK ((((length(callback_url) >= 9) AND (length(callback_url) <= 2048)) AND (callback_url ~~ ''https://%''::text)))','CHECK (((length(callback_url) >= 9) AND (length(callback_url) <= 2048) AND (callback_url ~~ ''https://%''::text)))') THEN 'CHECK (((length(callback_url) >= 9) AND (length(callback_url) <= 2048) AND (callback_url ~~ ''https://%''::text)))' WHEN c.relname='workflow_action_versions' AND k.conname='workflow_action_versions_check' AND pg_get_constraintdef(k.oid) IN ('CHECK ((((revision >= 1) AND (revision <= 128)) AND (expires_at_ms > not_before_ms)))','CHECK (((revision >= 1) AND (revision <= 128) AND (expires_at_ms > not_before_ms)))') THEN 'CHECK (((revision >= 1) AND (revision <= 128) AND (expires_at_ms > not_before_ms)))' ELSE pg_get_constraintdef(k.oid) END,k.convalidated,k.condeferrable,k.condeferred) ORDER BY k.conname COLLATE "C") FROM pg_constraint k WHERE k.conrelid=c.oid AND k.contype<>'n'),
-    (SELECT json_agg(json_build_array(t.tgname,pg_get_triggerdef(t.oid),t.tgenabled::text,t.tgfoid::regprocedure::text) ORDER BY t.tgname COLLATE "C") FROM pg_trigger t WHERE t.tgrelid=c.oid AND NOT t.tgisinternal),
-    (SELECT json_agg(json_build_array(i.relname,pg_get_indexdef(x.indexrelid),x.indisvalid,x.indisready,x.indislive) ORDER BY i.relname COLLATE "C") FROM pg_index x JOIN pg_class i ON i.oid=x.indexrelid WHERE x.indrelid=c.oid),
-    (SELECT json_agg(json_build_array(r.rulename,r.ev_enabled::text,pg_get_ruledef(r.oid)) ORDER BY r.rulename COLLATE "C") FROM pg_rewrite r WHERE r.ev_class=c.oid),
-    (SELECT json_agg(json_build_array(n.nspname,p.relname,h.inhseqno,h.inhdetachpending) ORDER BY n.nspname COLLATE "C",p.relname COLLATE "C",h.inhseqno) FROM pg_inherits h JOIN pg_class p ON p.oid=h.inhparent JOIN pg_namespace n ON n.oid=p.relnamespace WHERE h.inhrelid=c.oid),
-    (SELECT json_agg(json_build_array(n.nspname,p.relname,h.inhseqno,h.inhdetachpending) ORDER BY n.nspname COLLATE "C",p.relname COLLATE "C",h.inhseqno) FROM pg_inherits h JOIN pg_class p ON p.oid=h.inhrelid JOIN pg_namespace n ON n.oid=p.relnamespace WHERE h.inhparent=c.oid),
-    (SELECT json_agg(json_build_array(p.polname,p.polcmd::text,p.polpermissive,
-       (SELECT json_agg(CASE WHEN role_id=0 THEN 'PUBLIC' ELSE pg_get_userbyid(role_id)::text END ORDER BY CASE WHEN role_id=0 THEN 'PUBLIC' ELSE pg_get_userbyid(role_id)::text END COLLATE "C") FROM unnest(p.polroles) AS roles(role_id)),
-       pg_get_expr(p.polqual,p.polrelid),pg_get_expr(p.polwithcheck,p.polrelid)) ORDER BY p.polname COLLATE "C") FROM pg_policy p WHERE p.polrelid=c.oid)
-   ) ORDER BY c.relname COLLATE "C") FROM pg_class c WHERE c.relnamespace='public'::regnamespace AND c.relkind IN ('r','p','v','m','f','S')),
-  (SELECT json_agg(json_build_array(p.proname,oidvectortypes(p.proargtypes),format_type(p.prorettype,NULL),pg_get_userbyid(p.proowner),p.proretset,p.provolatile,p.proisstrict,p.prosecdef,p.proparallel,l.lanname,p.proargnames,p.proargmodes::text[],ARRAY(SELECT format_type(t,NULL) FROM unnest(p.proallargtypes) t),p.pronargs,p.pronargdefaults,pg_get_expr(p.proargdefaults,0),CASE WHEN p.provariadic=0 THEN NULL ELSE format_type(p.provariadic,NULL) END,p.prokind::text,p.proleakproof,p.procost::text,p.prorows::text,p.prosupport::regprocedure::text,
-    CASE WHEN p.proname IN ('device_session_line_activation_version_guard','line_activation_v2_pending_guard','line_activation_v2_observation_guard')
+ SELECT sha256(convert_to((array_to_json(ARRAY[
+        to_json((SELECT array_to_json(array_agg(array_to_json(ARRAY[
+            to_json(c.relname),
+            to_json(c.relkind),
+            to_json(c.relpersistence),
+            to_json(pg_get_userbyid(c.relowner)),
+            to_json(c.relrowsecurity),
+            to_json(c.relforcerowsecurity),
+            to_json((SELECT array_to_json(array_agg(array_to_json(ARRAY[
+                to_json(a.attname),
+                to_json(format_type(a.atttypid,a.atttypmod)),
+                to_json(a.attnotnull),
+                to_json(a.attidentity),
+                to_json(a.attgenerated),
+                to_json(pg_get_expr(d.adbin,d.adrelid))
+            ]) ORDER BY a.attnum)) FROM pg_attribute a LEFT JOIN pg_attrdef d ON(d.adrelid,d.adnum)=(a.attrelid,a.attnum) WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped)),
+            to_json((SELECT array_to_json(array_agg(array_to_json(ARRAY[
+                to_json(k.conname),
+                to_json(k.contype),
+                to_json(CASE
+                    WHEN c.relname='sealed_inbound_events' AND k.conname='sealed_inbound_events_envelope_check' AND pg_get_constraintdef(k.oid) IN ('CHECK (((envelope IS NULL) OR (((octet_length(envelope) >= 426) AND (octet_length(envelope) <= 34082)) AND (((envelope_profile = 1) AND (SUBSTRING(envelope FROM 1 FOR 6) = decode(''5a5453450102''::text, ''hex''::text))) OR ((envelope_profile = 2) AND (SUBSTRING(envelope FROM 1 FOR 6) = decode(''5a5453450202''::text, ''hex''::text)))))))','CHECK (((envelope IS NULL) OR ((octet_length(envelope) >= 426) AND (octet_length(envelope) <= 34082) AND (((envelope_profile = 1) AND (SUBSTRING(envelope FROM 1 FOR 6) = decode(''5a5453450102''::text, ''hex''::text))) OR ((envelope_profile = 2) AND (SUBSTRING(envelope FROM 1 FOR 6) = decode(''5a5453450202''::text, ''hex''::text)))))))') THEN
+                         'CHECK (((envelope IS NULL) OR ((octet_length(envelope) >= 426) AND (octet_length(envelope) <= 34082) AND (((envelope_profile = 1) AND (SUBSTRING(envelope FROM 1 FOR 6) = decode(''5a5453450102''::text, ''hex''::text))) OR ((envelope_profile = 2) AND (SUBSTRING(envelope FROM 1 FOR 6) = decode(''5a5453450202''::text, ''hex''::text)))))))'
+                    WHEN c.relname='webhook_endpoints' AND k.conname='webhook_endpoints_callback_url_check' AND pg_get_constraintdef(k.oid) IN ('CHECK ((((length(callback_url) >= 9) AND (length(callback_url) <= 2048)) AND (callback_url ~~ ''https://%''::text)))','CHECK (((length(callback_url) >= 9) AND (length(callback_url) <= 2048) AND (callback_url ~~ ''https://%''::text)))') THEN
+                         'CHECK (((length(callback_url) >= 9) AND (length(callback_url) <= 2048) AND (callback_url ~~ ''https://%''::text)))'
+                    WHEN c.relname='workflow_action_versions' AND k.conname='workflow_action_versions_check' AND pg_get_constraintdef(k.oid) IN ('CHECK ((((revision >= 1) AND (revision <= 128)) AND (expires_at_ms > not_before_ms)))','CHECK (((revision >= 1) AND (revision <= 128) AND (expires_at_ms > not_before_ms)))') THEN
+                         'CHECK (((revision >= 1) AND (revision <= 128) AND (expires_at_ms > not_before_ms)))'
+                    ELSE pg_get_constraintdef(k.oid)
+                END),
+                to_json(k.convalidated),
+                to_json(k.condeferrable),
+                to_json(k.condeferred)
+            ]) ORDER BY k.conname COLLATE "C")) FROM pg_constraint k WHERE k.conrelid=c.oid AND k.contype<>'n')),
+            to_json((SELECT array_to_json(array_agg(array_to_json(ARRAY[
+                to_json(t.tgname),
+                to_json(pg_get_triggerdef(t.oid)),
+                to_json(t.tgenabled::text),
+                to_json(t.tgfoid::regprocedure::text)
+            ]) ORDER BY t.tgname COLLATE "C")) FROM pg_trigger t WHERE t.tgrelid=c.oid AND NOT t.tgisinternal)),
+            to_json((SELECT array_to_json(array_agg(array_to_json(ARRAY[
+                to_json(i.relname),
+                to_json(pg_get_indexdef(x.indexrelid)),
+                to_json(x.indisvalid),
+                to_json(x.indisready),
+                to_json(x.indislive)
+            ]) ORDER BY i.relname COLLATE "C")) FROM pg_index x JOIN pg_class i ON i.oid=x.indexrelid WHERE x.indrelid=c.oid)),
+            to_json((SELECT array_to_json(array_agg(array_to_json(ARRAY[
+                to_json(r.rulename),
+                to_json(r.ev_enabled::text),
+                to_json(pg_get_ruledef(r.oid))
+            ]) ORDER BY r.rulename COLLATE "C")) FROM pg_rewrite r WHERE r.ev_class=c.oid)),
+            to_json((SELECT array_to_json(array_agg(array_to_json(ARRAY[
+                to_json(n.nspname),
+                to_json(p.relname),
+                to_json(h.inhseqno),
+                to_json(h.inhdetachpending)
+            ]) ORDER BY n.nspname COLLATE "C",p.relname COLLATE "C",h.inhseqno)) FROM pg_inherits h JOIN pg_class p ON p.oid=h.inhparent JOIN pg_namespace n ON n.oid=p.relnamespace WHERE h.inhrelid=c.oid)),
+            to_json((SELECT array_to_json(array_agg(array_to_json(ARRAY[
+                to_json(n.nspname),
+                to_json(p.relname),
+                to_json(h.inhseqno),
+                to_json(h.inhdetachpending)
+            ]) ORDER BY n.nspname COLLATE "C",p.relname COLLATE "C",h.inhseqno)) FROM pg_inherits h JOIN pg_class p ON p.oid=h.inhrelid JOIN pg_namespace n ON n.oid=p.relnamespace WHERE h.inhparent=c.oid)),
+            to_json((SELECT array_to_json(array_agg(array_to_json(ARRAY[
+                to_json(p.polname),
+                to_json(p.polcmd::text),
+                to_json(p.polpermissive),
+                to_json((SELECT array_to_json(array_agg(CASE
+                    WHEN role_id=0 THEN
+                         'PUBLIC'
+                    ELSE pg_get_userbyid(role_id)::text
+                END ORDER BY CASE
+                    WHEN role_id=0 THEN
+                         'PUBLIC'
+                    ELSE pg_get_userbyid(role_id)::text
+                END COLLATE "C")) FROM unnest(p.polroles) AS roles(role_id))),
+                to_json(pg_get_expr(p.polqual,p.polrelid)),
+                to_json(pg_get_expr(p.polwithcheck,p.polrelid))
+            ]) ORDER BY p.polname COLLATE "C")) FROM pg_policy p WHERE p.polrelid=c.oid))
+        ]) ORDER BY c.relname COLLATE "C")) FROM pg_class c WHERE c.relnamespace='public'::regnamespace AND c.relkind IN ('r','p','v','m','f','S'))),
+        to_json((SELECT array_to_json(array_agg(array_to_json(ARRAY[
+            to_json(p.proname),
+            to_json(oidvectortypes(p.proargtypes)),
+            to_json(format_type(p.prorettype,NULL)),
+            to_json(pg_get_userbyid(p.proowner)),
+            to_json(p.proretset),
+            to_json(p.provolatile),
+            to_json(p.proisstrict),
+            to_json(p.prosecdef),
+            to_json(p.proparallel),
+            to_json(l.lanname),
+            to_json(p.proargnames),
+            to_json(p.proargmodes::text[]),
+            to_json(ARRAY(SELECT format_type(t,NULL) FROM unnest(p.proallargtypes) t)),
+            to_json(p.pronargs),
+            to_json(p.pronargdefaults),
+            to_json(pg_get_expr(p.proargdefaults,0)),
+            to_json(CASE
+                WHEN p.provariadic=0 THEN
+                     NULL
+                ELSE format_type(p.provariadic,NULL)
+            END),
+            to_json(p.prokind::text),
+            to_json(p.proleakproof),
+            to_json(p.procost::text),
+            to_json(p.prorows::text),
+            to_json(p.prosupport::regprocedure::text),
+            to_json(CASE
+                WHEN p.proname IN ('device_session_line_activation_version_guard','line_activation_v2_pending_guard','line_activation_v2_observation_guard')
       AND (p.proconfig=ARRAY['search_path=public'] OR p.proconfig=ARRAY['search_path=pg_catalog, public'])
-      THEN ARRAY['search_path=pg_catalog, public'] ELSE p.proconfig END,p.prosrc)
-    ORDER BY p.proname COLLATE "C",oidvectortypes(p.proargtypes) COLLATE "C") FROM pg_proc p JOIN pg_language l ON l.oid=p.prolang WHERE p.pronamespace='public'::regnamespace)
- )),'UTF8'))
+      THEN
+                     ARRAY['search_path=pg_catalog, public']
+                ELSE p.proconfig
+            END),
+            to_json(p.prosrc)
+        ])
+    ORDER BY p.proname COLLATE "C",oidvectortypes(p.proargtypes) COLLATE "C")) FROM pg_proc p JOIN pg_language l ON l.oid=p.prolang WHERE p.pronamespace='public'::regnamespace))
+    ]))::text,'UTF8'))
 $function$;
 
 CREATE OR REPLACE FUNCTION public.payload_profile_writer_version() RETURNS boolean

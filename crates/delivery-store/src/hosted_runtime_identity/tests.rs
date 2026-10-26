@@ -671,7 +671,7 @@ fn every_native_required_body_matches_the_independent_closed_stock_pins() {
         ),
         (
             "payload_profile_writer_graph",
-            &["93654ee42134f973861336539b90c0b4f6727355c087e6d25cb86617aa6e2061"] as &[&str],
+            &["7979002b7b94fe1f5772d93e511204b1e731ca8eea8776a9a4cf4751af00b5af"] as &[&str],
         ),
         (
             "hosted_runtime_schema_ready",

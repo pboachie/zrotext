@@ -131,17 +131,11 @@ async fn bounded_array_serialization_preserves_legacy_bytes_and_object_refusals(
         ).await.unwrap();
         assert_eq!(row.get::<_,Option<String>>(0),None);
         assert_eq!(row.get::<_,Option<String>>(1),None);
-        let graph = zrotext_delivery_store::hosted_runtime_identity::declared_function_body(
-            include_str!("../../../../deploy/compose/migrations/109_original_sealed_activation_receipts.sql"),
-            "payload_profile_writer_graph",
-            "$function$",
-        ).unwrap();
-        assert_eq!(graph.matches("public.payload_profile_writer_json(").count(),1);
-        let graph=graph.replace("public.payload_profile_writer_json(","pg_temp.writer_json_legacy(");
-        assert!(!graph.contains("$writer_graph_oracle$"));
-        fixture.owner.batch_execute(&format!(
-            "CREATE FUNCTION pg_temp.writer_graph_legacy() RETURNS bytea LANGUAGE sql STABLE SET search_path TO pg_catalog AS $writer_graph_oracle${graph}$writer_graph_oracle$;"
-        )).await.unwrap();
+        fixture
+            .owner
+            .batch_execute(include_str!("canonical_json_tests/writer_graph_legacy.sql"))
+            .await
+            .unwrap();
         let row=fixture.owner.query_one(
             "SELECT public.payload_profile_writer_graph(),pg_temp.writer_graph_legacy()",
             &[],
