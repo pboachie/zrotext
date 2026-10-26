@@ -21,6 +21,7 @@ fn now() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
+#[allow(clippy::result_large_err)] // early-return axum Response error pattern, established in these handlers
 async fn admitted(s: &EnrollmentHttpState, db: &Client) -> Result<(), Response> {
     match abuse_limits::consume(db, &s.auth_hasher, Limit::PairBinding, None).await {
         Ok(true) => Ok(()),

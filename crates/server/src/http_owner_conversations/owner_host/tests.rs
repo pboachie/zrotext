@@ -129,7 +129,9 @@ async fn enrollment_case() -> (Fixture, SessionPrincipal, Value) {
     let (signer, point, signer_record) = record(&f, 5);
     let at = 151
         + f.bytes[151..f.bytes.len() - 64]
-            .chunks_exact(149)
+            .as_chunks::<149>()
+            .0
+            .iter()
             .position(|r| r[0] == 6)
             .unwrap()
             * 149;

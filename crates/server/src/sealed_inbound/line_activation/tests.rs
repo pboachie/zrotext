@@ -222,7 +222,9 @@ fn sms_transcript_matches_published_fixed_vector() {
     let nonce_hex = vector["nonce_hex"].as_str().unwrap();
     let nonce_vec: Vec<u8> = nonce_hex
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
         .collect();
     let nonce: [u8; 32] = nonce_vec.try_into().unwrap();

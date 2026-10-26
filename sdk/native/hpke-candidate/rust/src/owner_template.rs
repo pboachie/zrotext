@@ -234,10 +234,12 @@ impl OwnerCall {
                 return Err(OwnerError::OwnerChanged);
             }
             let phone = m.raw[151..m.raw.len() - 64]
-                .chunks_exact(149)
+                .as_chunks::<149>()
+                .0
+                .iter()
                 .find(|k| {
                     k[0] == 4
-                        && active(k, a.now, 2)
+                        && active(k.as_slice(), a.now, 2)
                         && k[98..114] == b.device
                         && k[114..130] == b.line
                 })
@@ -451,7 +453,7 @@ impl OwnerTemplateReader {
             return Err(OwnerError::Busy);
         }
         if ADMISSION
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
                 (n < 8).then_some(n + 1)
             })
             .is_err()

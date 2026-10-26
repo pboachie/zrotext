@@ -409,7 +409,9 @@ fn snapshot_fields(s: &CreationSource) -> Result<(), Error> {
     }
     for (role, scope, wanted) in [(2_u8, 12_u16, &s.reader), (6, 0, &s.root_writer)] {
         let records = m[151..m.len() - 64]
-            .chunks_exact(149)
+            .as_chunks::<149>()
+            .0
+            .iter()
             .filter(|r| r[0] == role && r[1..33] == wanted.key_id_b64.0)
             .collect::<Vec<_>>();
         if records.len() != 1 {

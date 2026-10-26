@@ -78,6 +78,7 @@ async fn connection(state: &StateConfig) -> Result<crate::runtime_db::PooledClie
         .await
         .map_err(|_| ConversationError::Unavailable)
 }
+#[allow(clippy::result_large_err)] // early-return axum Response error pattern, established in these handlers
 async fn read_owner(
     state: &StateConfig,
     headers: &HeaderMap,

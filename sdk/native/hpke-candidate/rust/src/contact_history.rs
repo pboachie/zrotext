@@ -179,7 +179,7 @@ impl History {
         let path = std::path::absolute(path)?;
         let root_path = std::path::absolute(root_path)?;
         require(path != root_path)?;
-        LIVE.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+        LIVE.try_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
             if n < 4 { Some(n + 1) } else { None }
         })
         .map_err(|_| Refused)?;

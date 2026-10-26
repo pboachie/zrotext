@@ -364,7 +364,9 @@ impl OwnerFixture {
         bytes[45..53].copy_from_slice(&expiry.to_be_bytes());
         bytes[150] = 2;
         for role in schema.bytes[151..schema.bytes.len() - 64]
-            .chunks_exact(149)
+            .as_chunks::<149>()
+            .0
+            .iter()
             .filter(|r| r[0] == 2 || r[0] == 6)
         {
             let mut role = role.to_vec();

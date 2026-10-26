@@ -460,6 +460,7 @@ async fn events(State(state): State<Arc<OwnerEventsState>>, headers: HeaderMap) 
     response
 }
 
+#[allow(clippy::result_large_err)] // early-return axum Response error pattern, established in these handlers
 async fn open_watch(state: &OwnerEventsState, headers: &HeaderMap) -> Result<Watch, Response> {
     let unavailable = || {
         (

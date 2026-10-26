@@ -30,7 +30,7 @@ pub(super) async fn configured_at(
     let now = c.now().await as u64;
     let (_, _, _, mut unsigned) = framed(&c, now.checked_sub(issued_age_ms).unwrap());
     unsigned[45..53].copy_from_slice(&(now + remaining_ms).to_be_bytes());
-    for record in unsigned[151..].chunks_exact_mut(149) {
+    for record in unsigned[151..].as_chunks_mut::<149>().0.iter_mut() {
         record[140..148].copy_from_slice(&(now + remaining_ms).to_be_bytes());
     }
     let before = signed(&c, &unsigned);
@@ -88,7 +88,9 @@ fn scope(c: &GenuineCase, magic: &[u8], interval: Option<Uuid>, before: &[u8]) -
 }
 fn roles(before: &[u8], kind: u8) -> Vec<u8> {
     before[151..before.len() - 64]
-        .chunks_exact(149)
+        .as_chunks::<149>()
+        .0
+        .iter()
         .find(|record| record[0] == kind)
         .unwrap()[1..33]
         .to_vec()

@@ -36,7 +36,7 @@ fn execute(
     let deadline = Instant::now() + Duration::from_secs(10);
     cancel.check(deadline)?;
     OUTSTANDING
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+        .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
             (n < 4).then_some(n + 1)
         })
         .map_err(|_| Error::Authentication)?;
