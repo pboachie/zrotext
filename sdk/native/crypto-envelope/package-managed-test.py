@@ -60,7 +60,8 @@ class ArchiveTests(unittest.TestCase):
         (source / library).write_bytes(b'synthetic library')
         (source / 'source/BUILDING.md').write_text('synthetic build recipe')
         (source / 'LICENSE').write_bytes((managed.ROOT / 'LICENSE').read_bytes())
-        (source / 'source/contact_origin.cpp').write_bytes((managed.HERE / 'contact-origin/contact_origin.cpp').read_bytes())
+        for name in ('contact_origin.cpp', 'contact_bidi16.h'):
+            (source / 'source' / name).write_bytes((managed.HERE / 'contact-origin' / name).read_bytes())
         files = {}
         for name in ('ada.h', 'ada.cpp', 'LICENSE-MIT'):
             data = ('synthetic ' + name).encode(); (source / 'source' / name).write_bytes(data)
@@ -70,7 +71,7 @@ class ArchiveTests(unittest.TestCase):
                     'sha256': {p.relative_to(source).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in source.rglob('*') if p.is_file()}}
         (source / 'manifest.json').write_text(json.dumps(manifest))
         feed = root / 'feed'; feed.mkdir()
-        return source, feed, {'REVISION': 'synthetic-revision', 'FILES': files, 'BUILDING': 'synthetic build recipe'}
+        return source, feed, {'REVISION': 'synthetic-revision', 'FILES': files, 'LOCAL_FILES': ('contact_origin.cpp', 'contact_bidi16.h'), 'BUILDING': 'synthetic build recipe'}
 
     def test_origin_archive_relocates_complete_licensed_inventory(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -92,14 +93,15 @@ class ArchiveTests(unittest.TestCase):
 
     def test_origin_archive_rejects_dependency_substitution_even_with_updated_inventory(self):
         import hashlib
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory); source, feed, builder = self.origin_asset(root)
-            (source / 'source/ada.cpp').write_bytes(b'changed')
-            manifest = json.loads((source / 'manifest.json').read_text())
-            manifest['sha256']['source/ada.cpp'] = hashlib.sha256(b'changed').hexdigest()
-            (source / 'manifest.json').write_text(json.dumps(manifest))
-            with patch.object(managed.runpy, 'run_path', return_value=builder), self.assertRaises(ValueError):
-                managed.origin_archive(root, feed, source)
+        for name in ('ada.cpp', 'contact_bidi16.h'):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); source, feed, builder = self.origin_asset(root)
+                (source / 'source' / name).write_bytes(b'changed')
+                manifest = json.loads((source / 'manifest.json').read_text())
+                manifest['sha256']['source/'+name] = hashlib.sha256(b'changed').hexdigest()
+                (source / 'manifest.json').write_text(json.dumps(manifest))
+                with patch.object(managed.runpy, 'run_path', return_value=builder), self.assertRaises(ValueError):
+                    managed.origin_archive(root, feed, source)
 
     def test_owner_template_gates_use_installed_commands(self):
         args = SimpleNamespace(target='java', template_producer=Path('producer'),

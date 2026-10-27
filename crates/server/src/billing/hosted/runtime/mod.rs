@@ -60,6 +60,11 @@ impl From<tokio_postgres::Error> for Error {
         Self::Database
     }
 }
+impl From<crate::runtime_db::ConnectError> for Error {
+    fn from(_: crate::runtime_db::ConnectError) -> Self {
+        Self::Database
+    }
+}
 
 /// Secrets deliberately have no Debug implementation. Mode, provider identity,
 /// namespace, price and policy are immutable for the lifetime of the runtime.

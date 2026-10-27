@@ -174,6 +174,97 @@ pub fn conversation_router() -> Router {
             ),
         )
         .route(
+            "/owner/conversation-profile03-recovery.js",
+            asset(
+                include_str!("../../../web/owner/conversation-profile03-recovery.js"),
+                "text/javascript; charset=utf-8",
+            ),
+        )
+        .route(
+            "/owner/conversation-profile03-setup.js",
+            asset(
+                include_str!("../../../web/owner/conversation-profile03-setup.js"),
+                "text/javascript; charset=utf-8",
+            ),
+        )
+        .route(
+            "/owner/conversation-profile03-page.js",
+            asset(
+                include_str!("../../../web/owner/conversation-profile03-page.js"),
+                "text/javascript; charset=utf-8",
+            ),
+        )
+        .route(
+            "/owner/conversation-manifest03-recovery.js",
+            asset(
+                include_str!("../../../web/owner/conversation-manifest03-recovery.js"),
+                "text/javascript; charset=utf-8",
+            ),
+        )
+        .route(
+            "/owner/conversation-manifest03-history.js",
+            asset(
+                include_str!("../../../web/owner/conversation-manifest03-history.js"),
+                "text/javascript; charset=utf-8",
+            ),
+        )
+        .route(
+            "/owner/conversation-manifest03-page.js",
+            asset(
+                include_str!("../../../web/owner/conversation-manifest03-page.js"),
+                "text/javascript; charset=utf-8",
+            ),
+        )
+        .route(
+            "/owner/conversation-message-key03-recovery.js",
+            asset(
+                include_str!("../../../web/owner/conversation-message-key03-recovery.js"),
+                "text/javascript; charset=utf-8",
+            ),
+        )
+        .route(
+            "/owner/conversation-message-key03.js",
+            asset(
+                include_str!("../../../web/owner/conversation-message-key03.js"),
+                "text/javascript; charset=utf-8",
+            ),
+        )
+        .route(
+            "/owner/conversation-message-key03-page.js",
+            asset(
+                include_str!("../../../web/owner/conversation-message-key03-page.js"),
+                "text/javascript; charset=utf-8",
+            ),
+        )
+        .route(
+            "/owner/conversation-interval03-recovery.js",
+            asset(
+                include_str!("../../../web/owner/conversation-interval03-recovery.js"),
+                "text/javascript; charset=utf-8",
+            ),
+        )
+        .route(
+            "/owner/conversation-message03-recovery.js",
+            asset(
+                include_str!("../../../web/owner/conversation-message03-recovery.js"),
+                "text/javascript; charset=utf-8",
+            ),
+        )
+        .route(
+            "/owner/conversation-interval03.js",
+            asset(
+                include_str!("../../../web/owner/conversation-interval03.js"),
+                "text/javascript; charset=utf-8",
+            ),
+        )
+        .route(
+            "/owner/conversation-interval03-page.js",
+            asset(
+                include_str!("../../../web/owner/conversation-interval03-page.js"),
+                "text/javascript; charset=utf-8",
+            ),
+        )
+        .route(
             "/owner/conversation-line-setup.js",
             asset(
                 include_str!("../../../web/owner/conversation-line-setup.js"),

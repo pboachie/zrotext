@@ -177,6 +177,25 @@ input and expiry. Hidden limited-token console tests exercise success, pre-secre
 context rejection, decline, wrong token and expiry during token entry, checking
 that rejected operations emit neither signature and do not modify the bundle.
 
+## Candidate first profile03 upgrade (disabled by default)
+
+The explicit `unlock` build also supports `payload-profile-upgrade` for the first
+same-root02-to03 manifest. Supply these public flags in order: `--account`,
+`--origin`, `--bundle`, `--proposal`, `--output`, `--device`, `--line`,
+`--manifest-version`, `--manifest-digest`, `--phone-reader`, `--phone-signer`,
+`--issued`. Values must come from the intended context and independently accepted
+root/manifest receipt, rather than the downloaded proposal. Enter the full root
+fingerprint from the separate kit, review the selected existing phone identities,
+then type exactly `APPROVE-PROFILE03` before providing recovery material privately.
+The command rechecks expiry after recovery and before create-new public output.
+
+The [typed proposal](../protocol/drafts/payload-profile-upgrade-proposal.md)
+preserves every original key, archive reader, root and expiry. It signs only the
+first03 manifest under the existing03 domain. It performs no network operation,
+election commit, SIM approval, SMS sending, enrollment or persistent unlock.
+The default build refuses the command. This source path requires separate
+compiler, Windows console and integration qualification before use.
+
 ## Candidate first conversation manifest (disabled by default)
 
 The explicit `unlock` build also accepts `conversation-genesis`. Supply these
@@ -315,3 +334,28 @@ The proposal is the exact bounded `ZTSE/line/owner-key/register/v1` transcript i
 The private console displays the full grant and requires `REGISTER-LINE-KEY` consent, then authenticates the existing protected root backup with no-echo independent root recovery. The same eligible console session remains held across recovery, signing and publication; fresh scope/time and cancellation checks precede signing, file output and displayed signature. Declining performs no root recovery. The selected new output file contains exactly 64 raw low-s P1363 signature bytes; the console also displays the public signature as 128 lowercase hexadecimal characters under `RootLineRegister signature (raw64 lowercase hex)`. Existing output files are never overwritten. I/O failure may leave a partial public artifact, so separately inspect it before retrying. No private key is created or persisted, and no network or registration action occurs.
 
 Phone line setup requires a separate explicit review under Advanced pilots. The phone displays the authenticated account/device, entered browser line ID and generation, and selected SIM subscription before approval. Approval is process-only and bound to the exact originating authenticated connection and existing hardware signing identity. Editing, cancelling, leaving the foreground or losing that connection withdraws admission; a replacement connection requires a fresh review. Local approval does not establish server acceptance or installation, body-transfer consent or reply authority. The server setup and custody configuration remain disabled by default, and this review neither creates a device key nor sends an SMS.
+
+## Offline browser message-key manifest (explicit `unlock` build)
+
+`profile03-manifest` accepts, in order: `--account --origin --bundle --proposal
+--output --operation --device --line --manifest-version --manifest-digest
+--manifest-accepted --phone-reader --browser-point --browser-key --issued
+--expires`. The operation is exactly `enroll`, `renew` or `replace`. Independently
+select the existing root identity, original accepted checkpoint, phone reader and
+compared browser public key. The closed public
+[ZTMU01 proposal](../protocol/drafts/profile03-manifest-proposal.md) supplies the
+exact signed predecessor and unsigned successor for inspection.
+
+The eligible private console displays the account/origin/root, exact high-water,
+phone/line, browser point and identity, operation, new validity window and every
+changed retained key's expiry/state. `APPROVE-MANIFEST03` approves this single
+typed signature. Fingerprint, approval and recovery-token input each use the
+existing consuming no-echo console read, restoring modes and discarding queued
+tail input after that phase. A fresh eligible output session is then held before
+root decryption through fresh clock/process checks, signing and create-new public
+output. The latest successful clock observation is retained across approval and
+signing; regression refuses. No root is generated, no secret is exported and no
+network installation occurs. A failed write may leave a partial public artifact;
+inspect it separately and never silently overwrite or sign again after an
+uncertain installation. Accepted ancestry, browser mounting, phone consent and
+content intervals remain separate integration work.

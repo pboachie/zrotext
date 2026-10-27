@@ -56,7 +56,7 @@ languages, synced intent restoration, exact nested requests, null/selected
 active IDs, malformed/mismatched responses, no redirects/retries, uncertainty and
 lost-response recovery using status without a second consume. Linux/Windows CI
 runs both native probes. These are source/runtime tests, not live-service or
-installed-package qualification. Go 1.26.9 and Rust 1.97.1 remain required.
+installed-package qualification. Go 1.26.10 and Rust 1.99.1 remain required.
 
 Contacts/templates and installed qualification of these new APIs remain
 incomplete. No package is published by

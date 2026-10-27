@@ -8,7 +8,7 @@ use crate::{
         TokenHasher,
         abuse_limits::{self, Limit},
     },
-    enrollment::{self, AuthenticatedDevice, EnrollmentError, EnrollmentHasher},
+    enrollment::{self, EnrollmentError, EnrollmentHasher},
     inbound::unsolicited::{self, LineOptOut, LineOptOutError},
     inbound::{self, Content, InboundError, InboundEvent, InboundSession},
     runtime_db,
@@ -39,20 +39,29 @@ use tokio::{
     sync::{Notify, OwnedSemaphorePermit, Semaphore},
     time::{interval, timeout, timeout_at},
 };
-use tokio_postgres::{Client, types::Type};
+use tokio_postgres::Client;
+#[cfg(test)]
+use tokio_postgres::types::Type;
 use uuid::Uuid;
-use zrotext_delivery_store::{DeliveryStore, GrantRecord, RadioEvent, SessionRecord, StoreError};
+use zrotext_delivery_store::{GrantRecord, RadioEvent, SessionRecord, StoreError};
 use zrotext_domain::{Evidence, MessageState};
 
+mod actor;
+pub(crate) use actor::SocketActor;
+#[cfg(test)]
+pub(crate) use actor::claim_complete_for_test;
 mod mms_spike_policy;
 pub use mms_spike_policy::MmsSpikePolicy;
 mod conversation;
 mod line_activation_v2;
 mod line_readiness;
+mod payload_profile03;
 mod preconditions;
+mod protection_origin;
 mod sealed_line_setup;
 mod sealed_session;
 mod stream_diagnostic;
+mod typed_effect03;
 
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 // Whole pre-session phase, from the upgrade request through proof verification,
@@ -256,6 +265,7 @@ struct SocketRoute {
     state: DeviceSocketState,
     admission: SocketAdmission,
     conversation: Option<conversation::Policy>,
+    protection_origin: Option<[u8; 32]>,
 }
 
 #[derive(Clone)]
@@ -294,6 +304,12 @@ pub struct DeviceSession {
 #[derive(Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 enum ClientFrame {
+    #[serde(skip)]
+    TypedEffect03(typed_effect03::Incoming),
+    #[serde(skip)]
+    ProtectionOrigin(protection_origin::Incoming),
+    #[serde(skip)]
+    PayloadProfile03(payload_profile03::Incoming),
     #[serde(skip)]
     LineActivationV2(line_activation_v2::Incoming),
     #[serde(rename = "sealed_line_proof")]
@@ -667,13 +683,44 @@ pub fn router_with_account_share(state: DeviceSocketState, sockets_per_account: 
 }
 
 fn router_with_admission(state: DeviceSocketState, admission: SocketAdmission) -> Router {
+    ordinary_router(state, admission, None)
+}
+
+fn ordinary_router(
+    state: DeviceSocketState,
+    admission: SocketAdmission,
+    protection_origin: Option<[u8; 32]>,
+) -> Router {
     Router::new()
         .route("/v1/device-stream", get(upgrade))
         .with_state(SocketRoute {
             state,
             admission,
             conversation: None,
+            protection_origin,
         })
+}
+
+/// Metadata-only first-origin control on the ordinary authenticated stream.
+/// `origin` is trusted deployment configuration, never a frame/header value.
+/// This supplies no conversation negotiation, wider frame cap or dispatch.
+pub fn router_with_protection_origin_and_account_share(
+    state: DeviceSocketState,
+    origin: &str,
+    sockets_per_account: usize,
+) -> Result<Router, &'static str> {
+    Ok(ordinary_router(
+        state,
+        DEVICE_SOCKET_ADMISSION
+            .clone()
+            .with_account_limit(sockets_per_account),
+        Some(protection_origin_digest(origin)?),
+    ))
+}
+
+/// Canonical endpoint metadata only; this digest authenticates no device.
+pub fn protection_origin_digest(origin: &str) -> Result<[u8; 32], &'static str> {
+    conversation::Policy::new(origin).map(|policy| policy.protection_origin_digest())
 }
 
 /// Explicit future composition only. Main continues to call the default disabled router.
@@ -708,6 +755,41 @@ pub fn router_with_sealed_line_setup(
     conversation_router(state, origin, sockets_per_account, true)
 }
 
+/// Explicit library-only profile03 ceremony composition. Existing startup
+/// paths do not call it. Version03 never receives legacy02 execution grants;
+/// current03/admission/fetch/receiver qualification remains required before
+/// production startup can opt in to this protocol.
+pub fn router_with_profile03(
+    state: DeviceSocketState,
+    wss_origin: &str,
+    https_origin: &str,
+    sockets_per_account: usize,
+) -> Result<Router, &'static str> {
+    crate::sealed_payload_election03::adapter_contract::origin_digest(https_origin)?;
+    let a = url::Url::parse(wss_origin).map_err(|_| "profile socket origin invalid")?;
+    let b = url::Url::parse(https_origin).map_err(|_| "profile owner origin invalid")?;
+    if a.host_str() != b.host_str()
+        || a.port_or_known_default() != b.port_or_known_default()
+        || !state.sealed_dispatch_enabled
+        || !state.dispatch_runtime_enabled
+    {
+        return Err("profile socket composition unavailable");
+    }
+    let mut policy = conversation::Policy::new(wss_origin)?;
+    policy.sealed_line_setup = true;
+    policy.profile03_origin = Some(https_origin.to_owned());
+    Ok(Router::new()
+        .route("/v1/device-stream", get(upgrade))
+        .with_state(SocketRoute {
+            state,
+            admission: DEVICE_SOCKET_ADMISSION
+                .clone()
+                .with_account_limit(sockets_per_account),
+            protection_origin: Some(policy.protection_origin_digest()),
+            conversation: Some(policy),
+        }))
+}
+
 fn conversation_router(
     state: DeviceSocketState,
     origin: &str,
@@ -723,6 +805,7 @@ fn conversation_router(
             admission: DEVICE_SOCKET_ADMISSION
                 .clone()
                 .with_account_limit(sockets_per_account),
+            protection_origin: Some(policy.protection_origin_digest()),
             conversation: Some(policy),
         }))
 }
@@ -732,6 +815,7 @@ async fn upgrade(
         state,
         admission,
         conversation,
+        protection_origin,
     }): State<SocketRoute>,
     headers: HeaderMap,
     websocket: WebSocketUpgrade,
@@ -767,6 +851,12 @@ async fn upgrade(
             protocols.insert(0, line_activation_v2::SEALED_PROTOCOL);
         }
     }
+    if conversation
+        .as_ref()
+        .is_some_and(|p| p.profile03_origin.is_some())
+    {
+        protocols.insert(0, payload_profile03::PROTOCOL);
+    }
     let frame_limit = socket_frame_limit(conversation.is_some());
     websocket
         .protocols(protocols)
@@ -780,6 +870,7 @@ async fn upgrade(
                 handshake_slot,
                 deadline,
                 conversation,
+                protection_origin,
             )
         })
         .into_response()
@@ -899,6 +990,21 @@ async fn receive_frame(socket: &mut WebSocket, budget: &mut FrameBudget) -> Opti
                 if text.len() > MAX_FRAME_BYTES {
                     return None;
                 }
+                match protection_origin::parse(text.as_str()) {
+                    Ok(Some(frame)) => return Some(ClientFrame::ProtectionOrigin(frame)),
+                    Ok(None) => {}
+                    Err(()) => return None,
+                }
+                match typed_effect03::parse(text.as_str()) {
+                    Ok(Some(frame)) => return Some(ClientFrame::TypedEffect03(frame)),
+                    Ok(None) => {}
+                    Err(()) => return None,
+                }
+                match payload_profile03::parse(text.as_str()) {
+                    Ok(Some(frame)) => return Some(ClientFrame::PayloadProfile03(frame)),
+                    Ok(None) => {}
+                    Err(()) => return None,
+                }
                 return match line_activation_v2::parse(text.as_str()) {
                     Ok(Some(frame)) => Some(ClientFrame::LineActivationV2(frame)),
                     Ok(None) => serde_json::from_str(text.as_str()).ok(),
@@ -1002,7 +1108,7 @@ async fn authenticate(
     state: &DeviceSocketState,
     frame_budget: &mut FrameBudget,
     step_timeout: Duration,
-) -> Result<AuthenticatedDevice, HandshakeRefusal> {
+) -> Result<enrollment::VerifiedDevice, HandshakeRefusal> {
     let Some(ClientFrame::Hello { v: 1, device_id }) =
         timeout(step_timeout, receive_frame(socket, frame_budget))
             .await
@@ -1112,7 +1218,7 @@ async fn authenticate(
     else {
         return Err(Some(RETRY_LATER));
     };
-    let identity = enrollment::authenticate_socket_proof(
+    let identity = enrollment::authenticate_socket_actor(
         &client,
         &state.enrollment_hasher,
         &challenge,
@@ -1144,6 +1250,7 @@ async fn run_socket(
     handshake_slot: OwnedSemaphorePermit,
     deadline: tokio::time::Instant,
     conversation_policy: Option<conversation::Policy>,
+    protection_origin: Option<[u8; 32]>,
 ) {
     let sealed_setup_enabled = conversation_policy
         .as_ref()
@@ -1153,9 +1260,13 @@ async fn run_socket(
     let line_protocol = negotiated.line;
     let status_protocol = negotiated.status.map(str::to_owned);
     let sealed_v2 = negotiated.sealed_version == Some(2);
+    let profile03_origin = conversation_policy
+        .as_ref()
+        .and_then(|p| p.profile03_origin.as_deref());
+    let profile03_negotiated = negotiated.sealed_version == Some(3) && profile03_origin.is_some();
     let sealed_negotiated = state.sealed_dispatch_enabled
         && state.dispatch_runtime_enabled
-        && negotiated.sealed_version.is_some();
+        && matches!(negotiated.sealed_version, Some(1 | 2));
     let mut status_budget = preconditions::ReportBudget::default();
     let mut frame_budget = FrameBudget::new(Instant::now());
     let authenticated = timeout_at(
@@ -1170,7 +1281,10 @@ async fn run_socket(
     .await
     .unwrap_or(Err(Some(RETRY_LATER)));
     let session_slot = match &authenticated {
-        Ok(identity) => admission.admit_session(identity.account_id, identity.device_id),
+        Ok(identity) => admission.admit_session(
+            identity.identity().account_id,
+            identity.identity().device_id,
+        ),
         Err(_) => None,
     };
     // The handshake budget is released on every path before any close write or
@@ -1196,18 +1310,11 @@ async fn run_socket(
         close_handshake(&mut socket, RETRY_LATER).await;
         return;
     };
-    let claimed = match line_protocol {
-        line_activation_v2::LineProtocol::Legacy => {
-            claim_session(&mut client, identity, &state).await
-        }
-        line_activation_v2::LineProtocol::Complete => {
-            claim_session_for_protocol(&mut client, identity, &state, line_protocol).await
-        }
-    };
-    let session = match claimed {
-        Ok(Some(session)) => session,
+    let claimed = actor::claim(&mut client, identity, &state, line_protocol).await;
+    let actor = match claimed {
+        Ok(Some(actor)) => actor,
         Ok(None) => {
-            let code = match enrollment::device_still_active(&client, identity).await {
+            let code = match enrollment::device_still_active(&client, identity.identity()).await {
                 Ok(false) => close_code::POLICY,
                 _ => RETRY_LATER,
             };
@@ -1222,6 +1329,7 @@ async fn run_socket(
         }
     };
     drop(client);
+    let session = actor.session();
     if !send_frame(
         &mut socket,
         ServerFrame::Session {
@@ -1252,6 +1360,10 @@ async fn run_socket(
     let mut sealed_ready: Option<(crate::sealed_dispatch::wire::Ready, Instant)> = None;
     let mut sealed_ready_used = false;
     let mut sealed_clock = sealed_session::Samples::new();
+    let mut profile_clock = sealed_session::Samples::new();
+    let mut profile_reads = payload_profile03::CurrentReads::new();
+    let mut profile_ready = payload_profile03::grants::Readiness03::new();
+    let mut profile_next_poll = tokio::time::Instant::now();
     let mut mms_spike_ready_used = false;
     // Enabled only for controlled local liveness probes. Emit bounded,
     // content-free timing and exit markers, never frames or device IDs.
@@ -1268,12 +1380,38 @@ async fn run_socket(
         tokio::select! {
             message = receive_frame(&mut socket, &mut frame_budget) => {
                 match message {
+                    Some(ClientFrame::TypedEffect03(frame)) => {
+                        // Only a NEW positive submit needs current negotiated
+                        // content/dispatch state. Exact submit history, clocks,
+                        // closure and outcomes retain their separate actor port.
+                        let origin=profile03_origin.filter(|_|profile03_negotiated
+                            && profile_clock.is_sampled() && state.sealed_dispatch_enabled
+                            && state.dispatch_runtime_enabled);
+                        if typed_effect03::dispatch(&mut socket,&state,actor,origin,frame).await.is_none() {
+                            close_with_code=Some(RETRY_LATER);break;
+                        }
+                    }
+                    Some(ClientFrame::ProtectionOrigin(frame)) => {
+                        let Some(origin)=protection_origin else {close_with_code=Some(close_code::POLICY);break;};
+                        if protection_origin::dispatch(&mut socket,&state,actor,origin,frame).await.is_none(){close_with_code=Some(RETRY_LATER);break;}
+                    }
+                    Some(ClientFrame::PayloadProfile03(payload_profile03::Incoming::Ready(ready)))=>{
+                        if !profile03_negotiated || !profile_clock.is_sampled()
+                            || !state.sealed_dispatch_enabled || !state.dispatch_runtime_enabled
+                            || profile_ready.accept(*ready,session,state.deployment_epoch).is_none() {
+                            close_with_code=Some(close_code::POLICY);break;
+                        }
+                    }
+                    Some(ClientFrame::PayloadProfile03(frame))=>{
+                        let Some(origin)=profile03_origin.filter(|_|profile03_negotiated) else {close_with_code=Some(close_code::POLICY);break;};
+                        if payload_profile03::dispatch(&mut socket,&state,session,origin,&mut profile_clock,&mut profile_reads,frame).await.is_none() {close_with_code=Some(RETRY_LATER);break;}
+                    }
                     Some(ClientFrame::SealedSessionRequest { v: 1, connection_epoch, challenge }) if sealed_negotiated && sealed_v2 => {
                         if connection_epoch != session.connection_epoch || !sealed_clock.admit(challenge, Instant::now()) {
                             close_with_code = Some(close_code::POLICY); break;
                         }
                         let Ok(client) = runtime_db::connect_device(&state.database_url).await else {close_with_code=Some(RETRY_LATER);break;};
-                        if !session_current(&client, session, &state).await.unwrap_or(false) {close_with_code=Some(close_code::POLICY);break;}
+                        if !actor.current(&client, &state).await.unwrap_or(false) {close_with_code=Some(close_code::POLICY);break;}
                         // Capture clock after the live-authority query and all its waits.
                         let Ok(row) = client.query_one("SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint", &[]).await else {close_with_code=Some(RETRY_LATER);break;};
                         let server_time_ms: i64 = row.get(0);
@@ -1291,7 +1429,7 @@ async fn run_socket(
                         }
                         let Some(policy)=conversation_policy.as_ref() else {close_with_code=Some(close_code::POLICY);break;};
                         let Ok(client)=runtime_db::connect_device(&state.database_url).await else {close_with_code=Some(RETRY_LATER);break;};
-                        if !session_current(&client,session,&state).await.unwrap_or(false) {close_with_code=Some(close_code::POLICY);break;}
+                        if !actor.current(&client,&state).await.unwrap_or(false) {close_with_code=Some(close_code::POLICY);break;}
                         drop(client);
                         let negotiated=policy.negotiate(session,state.deployment_epoch,challenge);
                         let Ok((held,reply))=negotiated else {close_with_code=Some(close_code::POLICY);break;};
@@ -1362,7 +1500,7 @@ async fn run_socket(
                                     break;
                                 };
                                 let verified_at = Instant::now();
-                                if !renew_session(&client, session, &state).await.unwrap_or(false) {
+                                if !actor.renew(&client, &state).await.unwrap_or(false) {
                                     close_reason = "heartbeat_renew_failed_or_fenced";
                                     break;
                                 }
@@ -1399,7 +1537,7 @@ async fn run_socket(
                         };
                         if URL_SAFE_NO_PAD.encode(digest) != recipient_digest
                             || !state.alpha_policy.allows_recipient_digest(session.account_id, &digest)
-                            || !session_current(&client, session, &state).await.unwrap_or(false)
+                            || !actor.current(&client, &state).await.unwrap_or(false)
                         { break; }
                         alpha_ready = Some((digest, Instant::now()));
                         alpha_ready_used = true;
@@ -1422,7 +1560,7 @@ async fn run_socket(
                             close_with_code = Some(RETRY_LATER);
                             break;
                         };
-                        if !session_current(&client, session, &state).await.unwrap_or(false) {
+                        if !actor.current(&client, &state).await.unwrap_or(false) {
                             break;
                         }
                         match mms_spike_grant_if_due(&client, session, &state, &digest).await {
@@ -1462,7 +1600,7 @@ async fn run_socket(
                             close_with_code = Some(RETRY_LATER);
                             break;
                         };
-                        if !session_current(&client, session, &state).await.unwrap_or(false) {
+                        if !actor.current(&client, &state).await.unwrap_or(false) {
                             break;
                         }
                         if matches!(evidence, RadioEvidence::DurableSubmitIntent) {
@@ -1495,12 +1633,12 @@ async fn run_socket(
                             segment_index,
                             segment_count,
                         };
-                        let mut store = DeliveryStore::new(&mut client);
+                        let mut store = client.delivery_store();
                         let next = match store.record_radio_event(event).await {
                             Ok(next) => next,
                             Err(error) => {
                                 close_with_code = Some(radio_evidence_close_code(&error,
-                                    session_current(&client, session, &state).await.unwrap_or(false)));
+                                    actor.current(&client, &state).await.unwrap_or(false)));
                                 break;
                             }
                         };
@@ -1798,13 +1936,18 @@ async fn run_socket(
                     break;
                 };
                 let verified_at = Instant::now();
-                if !session_current(&client, session, &state).await.unwrap_or(false) {
+                if !actor.current(&client, &state).await.unwrap_or(false) {
                     close_reason = "session_check_failed_or_fenced";
                     break;
                 }
                 session_checks.verified(verified_at);
             }
-            _ = dispatch_checks.tick(), if alpha_ready.is_some() || sealed_ready.is_some() => {
+            _ = dispatch_checks.tick(), if alpha_ready.is_some() || sealed_ready.is_some() || profile_ready.present() => {
+                if profile_ready.present() {
+                    let Some(origin)=profile03_origin.filter(|_|profile03_negotiated) else {close_with_code=Some(close_code::POLICY);break;};
+                    if profile_ready.poll(&mut socket,&state,actor,origin).await.is_none() {close_with_code=Some(RETRY_LATER);break;}
+                    continue;
+                }
                 if let Some((ready, armed_at)) = &sealed_ready {
                     if armed_at.elapsed() > Duration::from_secs(ALPHA_READY_SECONDS) {
                         sealed_ready = None;
@@ -1841,7 +1984,7 @@ async fn run_socket(
                     break;
                 };
                 let verified_at = Instant::now();
-                if !session_current(&client, session, &state).await.unwrap_or(false) {
+                if !actor.current(&client, &state).await.unwrap_or(false) {
                     break;
                 }
                 session_checks.verified(verified_at);
@@ -1914,6 +2057,10 @@ async fn run_socket(
                     sms_line_next_poll = tokio::time::Instant::now();
                     sealed_line_next_poll = tokio::time::Instant::now();
                 }
+            },
+            _ = tokio::time::sleep_until(profile_next_poll), if profile03_negotiated && profile_clock.is_sampled() => {
+                if payload_profile03::push(&mut socket,&state,session,profile03_origin.expect("negotiated configured origin")).await.is_none() {close_with_code=Some(RETRY_LATER);break;}
+                profile_next_poll=tokio::time::Instant::now()+Duration::from_secs(3);
             },
             _ = state.drain_notify.notified() => {
                 close_reason = "site_drain";
@@ -2158,12 +2305,12 @@ async fn durable_intent_preflight(
 
 /// One-statement pre-claim filter for an armed dispatch tick; see
 /// [`DeliveryStore::synthetic_grant_may_be_due`].
-async fn grant_may_be_due(
-    client: &mut Client,
+async fn grant_may_be_due<C: crate::runtime_db::NativeConnection>(
+    client: &mut C,
     session: DeviceSession,
     state: &DeviceSocketState,
 ) -> Result<bool, StoreError> {
-    DeliveryStore::new(client)
+    crate::runtime_db::initialized_store(client, None)
         .synthetic_grant_may_be_due(
             session.account_id,
             session.device_id,
@@ -2175,8 +2322,8 @@ async fn grant_may_be_due(
 
 /// Claim only for this authenticated device and issue at most one fenced grant.
 /// A failed frame send leaves the grant unresolved; reconnect never retries it.
-async fn poll_synthetic_grant(
-    client: &mut Client,
+async fn poll_synthetic_grant<C: crate::runtime_db::NativeConnection>(
+    client: &mut C,
     session: DeviceSession,
     state: &DeviceSocketState,
     recipient_digest: &[u8; 32],
@@ -2198,7 +2345,7 @@ async fn poll_synthetic_grant(
     // The claim transaction returns the message content, so it is read once:
     // policy is applied here, and the same content is released only after
     // the grant is confirmed below.
-    let Some((claim, content)) = DeliveryStore::new(client)
+    let Some((claim, content)) = crate::runtime_db::initialized_store(client, None)
         .claim_synthetic_for_device_and_recipient(
             &worker_id,
             session.account_id,
@@ -2216,12 +2363,12 @@ async fn poll_synthetic_grant(
         && state.alpha_policy.allows(claim.account_id, &recipient)
         && body.as_deref().is_some_and(synthetic_body_is_fixed);
     let (true, Some(body)) = (permitted, body) else {
-        DeliveryStore::new(client)
+        crate::runtime_db::initialized_store(client, None)
             .cancel(claim.account_id, claim.message_id)
             .await?;
         return Ok(None);
     };
-    let mut store = DeliveryStore::new(client);
+    let mut store = crate::runtime_db::initialized_store(client, None);
     let record = store_session(session, state);
     let grant = match store.issue_grant(&claim, &record, Uuid::new_v4()).await {
         Ok(grant) => grant,
@@ -2326,6 +2473,7 @@ fn grant_frame(grant: GrantRecord, recipient_e164: String, body: String) -> Serv
 
 /// Compare-and-swap through the writer. A new proof increments the persistent
 /// epoch; any older socket immediately loses renewal and all future work rights.
+#[cfg(test)]
 async fn claim_session(
     client: &mut Client,
     identity: AuthenticatedDevice,
@@ -2339,12 +2487,29 @@ async fn claim_session(
     )
     .await
 }
+#[cfg(test)]
 async fn claim_session_for_protocol(
     client: &mut Client,
     identity: AuthenticatedDevice,
     state: &DeviceSocketState,
     line_protocol: line_activation_v2::LineProtocol,
 ) -> Result<Option<DeviceSession>, tokio_postgres::Error> {
+    claim_session_for_actor(
+        client,
+        actor::ClaimActor::TestIdentity(identity),
+        state,
+        line_protocol,
+    )
+    .await
+}
+
+async fn claim_session_for_actor(
+    client: &mut Client,
+    actor: actor::ClaimActor,
+    state: &DeviceSocketState,
+    line_protocol: line_activation_v2::LineProtocol,
+) -> Result<Option<DeviceSession>, tokio_postgres::Error> {
+    let identity = actor.identity();
     if state.draining.load(Ordering::Acquire) {
         return Ok(None);
     }
@@ -2366,10 +2531,10 @@ async fn claim_session_for_protocol(
         return Ok(None);
     }
     let active = tx.query_opt(
-        "SELECT 1 FROM devices d JOIN device_keys k ON (k.account_id,k.device_id)=(d.account_id,d.id) JOIN accounts a ON a.id=d.account_id WHERE d.account_id=$1 AND d.id=$2 AND d.revoked_at IS NULL AND k.revoked_at IS NULL AND a.disabled_at IS NULL FOR UPDATE OF d",
+        "SELECT k.signing_key_sec1 FROM devices d JOIN device_keys k ON (k.account_id,k.device_id)=(d.account_id,d.id) JOIN accounts a ON a.id=d.account_id WHERE d.account_id=$1 AND d.id=$2 AND d.revoked_at IS NULL AND k.revoked_at IS NULL AND a.disabled_at IS NULL FOR UPDATE OF d FOR SHARE OF k,a",
         &[&identity.account_id, &identity.device_id],
-    ).await?.is_some();
-    if !active {
+    ).await?;
+    if !active.is_some_and(|row| actor.matches_point(row.get::<_, Vec<u8>>(0).as_slice())) {
         return Ok(None);
     }
     let row = tx.query_one(
@@ -2403,6 +2568,7 @@ async fn claim_session_for_protocol(
     }))
 }
 
+#[cfg(test)]
 async fn session_current(
     client: &Client,
     session: DeviceSession,
@@ -2419,6 +2585,7 @@ async fn session_current(
     ).await?.is_some())
 }
 
+#[cfg(test)]
 async fn renew_session(
     client: &Client,
     session: DeviceSession,
@@ -2447,6 +2614,8 @@ async fn release_session(
     Ok(())
 }
 
+#[cfg(test)]
+use crate::enrollment::AuthenticatedDevice;
 #[cfg(test)]
 use tokio_postgres::NoTls;
 #[cfg(test)]

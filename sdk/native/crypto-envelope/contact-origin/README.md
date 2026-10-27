@@ -55,7 +55,7 @@ Loaders retain their native library for process lifetime.
 Run `python build.py --out <new-directory-outside-checkout>` with C++20 available.
 Windows requires a Visual Studio x64 developer environment. The actual local
 qualification used Windows x64, Visual Studio 2022, Java 21 compiling release 17,
-.NET 10 building net8, and Ruby 3.3.9. Linux CI builds its own platform artifact;
+.NET 10 building net8, and Ruby 3.3.13. Linux CI builds its own platform artifact;
 the macOS recipe has no executed qualification claim. This is a pinned build
 recipe, not demonstrated byte-for-byte reproducibility or published SDK package
 readiness. Ada 3.3 is deliberate: the tested 4.0 ASCII ACE fast path differed

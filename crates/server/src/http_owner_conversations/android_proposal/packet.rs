@@ -58,7 +58,14 @@ fn bytes<const N: usize>(value: &serde_json::Value) -> Result<[u8; N], Conversat
         return Err(reject());
     }
     let mut out = [0; N];
-    for (i, pair) in text.as_bytes().chunks_exact(2).enumerate() {
+    for (i, pair) in text
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|chunk| chunk.as_slice())
+        .enumerate()
+    {
         out[i] = u8::from_str_radix(std::str::from_utf8(pair).map_err(|_| reject())?, 16)
             .map_err(|_| reject())?;
     }
@@ -85,16 +92,22 @@ fn deadline(issued: u64, upper: u64, now: i64) -> Result<i64, ConversationError>
 fn role(c: &Current, kind: u8, s: &Selection, now: i64) -> Result<[u8; 32], ConversationError> {
     let m = c.manifest.as_deref().ok_or_else(reject)?;
     // Current::verify has verified framing/signature/checkpoint before this parsing.
-    let mut found = m[151..m.len() - 64].chunks_exact(149).filter(|r| {
-        r[0] == kind
-            && r[148] == 1
-            && u16::from_be_bytes(r[130..132].try_into().unwrap()) & if kind == 4 { 2 } else { 4 }
-                != 0
-            && i64::from_be_bytes(r[132..140].try_into().unwrap()) <= now
-            && now < i64::from_be_bytes(r[140..148].try_into().unwrap())
-            && (kind == 2
-                || (r[98..114] == *s.device.as_bytes() && r[114..130] == *s.line.as_bytes()))
-    });
+    let mut found = m[151..m.len() - 64]
+        .as_chunks::<149>()
+        .0
+        .iter()
+        .map(|chunk| chunk.as_slice())
+        .filter(|r| {
+            r[0] == kind
+                && r[148] == 1
+                && u16::from_be_bytes(r[130..132].try_into().unwrap())
+                    & if kind == 4 { 2 } else { 4 }
+                    != 0
+                && i64::from_be_bytes(r[132..140].try_into().unwrap()) <= now
+                && now < i64::from_be_bytes(r[140..148].try_into().unwrap())
+                && (kind == 2
+                    || (r[98..114] == *s.device.as_bytes() && r[114..130] == *s.line.as_bytes()))
+        });
     let record = found.next().ok_or_else(reject)?;
     if found.next().is_some() {
         return Err(reject());

@@ -78,7 +78,12 @@ class AuthenticatedGatewayService : Service() {
     @Volatile private var sessionIdentity: EvidenceIdentity? = null
     @Volatile private var conversationConnection: ConversationSocketNegotiation? = null
     @Volatile private var sealedConnection: SealedExecutionConnection? = null
+    @Volatile private var profile03Connection: Profile03ExecutionConnection? = null
+    /** Explicit foreground user intent only; never persisted as an authority or reboot grant. */
+    @Volatile private var profile03Requested = false
     private var conversationHost: AutoCloseable? = null
+    private var protectionOriginHost: ProtectionOriginConnections.Host? = null
+    private var typedHistoryHost: TypedHistory03Connections.Host? = null
     @Volatile private var awaitingEventId: String? = null
     @Volatile private var awaitingEventSentAtNanos = 0L
     @Volatile private var awaitingInboundId: String? = null
@@ -183,10 +188,11 @@ class AuthenticatedGatewayService : Service() {
             intent?.getBooleanExtra(EXTRA_LINE_OPT_OUT_UPLOAD, false) == true
         val rebootOptInRequested = !bootResume &&
             intent?.getBooleanExtra(EXTRA_REBOOT_RESUME, false) == true
+        profile03Requested = !bootResume && intent?.getBooleanExtra(EXTRA_PROFILE03, false) == true && Build.VERSION.SDK_INT >= 33
         if ((if (armRequested) 1 else 0) + (if (inboundUploadRequested) 1 else 0) +
             (if (lineOptOutUploadRequested) 1 else 0) > 1 ||
-            (rebootOptInRequested && (armRequested || inboundUploadRequested ||
-                lineOptOutUploadRequested))) {
+            (rebootOptInRequested && (armRequested || inboundUploadRequested || profile03Requested ||
+                lineOptOutUploadRequested)) || (profile03Requested && (armRequested || inboundUploadRequested || lineOptOutUploadRequested))) {
             halt()
             AuthenticatedGatewayStatus.value = "Choose one pilot mode at a time"
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -299,8 +305,15 @@ class AuthenticatedGatewayService : Service() {
     ) {
         val currentGeneration = retireConnection()
         val keys = DeviceSigningKeyStore(applicationContext)
+        var verifiedHandshakePoint: ByteArray? = null
         val machine = DeviceStreamMachine(deviceId) { account, device, challenge, nonce ->
-            keys.signDeviceChallenge(account, device, challenge, nonce)
+            val point = keys.existingProtectionPublicPoint()
+            val signature = keys.signDeviceChallenge(account, device, challenge, nonce)
+            check(SealedLineActivationTranscript.verify(point,
+                EnrollmentProof.deviceAuthBytes(account, device, challenge, nonce), signature) &&
+                java.security.MessageDigest.isEqual(point, keys.existingProtectionPublicPoint()))
+            verifiedHandshakePoint = point.copyOf()
+            signature
         }
         var grantSeen = false
         val statusPublisher = DeviceStatusPublisher()
@@ -308,7 +321,8 @@ class AuthenticatedGatewayService : Service() {
         val lineOwner = ensureSelectedLineV2Owner()
         var sealedSelected = false
         var selectedTuple = LineActivationV2Negotiation.Selection(null, false, 1)
-        val offeredProtocols = LineActivationV2Negotiation.offer(lineOwner != null, sealedLease != null)
+        val offeredProtocols = LineActivationV2Negotiation.offer(lineOwner != null, sealedLease != null,
+            profile03Requested && lineOwner != null)
         val offered = offeredProtocols.joinToString(", ")
         socket = client.newWebSocket(Request.Builder().url(url)
             .header("Sec-WebSocket-Protocol", offered).build(), object : WebSocketListener() {
@@ -317,7 +331,7 @@ class AuthenticatedGatewayService : Service() {
                 val selected = response.header("Sec-WebSocket-Protocol")
                 selectedTuple = try { LineActivationV2Negotiation.select(selected, offeredProtocols) }
                     catch (_: IllegalArgumentException) { return disconnect(currentGeneration, DeviceReconnectPolicy.Loss.PROTOCOL_REJECTED) }
-                sealedSelected = sealedLease != null && selectedTuple.sealed
+                sealedSelected = sealedLease != null && selectedTuple.sealedVersion == 2
                 statusPublisher.selectProtocol(selectedTuple.status)
                 val hello = JSONObject().put("v", 1).put("type", "hello")
                     .put("device_id", machine.helloDeviceId().toString())
@@ -330,9 +344,57 @@ class AuthenticatedGatewayService : Service() {
             override fun onMessage(webSocket: WebSocket, text: String) {
                 if (generation != currentGeneration) return
                 try {
-                    check(text.toByteArray(Charsets.UTF_8).size <= MAX_FRAME_BYTES)
+                    val raw = text.toByteArray(Charsets.UTF_8)
+                    check(raw.size <= if (selectedTuple.sealedVersion == 3) Profile03Json.MAX_BYTES else MAX_FRAME_BYTES)
                     val frame = JSONObject(text)
                     val type = frame.opt("type")
+                    if (type == "payload_profile_history_clock03") {
+                        check(machine.phase == DeviceStreamMachine.Phase.ACTIVE)
+                        checkNotNull(typedHistoryHost).accept(raw)
+                        return
+                    }
+                    if (type == "payload_profile_outcome_ack03") {
+                        check(machine.phase == DeviceStreamMachine.Phase.ACTIVE)
+                        checkNotNull(typedHistoryHost).acceptOutcome(raw)
+                        return
+                    }
+                    if (type in setOf("payload_profile_no_submit_challenge03", "payload_profile_no_submit_status03", "payload_profile_no_submit_ack03")) {
+                        check(machine.phase == DeviceStreamMachine.Phase.ACTIVE)
+                        checkNotNull(typedHistoryHost).acceptClosure(raw)
+                        return
+                    }
+                    if (type in setOf("protection_origin_opened", "protection_origin_proof_challenge",
+                            "protection_origin_accepted", "protection_origin_status")) {
+                        check(machine.phase == DeviceStreamMachine.Phase.ACTIVE)
+                        checkNotNull(protectionOriginHost).accept(raw)
+                        return
+                    }
+                    if (selectedTuple.sealedVersion == 3 && type in setOf("payload_profile_session03", "payload_profile_challenge03",
+                            "payload_profile_current03", "payload_profile_current03_unavailable", "sealed_execution_grant",
+                            "payload_profile_submit_ack03",
+                            "payload_profile_manifest_original03", "payload_profile_manifest03", "payload_profile_manifest03_installed_ack", "payload_profile_manifest_current03",
+                            "payload_profile_selection_challenge03", "payload_profile_selection_approved03", "payload_profile_selection_install_ack03",
+                            "conversation_interval_challenge03", "conversation_interval_approved03", "conversation_interval_installed03",
+                            "conversation_interval_status03", "conversation_interval_stopped03")) {
+                        check(machine.phase == DeviceStreamMachine.Phase.ACTIVE)
+                        val consumer = checkNotNull(profile03Connection)
+                        when (type) {
+                            "payload_profile_session03" -> consumer.acceptMetadata(raw)
+                            "payload_profile_challenge03" -> consumer.challenge(raw)
+                            "payload_profile_current03" -> consumer.acceptCurrent(raw)
+                            "payload_profile_current03_unavailable" -> consumer.acceptUnavailable(raw)
+                            "payload_profile_manifest_original03", "payload_profile_manifest03", "payload_profile_manifest03_installed_ack",
+                            "payload_profile_manifest_current03" -> consumer.manifest(raw)
+                            "sealed_execution_grant" -> consumer.grant(text)
+                            "payload_profile_submit_ack03" -> consumer.typedAck(raw)
+                            "payload_profile_selection_challenge03", "payload_profile_selection_approved03",
+                            "payload_profile_selection_install_ack03" -> consumer.selectionRefresh(raw)
+                            "conversation_interval_challenge03", "conversation_interval_approved03", "conversation_interval_installed03",
+                            "conversation_interval_status03", "conversation_interval_stopped03" -> consumer.conversationInterval(raw)
+                        }
+                        return
+                    }
+                    check(raw.size <= MAX_FRAME_BYTES)
                     if (type is String && type in setOf("sms_line_challenge_v2", "sms_line_proof_ack_v2",
                             "sms_line_activated_v2", "sealed_line_challenge_v2", "sealed_line_proof_ack_v2",
                             "sealed_line_activated_v2", "sealed_line_install_ack_v2")) {
@@ -429,6 +491,8 @@ class AuthenticatedGatewayService : Service() {
                                         val heartbeatEpoch = machine.heartbeatEpoch()
                                         if (sealedConnection?.tick() == false)
                                             return@scheduleAtFixedRate disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
+                                        if (profile03Connection?.tick() == false)
+                                            return@scheduleAtFixedRate disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
                                         timingTrace.mark(HeartbeatTraceEvent.SEND_CALL, heartbeatEpoch)
                                         val queued = webSocket.send("{\"v\":1,\"type\":\"heartbeat\"}")
                                         timingTrace.mark(if (queued) HeartbeatTraceEvent.SEND_QUEUED
@@ -479,6 +543,16 @@ class AuthenticatedGatewayService : Service() {
                                                 runCatching { machine.heartbeatEpoch() == epoch }.getOrDefault(false)
                                         }).also(LineActivationV2SelectedLineMount::attachConsumer)
                                 }
+                                if (selectedTuple.sealedVersion == 3) {
+                                    val connection = Profile03ExecutionConnection(applicationContext, machine.activeAccountId(),
+                                        machine.activeDeviceId(), epoch, url, client, webSocket,
+                                        { if (lineActivationV2?.isCurrent() == true) selectedTuple.lineVersion else null }, {
+                                            generation == currentGeneration && socket === webSocket && sessionIdentity == identity &&
+                                                machine.phase == DeviceStreamMachine.Phase.ACTIVE && machine.heartbeatEpoch() == epoch
+                                        })
+                                    profile03Connection = connection
+                                    check(connection.start())
+                                }
                                 sealedLineActivation?.close()
                                 sealedLineActivation = if (selectedTuple.lineVersion == 1) SealedLineActivationMount.open(applicationContext, keys,
                                     machine.activeAccountId(), machine.activeDeviceId(), epoch, {
@@ -486,6 +560,17 @@ class AuthenticatedGatewayService : Service() {
                                             machine.phase == DeviceStreamMachine.Phase.ACTIVE &&
                                             runCatching { machine.heartbeatEpoch() == epoch }.getOrDefault(false)
                                     }) else null
+                                protectionOriginHost = ProtectionOriginConnections.register(webSocket, identity, epoch,
+                                    checkNotNull(verifiedHandshakePoint)) {
+                                    check(generation == currentGeneration && socket === webSocket && sessionIdentity == identity &&
+                                        machine.phase == DeviceStreamMachine.Phase.ACTIVE && machine.heartbeatEpoch() == epoch)
+                                }
+                                typedHistoryHost = TypedHistory03Connections.register(webSocket, identity, epoch,
+                                    selectedTuple.lineVersion, checkNotNull(verifiedHandshakePoint), {
+                                        check(generation == currentGeneration && socket === webSocket && sessionIdentity == identity &&
+                                            machine.phase == DeviceStreamMachine.Phase.ACTIVE && machine.heartbeatEpoch() == epoch)
+                                    })
+                                TypedHistory03Runtime.connected(applicationContext)
                                 conversationHost = ConversationSocketComposition.registerAuthenticatedHost(webSocket, identity, epoch,
                                     scheduler, {
                                         check(generation == currentGeneration && socket === webSocket && sessionIdentity == identity &&
@@ -580,7 +665,7 @@ class AuthenticatedGatewayService : Service() {
                                         grant.attemptId.toString(), grant.messageId.toString(),
                                         grant.subscriptionId, 1, UUID.randomUUID().toString(),
                                         System.currentTimeMillis(),
-                                        InboundVault.token("sender-v1",
+                                        InboundVault.token(applicationContext, "sender-v1",
                                             grant.recipientE164.toByteArray(Charsets.US_ASCII)),
                                         identity)
                                     AuthenticatedGatewayStatus.value = "Grant reserved; waiting for writer ack"
@@ -604,8 +689,10 @@ class AuthenticatedGatewayService : Service() {
                             val event = uuid(frame, "event_id").toString()
                             val state = frame.getString("state")
                             val permitted = frame.getBoolean("submit_permitted")
-                            val sealedRoute = sealedConnection?.radioAck(event, state, permitted)
+                            val profile03Route = profile03Connection?.radioAck(event, state, permitted)
                                 ?: ConversationRadioAckRoute.NOT_OURS
+                            val sealedRoute = if (profile03Route != ConversationRadioAckRoute.NOT_OURS) profile03Route
+                                else sealedConnection?.radioAck(event, state, permitted) ?: ConversationRadioAckRoute.NOT_OURS
                             val route = if (sealedRoute != ConversationRadioAckRoute.NOT_OURS) sealedRoute
                                 else conversationConnection?.radioAck(event, state, permitted)
                                     ?: ConversationRadioAckRoute.NOT_OURS
@@ -902,7 +989,7 @@ class AuthenticatedGatewayService : Service() {
                 signingFence.requireCurrent()
                 // Open the E.164 sender only at the signing boundary. It never enters Room/logs.
                 val recipient = LineOptOutSender.recover(pending, InboundVault::openSender) {
-                    InboundVault.token("sender-v1", it.toByteArray(Charsets.US_ASCII))
+                    InboundVault.token(applicationContext, "sender-v1", it.toByteArray(Charsets.US_ASCII))
                 }
                 if (recipient == null) {
                     pauseLineOptOutUpload()
@@ -1308,21 +1395,27 @@ class AuthenticatedGatewayService : Service() {
     }
 
     private fun closeConversationConnection() {
+        val historyHost = typedHistoryHost; typedHistoryHost = null
+        historyHost?.close() // Passive actor port follows the actual socket, not an effect-health epoch.
+        val originHost = protectionOriginHost; protectionOriginHost = null
+        originHost?.close() // Synchronous RAM withdrawal before platform/storage cleanup.
         selectedLineV2Owner?.retireAtEntry()
         val lineV2 = lineActivationV2; lineActivationV2 = null
         if (lineV2 != null) LineActivationV2SelectedLineMount.detachConsumer(lineV2)
         lineV2?.close()
         val execution = sealedConnection; sealedConnection = null
+        val execution03 = profile03Connection; profile03Connection = null
         val activation = sealedLineActivation; sealedLineActivation = null
         val host=conversationHost;conversationHost=null
         val old=conversationConnection;conversationConnection=null
-        try { execution?.close() } finally {
+        try { execution03?.close() } finally { try { execution?.close() } finally {
             try { activation?.close() } finally {
                 try {host?.close()} finally {old?.close()}
             }
-        }
+        } }
     }
     private fun halt() {
+        profile03Requested = false
         selectedLineV2Owner?.retireAtEntry()
         SealedExecutionMount.pause()
         generation += 1 // Fence listener callbacks before admission/storage closure can wait.
@@ -1423,6 +1516,7 @@ class AuthenticatedGatewayService : Service() {
         const val EXTRA_URL = "url"
         const val EXTRA_DEVICE_ID = "device_id"
         const val EXTRA_REBOOT_RESUME = "reboot_resume"
+        const val EXTRA_PROFILE03 = "profile03_messaging"
         const val EXTRA_ALPHA_RECIPIENT = "alpha_recipient"
         const val EXTRA_ALPHA_SUBSCRIPTION_ID = "alpha_subscription_id"
         const val EXTRA_ALPHA_APPROVAL = "alpha_explicit_test_approval"

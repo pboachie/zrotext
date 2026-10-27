@@ -70,7 +70,7 @@ async function fixture(destination = "setup?new=1", width = 1440, changes = {}) 
       billing: state.mode, checkout_available: state.catalog && (state.mode === "test" || state.runtime && state.mode === "live"), plan_catalog_available: state.catalog });
     if (url.pathname === "/v1/auth/session") {
       if (state.sessionUnavailable) return route.abort();
-      if (state.sessionBarrier) await state.sessionBarrier;
+      if (state.sessionBarrier && (!state.sessionBarrierPage || headers.referer === state.sessionBarrierPage)) await state.sessionBarrier;
       return state.signedIn ? json(state.sessionDto || { role: "owner", account_id: account, session_id: state.session, user_id: account }) : json({}, 401);
     }
     if (url.pathname === "/v1/auth/login") {
@@ -157,6 +157,7 @@ for (const width of [320, 390, 1440]) test(`UX-NAV-01 UX-A11Y-01 real destinatio
     if (width < 960) await page.locator(".owner-menu > summary").click();
     await page.getByRole("link", { name: "Integrations", exact: true }).click();
     await page.waitForURL("**/owner/integrations");
+    await page.locator("#connection-details").waitFor({ state: "visible" });
     assert.equal(await page.locator("#connection-details").isVisible(), true);
     assert.equal(await page.locator("#approved-devices").isVisible(), false);
     const before = state.requests.filter(r => r.path === "/v1/enrollment/devices").length;
@@ -170,6 +171,32 @@ for (const width of [320, 390, 1440]) test(`UX-NAV-01 UX-A11Y-01 real destinatio
     assert.equal(await page.locator("body").evaluate(e => getComputedStyle(e).backgroundColor), "rgb(11, 15, 12)");
   } finally { await page.close(); }
 });
+for (const [destination, label, panel, inactive] of [
+  ["integrations", "Integrations", "#connection-details", "#approved-devices"],
+  ["phones", "Phones & lines", "#phone-line-tools", "#message-summary"]
+]) test(`owner navigation keeps ${label} hidden until its session check completes`, async () => {
+  requires("UX-NAV-01", "UX-A11Y-01");
+  const { page, state } = await fixture("devices", 390);
+  let releaseSession;
+  state.sessionBarrierPage = "https://example.test/owner/" + destination;
+  state.sessionBarrier = new Promise(resolve => { releaseSession = resolve; });
+  try {
+    const destinationSession = page.waitForRequest(request =>
+      new URL(request.url()).pathname === "/v1/auth/session" &&
+      request.headers().referer === state.sessionBarrierPage);
+    await page.locator(".owner-menu > summary").click();
+    await page.getByRole("link", { name: label, exact: true }).click();
+    await destinationSession;
+    await page.waitForURL("**/owner/" + destination);
+    await page.locator(panel).waitFor({ state: "attached" });
+    assert.equal(await page.locator("#owner-content").isVisible(), false);
+    assert.equal(await page.locator(panel).isVisible(), false);
+    releaseSession();
+    await page.locator(panel).waitFor({ state: "visible" });
+    assert.equal(await page.locator(inactive).isVisible(), false);
+  } finally { releaseSession(); await page.close(); }
+});
+
 test("SETUP-PAIR-01 REC-APPROVAL explicit displayed comparison survives unknown approval and reload without another pairing", async () => {
   requires("SETUP-PAIR-01", "SETUP-RESUME-01", "SETUP-UNKNOWN-01");
   const { page, state, count } = await fixture("setup?new=1", 390, { lostApproval: true });
@@ -422,6 +449,7 @@ test("UX-NAV-01 UX-OVERVIEW-01 six primary destinations and a bounded desktop in
     const messages = state.requests.filter(r => r.path === "/v1/owner/messages").length;
     await page.getByRole("link", { name: "Phones & lines", exact: true }).click();
     await page.waitForURL("**/owner/phones");
+    await page.locator("#phone-line-tools").waitFor({ state: "visible" });
     assert.equal(await page.locator("#phone-line-tools").isVisible(), true);
     assert.equal(await page.locator("#message-summary").isVisible(), false);
     await page.clock.fastForward(30000);

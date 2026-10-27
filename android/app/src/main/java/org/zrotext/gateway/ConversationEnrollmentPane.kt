@@ -21,7 +21,7 @@ import androidx.compose.ui.semantics.contentDescription
     status: String, export: String, chain: String,
     changePin: (String) -> Unit, changeFingerprint: (String) -> Unit, changeCompared: (Boolean) -> Unit,
     changeChain: (String) -> Unit, createReader: () -> Unit, reviewRoot: () -> Unit, confirmRoot: () -> Unit,
-    savePublicExport: () -> Unit
+    savePublicExport: () -> Unit, acceptInitialMessagingChain: () -> Unit = {}
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Enrollment is separate from pairing and content consent. Creating a reader keeps a private hardware key and local journal keys on this phone. Closing this screen stops pending work; it does not delete completed enrollment. No message is sent here.")
@@ -48,6 +48,9 @@ import androidx.compose.ui.semantics.contentDescription
         OutlinedTextField(value = chain, onValueChange = changeChain, enabled = !busy,
             label = { Text("Public initial manifest chain (base64 lines)") }, maxLines = 4,
             modifier = Modifier.fillMaxWidth())
+        Button(onClick = acceptInitialMessagingChain, enabled = !busy && chain.isNotBlank(),
+            modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Accept initial signed messaging chain") }
+        Text("For hosted messaging, connect using encrypted messaging first. This action verifies the initial02 chain against your already compared root and enrolled phone keys using that authenticated connection's clock. It does not approve a conversation or send a message.")
         if (status.isNotEmpty()) Text(status)
     }
 }

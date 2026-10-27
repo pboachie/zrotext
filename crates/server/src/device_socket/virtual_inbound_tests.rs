@@ -280,7 +280,10 @@ async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
                     let digest = header.strip_prefix("v1=").unwrap();
                     let digest = digest
                         .as_bytes()
-                        .chunks_exact(2)
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|chunk| chunk.as_slice())
                         .map(|pair| {
                             u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap()
                         })

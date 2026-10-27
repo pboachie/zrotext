@@ -96,7 +96,14 @@ fn digest(value: &str) -> Result<[u8; 32], ConversationError> {
         return Err(ConversationError::Invalid);
     }
     let mut out = [0; 32];
-    for (i, s) in value.as_bytes().chunks_exact(2).enumerate() {
+    for (i, s) in value
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|chunk| chunk.as_slice())
+        .enumerate()
+    {
         out[i] = u8::from_str_radix(
             std::str::from_utf8(s).map_err(|_| ConversationError::Invalid)?,
             16,

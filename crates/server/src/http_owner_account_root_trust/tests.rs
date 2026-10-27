@@ -22,8 +22,18 @@ impl Package {
             ),
             (
                 NAMES[2],
-                "import { fixture } from './draft02-manifest.js';\nexport function verifyContactReaderStatement01() {}",
+                "import { fixture } from './draft02-manifest.js';\nimport { origin } from './contact-origin.js';\nexport function verifyContactReaderStatement01() {}",
             ),
+            (
+                NAMES[3],
+                "import { domain } from './contact-idna16.js';\nexport function canonicalContactOrigin01() {}",
+            ),
+            (
+                NAMES[4],
+                "import { a } from './contact-idna16-table0.js';\nimport { b } from './contact-idna16-table1.js';\nexport function contactDomainASCII16() {}",
+            ),
+            (NAMES[5], "export const contactIdna16Table0=[];"),
+            (NAMES[6], "export const contactIdna16Table1=[];"),
         ] {
             fs::write(root.join("sdk").join(name), source).unwrap();
         }
@@ -63,6 +73,10 @@ async fn enabled_real_owner_composition_serves_only_fixed_public_assets() {
         "/v1/owner/account-root-trust-sdk/sdk/draft02-manifest.js",
         "/v1/owner/account-root-trust-sdk/sdk/draft02-trust-store.js",
         "/v1/owner/account-root-trust-sdk/sdk/contact-reader-statement.js",
+        "/v1/owner/account-root-trust-sdk/sdk/contact-origin.js",
+        "/v1/owner/account-root-trust-sdk/sdk/contact-idna16.js",
+        "/v1/owner/account-root-trust-sdk/sdk/contact-idna16-table0.js",
+        "/v1/owner/account-root-trust-sdk/sdk/contact-idna16-table1.js",
     ] {
         let response = router
             .clone()
@@ -119,6 +133,36 @@ async fn enabled_real_owner_composition_serves_only_fixed_public_assets() {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+}
+#[test]
+fn versioned_idna_sources_preserve_the_closed_module_graph() {
+    for (name, source) in [
+        (
+            NAMES[3],
+            include_str!("../../../../sdk/typescript/src/contact-origin.js"),
+        ),
+        (
+            NAMES[4],
+            include_str!("../../../../sdk/typescript/src/contact-idna16.js"),
+        ),
+        (
+            NAMES[5],
+            include_str!("../../../../sdk/typescript/src/contact-idna16-table0.js"),
+        ),
+        (
+            NAMES[6],
+            include_str!("../../../../sdk/typescript/src/contact-idna16-table1.js"),
+        ),
+    ] {
+        module_graph(name, source).unwrap();
+    }
+    for source in [
+        "import {a} from './other.js';\nexport function contactDomainASCII16() {}",
+        "import {a} from './contact-idna16-table0.js';\nimport {b} from './contact-idna16-table0.js';\nexport function contactDomainASCII16() {}",
+        "export function contactDomainASCII16(){return import('./contact-idna16-table0.js');}",
+    ] {
+        assert!(module_graph(NAMES[4], source).is_err());
     }
 }
 #[test]

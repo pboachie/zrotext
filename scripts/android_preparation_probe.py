@@ -26,8 +26,11 @@ HPKE_TEST = "org.zrotext.gateway.WolfHpkeKeystoreBridgeDeviceTest"
 HPKE_METHODS = frozenset({
     "enrolledRecipientExposesNonExportableAgreeKeyClaims",
     "crossClientSealOpensThroughNativeBridgeAndRejectsTampering",
+    "maintainedPublicSenderOpensThroughExistingKeystoreWithoutChangingCallerKey",
+    "maintainedSenderWithdrawalRefusesEveryWaitAndClearsTheScopedCallback",
     "lostRecipientKeyRefusesWithoutRegeneration",
     "revokedRecipientKeyRefusesLaterOpens",
+    "currentAdmissionRefusesAtEveryHardwareWaitAndCannotLeakTheGuardIntoAnotherOpen",
 })
 CUSTODY_METHOD = "payloadCustodyReloadNeverRecreatesLostOrRevokedIdentity"
 CUSTODY_TEST = TEST + "#" + CUSTODY_METHOD
@@ -226,8 +229,8 @@ def validate_custody_stage(output, baseline=False):
 
 
 def validate_maintained_provider(output):
-    """Accept only the four selected provider completions, with no failures/skips."""
-    verify_results(output, {HPKE_TEST: 4})
+    """Accept the exact complete provider class, with no failures or skips."""
+    verify_results(output, {HPKE_TEST: len(HPKE_METHODS)})
     methods = set(re.findall(r"^INSTRUMENTATION_STATUS: test=(.+)$", output, re.MULTILINE))
     if methods != HPKE_METHODS:
         raise ValueError("Wrong maintained provider methods")
@@ -384,7 +387,7 @@ def main():
             output = device("shell", "am", "instrument", "-w", "-r", "-e", "isolatedPreparationProbe", "true",
                             "-e", "class", HPKE_TEST, TEST_APP + "/" + RUNNER, timeout=420)
             validate_maintained_provider(output)
-            print("Maintained HPKE receiver: 4 tests; zero failures/skips; no radio")
+            print(f"Maintained HPKE provider: {len(HPKE_METHODS)} tests; zero failures/skips; no radio")
             def checked_stage(*arguments, **options):
                 # Re-check package custody after an optional reboot before
                 # invoking any retained synthetic-key stage.

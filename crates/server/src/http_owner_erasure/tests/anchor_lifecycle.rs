@@ -5,10 +5,10 @@ use super::*;
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; full authenticated erasure with held account fences"]
 async fn anchor_contention_rolls_back_users_sessions_content_and_account_deletion() {
     for tuple_lock in [false, true] {
-        let (admin, mut db, url, schema) = migrated_schema("anchor_contention").await;
+        current_case(async |db, _admin, url| {
         let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(24)).unwrap());
-        let (a, session, _b, _bsession, app) = fixture(&mut db, &hasher, &url, None).await;
-        let (mut blocker, driver) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        let (a, session, _b, _bsession, app) = fixture(db, &hasher, url, None).await;
+        let (mut blocker, driver) = zrotext_postgres_connection::connect(url)
             .await
             .unwrap();
         let driver = tokio::spawn(driver);
@@ -60,65 +60,65 @@ async fn anchor_contention_rolls_back_users_sessions_content_and_account_deletio
         drop(blocker);
         driver.await.unwrap().unwrap();
         assert!(
-            authenticate_session(&db, &hasher, &session.token)
+            authenticate_session(&*db, &hasher, &session.token)
                 .await
                 .is_ok()
         );
-        admin
-            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-            .await
-            .unwrap();
+        }).await;
     }
 }
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; missing lifecycle update refuses full erasure"]
 async fn an_uncommitted_tombstone_is_not_reported_as_successful_erasure() {
-    let (admin, mut db, url, schema) = migrated_schema("anchor_drift").await;
-    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(25)).unwrap());
-    let (a, session, _b, _bsession, app) = fixture(&mut db, &hasher, &url, None).await;
-    // Disposable corruption control, never a production repair or gate bypass.
-    db.batch_execute("DROP TRIGGER payload_profile_anchor_after_account_delete ON accounts")
-        .await
-        .unwrap();
-    let response = app
-        .oneshot(erasure_post(
-            Some(&session.token),
-            Some(&session.csrf_token),
-            Some(ORIGIN),
-            &crate::test_keys::password(1),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert!(
-        authenticate_session(&db, &hasher, &session.token)
+    current_case(async |db, admin, url| {
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(25)).unwrap());
+        let (a, session, _b, _bsession, app) = fixture(db, &hasher, url, None).await;
+        // Disposable corruption control, never a production repair or gate bypass.
+        crate::hosted_runtime_identity::require(&*db).await.unwrap();
+        admin
+            .batch_execute("DROP TRIGGER payload_profile_anchor_after_account_delete ON accounts")
             .await
-            .is_ok()
-    );
-    assert_eq!(
-        db.query_one(
-            "SELECT count(*) FROM accounts WHERE id=$1",
-            &[&a.account_id]
-        )
-        .await
-        .unwrap()
-        .get::<_, i64>(0),
-        1
-    );
-    assert_eq!(
-        db.query_one(
-            "SELECT state FROM payload_profile_account_anchors WHERE account_id=$1",
-            &[&a.account_id]
-        )
-        .await
-        .unwrap()
-        .get::<_, String>(0),
-        "live"
-    );
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
+            .unwrap();
+        assert!(crate::hosted_runtime_identity::require(&*db).await.is_err());
+        // Native graph refusal precedes deletion; historical lifecycle coverage
+        // separately proves that a missing committed tombstone is not success.
+        let response = app
+            .oneshot(erasure_post(
+                Some(&session.token),
+                Some(&session.csrf_token),
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            authenticate_session(&*db, &hasher, &session.token)
+                .await
+                .is_ok()
+        );
+        assert_eq!(
+            db.query_one(
+                "SELECT count(*) FROM accounts WHERE id=$1",
+                &[&a.account_id]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+            1
+        );
+        assert_eq!(
+            db.query_one(
+                "SELECT state FROM payload_profile_account_anchors WHERE account_id=$1",
+                &[&a.account_id]
+            )
+            .await
+            .unwrap()
+            .get::<_, String>(0),
+            "live"
+        );
+    })
+    .await;
 }

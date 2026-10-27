@@ -24,7 +24,12 @@ struct Input {
 fn parse(args: &[String]) -> Result<Input> {
     if args.len() != 13
         || args[0] != "archive-init"
-        || args[1..].chunks_exact(2).zip(FLAGS).any(|(p, f)| p[0] != f)
+        || args[1..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .zip(FLAGS)
+            .any(|(p, f)| p[0] != f)
     {
         return Err(());
     }

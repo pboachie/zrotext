@@ -16,5 +16,7 @@ sealed encryption or claim registry availability.
 err := webhook.Verify(key, timestamp, signature, rawBody, nowSeconds, 300)
 ```
 
-Run `go test ./...` and `go vet ./...` from this directory. Minimum Go: 1.22.
+Run `go test ./...` and `go vet ./...` from this directory. Source-language floor: Go 1.22.
+CI and archive qualification use Go 1.26.10; they do not qualify the unsupported
+Go 1.22 compiler.
 The monorepo module release tag must use the `sdk/native/go/v` prefix.

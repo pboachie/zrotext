@@ -25,7 +25,10 @@ def run(args,**kwargs):
 
 def environment(path):
     venv.EnvBuilder(with_pip=True).create(path)
-    return path/('Scripts/python.exe' if os.name=='nt' else 'bin/python')
+    python=path/('Scripts/python.exe' if os.name=='nt' else 'bin/python')
+    run([python,'-I',ROOT.parents[2]/'scripts/bootstrap_python_pip.py',
+         '--wheel-dir',path.parent/'pip-bootstrap'],cwd=path.parent)
+    return python
 
 
 def verify(wheel,sdist):
@@ -57,20 +60,20 @@ def main():
         for name in ('LICENSE','README.md','pyproject.toml','MANIFEST.in'):shutil.copyfile(ROOT/name,source/name)
         shutil.copytree(ROOT/PACKAGE,source/PACKAGE,ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
         builder=environment(temporary/'builder')
-        run([builder,'-m','pip','install','setuptools==84.0.0'],cwd=temporary)
+        run([builder,'-m','pip','--disable-pip-version-check','install','setuptools==84.0.0'],cwd=temporary)
         run([builder,'-c',"from setuptools.build_meta import build_wheel,build_sdist;build_wheel('dist');build_sdist('dist')"],cwd=source)
         wheel=next((source/'dist').glob('*.whl'));sdist=next((source/'dist').glob('*.tar.gz'))
         verify(wheel,sdist)
         alpha=None
         if args.alpha_source is not None:
             alpha_output=temporary/'alpha';alpha_output.mkdir()
-            run([builder,'-m','pip','wheel','--no-deps','--wheel-dir',alpha_output,args.alpha_source.resolve()],cwd=temporary)
+            run([builder,'-m','pip','--disable-pip-version-check','wheel','--no-deps','--wheel-dir',alpha_output,args.alpha_source.resolve()],cwd=temporary)
             alpha=next(alpha_output.glob('zrotext_client-0.1.7rc1-*.whl'))
         for i,artifact in enumerate((wheel,sdist)):
             python=environment(temporary/f'consumer-{i}')
-            run([python,'-m','pip','install',artifact],cwd=temporary)
-            if alpha is not None:run([python,'-m','pip','install',alpha],cwd=temporary)
-            run([python,'-m','pip','check'],cwd=temporary)
+            run([python,'-m','pip','--disable-pip-version-check','install',artifact],cwd=temporary)
+            if alpha is not None:run([python,'-m','pip','--disable-pip-version-check','install',alpha],cwd=temporary)
+            run([python,'-m','pip','--disable-pip-version-check','check'],cwd=temporary)
             probe='''import sys,json,importlib.metadata
 from pathlib import Path
 import zrotext_workflow as p

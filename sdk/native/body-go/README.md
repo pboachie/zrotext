@@ -14,4 +14,6 @@ guaranteed zeroization. Rust returns a borrow without copying plaintext.
 Native tests read the existing public `ztse-body-text-01.json` corpus directly.
 They also verify decomposed Unicode preservation and multibyte byte-length bounds.
 Run `cargo test --locked` in body-rust or `go test ./...` in body-go from a source
-checkout. Minimum toolchains: Rust 1.88 and Go 1.22. No registry release is claimed.
+checkout. Rust requires 1.88; the Go source-language floor remains 1.22.
+CI uses the supported Go 1.26.10 compiler, not the unsupported Go 1.22 compiler.
+No oldest-Go-compiler qualification or registry release is claimed.

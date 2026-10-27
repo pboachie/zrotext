@@ -8,7 +8,10 @@ use serde_json::Value;
 fn hex(s: &str) -> Vec<u8> {
     assert_eq!(s.len() % 2, 0);
     s.as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|chunk| chunk.as_slice())
         .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
         .collect()
 }

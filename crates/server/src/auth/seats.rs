@@ -156,7 +156,11 @@ async fn create_invitation_in(
     let id = Uuid::new_v4();
     let inserted = tx
         .execute(
-            "INSERT INTO seat_invitations(id,account_id,email,token_hash,expires_at) VALUES($1,$2,$3,$4,now()+($5::integer * interval '1 day'))",
+            concat!(
+                "INSERT INTO seat_invitations(id,account_id,email,token_hash,expires_at) VALUES($1,$2,$3,$4,now()+($5::integer * ",
+                elapsed_credential_day_sql!(),
+                "))"
+            ),
             &[&id, &account_id, &email, &&hash[..], &INVITATION_DAYS],
         )
         .await;

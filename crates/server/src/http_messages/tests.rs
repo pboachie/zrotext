@@ -26,6 +26,7 @@ fn get(path: &str, token: &str) -> Request<Body> {
 
 async fn owner(
     client: &mut Client,
+    setup: &Client,
     hasher: &TokenHasher,
     email: &str,
 ) -> (Uuid, Uuid, String, String, String) {
@@ -44,7 +45,7 @@ async fn owner(
         .await
         .unwrap();
     let device_id = Uuid::new_v4();
-    client
+    setup
         .execute(
             "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'fixture')",
             &[&device_id, &signup.account_id],
@@ -176,24 +177,30 @@ async fn billing_denials_have_distinct_http_codes() {
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn postgres_alpha_http_accept_status_cancel_are_tenant_and_device_scoped() {
-    let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
-        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
-    let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
-    tokio::spawn(async move { connection.await.unwrap() });
-    let schema = format!("http_messages_test_{}", Uuid::new_v4().simple());
-    setup
-        .batch_execute(&format!("CREATE SCHEMA {schema}"))
-        .await
-        .unwrap();
-    let url = format!("{base_url}?options=-csearch_path%3D{schema}");
-    let (mut client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
-    tokio::spawn(async move { connection.await.unwrap() });
-    crate::auth::test_schema::apply(&client).await;
+    let mut database = crate::test_database::Fixture::for_store("ZT_AUTH_TEST_DATABASE_URL").await;
+    let url = database.runtime_url.clone();
+    // Ordinary connections hold the real race barriers. The migration owner
+    // performs only synthetic seeding/DDL and never services an HTTP request.
+    let (mut ingress, ingress_driver) = database.another_runtime().await;
+    let (mut account_blocker, blocker_driver) = database.another_runtime().await;
+    let (mut binder, binder_driver) = database.another_runtime().await;
+    let (mut race_risk, risk_driver) = database.another_runtime().await;
+    let client = &mut database.owner;
     let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(51)).unwrap());
-    let (account_a, device_a, send_a, read_a, unbound_send_a) =
-        owner(&mut client, &hasher, "owner-a@example.test").await;
-    let (account_b, device_b, send_b, read_b, _) =
-        owner(&mut client, &hasher, "owner-b@example.test").await;
+    let (account_a, device_a, send_a, read_a, unbound_send_a) = owner(
+        &mut database.runtime,
+        client,
+        &hasher,
+        "owner-a@example.test",
+    )
+    .await;
+    let (account_b, device_b, send_b, read_b, _) = owner(
+        &mut database.runtime,
+        client,
+        &hasher,
+        "owner-b@example.test",
+    )
+    .await;
     let policy = Arc::new(
         AlphaPolicy::parse(
             Some("true"),
@@ -569,6 +576,13 @@ async fn postgres_alpha_http_accept_status_cancel_are_tenant_and_device_scoped()
         )
         .await
         .unwrap();
+    let budget_subject = auth::abuse_limits::subject_hash(
+        &hasher,
+        auth::abuse_limits::Limit::OutboundAccept,
+        &account_a.to_string(),
+        auth::abuse_limits::Lane::Anonymous,
+    )
+    .unwrap();
     for index in 0..60 {
         let mut churn = input.clone();
         let client_id = Uuid::new_v4();
@@ -603,6 +617,20 @@ async fn postgres_alpha_http_accept_status_cancel_are_tenant_and_device_scoped()
                 .status(),
             StatusCode::NO_CONTENT
         );
+        // Keep this synthetic window fresh: cumulative real HTTP/native
+        // transaction work can exceed a minute. Counts and subjects are never
+        // changed, so every real accept/cancel still proves that cancellation
+        // and key/device rotation do not refund or reset the account budget.
+        let charged = client
+            .query(
+                "UPDATE auth_abuse_counters SET window_started_at=clock_timestamp()
+                 WHERE scope='alpha_send' AND subject_hash=$1 RETURNING attempts",
+                &[&&budget_subject[..]],
+            )
+            .await
+            .unwrap();
+        assert_eq!(charged.len(), 1);
+        assert_eq!(charged[0].get::<_, i32>(0), index + 1);
     }
     let before: i64 = client
         .query_one(
@@ -690,8 +718,13 @@ async fn postgres_alpha_http_accept_status_cancel_are_tenant_and_device_scoped()
             .status(),
         StatusCode::NOT_FOUND
     );
-    let (metered_account, metered_device, metered_send, _, _) =
-        owner(&mut client, &hasher, "owner-metered@example.test").await;
+    let (metered_account, metered_device, metered_send, _, _) = owner(
+        &mut database.runtime,
+        client,
+        &hasher,
+        "owner-metered@example.test",
+    )
+    .await;
     client
             .execute(
                 "INSERT INTO usage_quota_policies(account_id,metric,limit_units,source) VALUES($1,'outbound_message',0,'stripe_test')",
@@ -796,8 +829,6 @@ async fn postgres_alpha_http_accept_status_cancel_are_tenant_and_device_scoped()
     // Billing ingress holds the customer before inserting a risk event.
     // Admission must wait on that customer without holding an account lock
     // that would block the event's account FK KEY SHARE lock.
-    let (mut ingress, ingress_connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
-    tokio::spawn(async move { ingress_connection.await.unwrap() });
     let risk_ingress = ingress.transaction().await.unwrap();
     let ingress_pid: i32 = risk_ingress
         .query_one("SELECT pg_backend_pid()", &[])
@@ -827,7 +858,7 @@ async fn postgres_alpha_http_accept_status_cancel_are_tenant_and_device_scoped()
     });
     let mut waiting_on_customer = false;
     for _ in 0..200 {
-        let blocked: i64 = client
+        let blocked: i64 = database.runtime
                 .query_one(
                     "SELECT count(*) FROM pg_stat_activity
                      WHERE query LIKE '%SELECT 1 FROM billing_customers WHERE account_id=$1 FOR SHARE%'
@@ -899,8 +930,13 @@ async fn postgres_alpha_http_accept_status_cancel_are_tenant_and_device_scoped()
             .collect::<Vec<_>>(),
         vec![0; 4]
     );
-    let (active_account, active_device, active_send, _, _) =
-        owner(&mut client, &hasher, "owner-active@example.test").await;
+    let (active_account, active_device, active_send, _, _) = owner(
+        &mut database.runtime,
+        client,
+        &hasher,
+        "owner-active@example.test",
+    )
+    .await;
     client
             .execute(
                 "INSERT INTO usage_quota_policies(account_id,metric,limit_units,source) VALUES($1,'outbound_message',1,'stripe_test')",
@@ -954,13 +990,15 @@ async fn postgres_alpha_http_accept_status_cancel_are_tenant_and_device_scoped()
             .collect::<Vec<_>>(),
         vec![1; 4]
     );
-    let (race_account, race_device, race_send, _, _) =
-        owner(&mut client, &hasher, "owner-race@example.test").await;
+    let (race_account, race_device, race_send, _, _) = owner(
+        &mut database.runtime,
+        client,
+        &hasher,
+        "owner-race@example.test",
+    )
+    .await;
     // Let admission observe no binding, then stop it on the account lock.
     // A new binding can commit while this KEY SHARE guard is held.
-    let (mut account_blocker, blocker_connection) =
-        tokio_postgres::connect(&url, NoTls).await.unwrap();
-    tokio::spawn(async move { blocker_connection.await.unwrap() });
     let account_guard = account_blocker.transaction().await.unwrap();
     let blocker_pid: i32 = account_guard
         .query_one("SELECT pg_backend_pid()", &[])
@@ -974,8 +1012,6 @@ async fn postgres_alpha_http_accept_status_cancel_are_tenant_and_device_scoped()
         )
         .await
         .unwrap();
-    let (mut binder, binder_connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
-    tokio::spawn(async move { binder_connection.await.unwrap() });
     let binding = binder.transaction().await.unwrap();
     binding
         .query_one(
@@ -1009,7 +1045,8 @@ async fn postgres_alpha_http_accept_status_cancel_are_tenant_and_device_scoped()
     });
     let mut waiting_on_account = false;
     for _ in 0..200 {
-        let blocked: i64 = client
+        let blocked: i64 = database
+            .runtime
             .query_one(
                 "SELECT count(*) FROM pg_stat_activity
                      WHERE query LIKE '%SELECT id FROM accounts WHERE id=$1 FOR UPDATE%'
@@ -1035,8 +1072,6 @@ async fn postgres_alpha_http_accept_status_cancel_are_tenant_and_device_scoped()
             .await
             .unwrap();
     binding.commit().await.unwrap();
-    let (mut race_risk, risk_connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
-    tokio::spawn(async move { risk_connection.await.unwrap() });
     let risk_tx = race_risk.transaction().await.unwrap();
     risk_tx
         .query_one(
@@ -1107,8 +1142,110 @@ async fn postgres_alpha_http_accept_status_cancel_are_tenant_and_device_scoped()
             .status(),
         StatusCode::NOT_FOUND
     );
-    setup
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+    for (client, driver) in [
+        (ingress, ingress_driver),
+        (account_blocker, blocker_driver),
+        (binder, binder_driver),
+        (race_risk, risk_driver),
+    ] {
+        crate::test_database::Fixture::close_connection(client, driver).await;
+    }
+    database.finish().await;
+}
+
+// This separate real-function control keeps the HTTP non-refund fixture's
+// synthetic fresh window from hiding the production sixty-second reset rule.
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; current public ordinary-runtime quota function"]
+async fn outbound_budget_expiry_resets_only_the_canonical_account_window() {
+    use auth::abuse_limits::{Lane, Limit, consume, subject_hash};
+    let database = crate::test_database::Fixture::for_store("ZT_AUTH_TEST_DATABASE_URL").await;
+    let hasher = TokenHasher::new(crate::test_keys::key(51)).unwrap();
+    let account = Uuid::new_v4().to_string();
+    let other_account = Uuid::new_v4().to_string();
+    let subject = subject_hash(&hasher, Limit::OutboundAccept, &account, Lane::Anonymous).unwrap();
+    let other = subject_hash(
+        &hasher,
+        Limit::OutboundAccept,
+        &other_account,
+        Lane::Anonymous,
+    )
+    .unwrap();
+    for _ in 0..60 {
+        assert!(
+            consume(
+                &database.runtime,
+                &hasher,
+                Limit::OutboundAccept,
+                Some(&account)
+            )
+            .await
+            .unwrap()
+        );
+    }
+    assert!(
+        !consume(
+            &database.runtime,
+            &hasher,
+            Limit::OutboundAccept,
+            Some(&account)
+        )
         .await
-        .unwrap();
+        .unwrap()
+    );
+    assert!(
+        consume(
+            &database.runtime,
+            &hasher,
+            Limit::OutboundAccept,
+            Some(&other_account)
+        )
+        .await
+        .unwrap()
+    );
+    let untouched: String = database.owner.query_one(
+        "SELECT row_to_json(c)::text FROM auth_abuse_counters c WHERE scope='alpha_send' AND subject_hash=$1",
+        &[&&other[..]],
+    ).await.unwrap().get(0);
+    let expired = database.owner.query(
+        "UPDATE auth_abuse_counters SET window_started_at=clock_timestamp()-interval '61 seconds'
+         WHERE scope='alpha_send' AND subject_hash=$1 RETURNING attempts",
+        &[&&subject[..]],
+    ).await.unwrap();
+    assert_eq!(expired.len(), 1);
+    assert_eq!(expired[0].get::<_, i32>(0), 60);
+    assert!(
+        consume(
+            &database.runtime,
+            &hasher,
+            Limit::OutboundAccept,
+            Some(&account)
+        )
+        .await
+        .unwrap()
+    );
+    let reset = database.owner.query_one(
+        "SELECT attempts,window_started_at>clock_timestamp()-interval '60 seconds' FROM auth_abuse_counters
+         WHERE scope='alpha_send' AND subject_hash=$1",
+        &[&&subject[..]],
+    ).await.unwrap();
+    assert_eq!(reset.get::<_, i32>(0), 1);
+    assert!(reset.get::<_, bool>(1));
+    assert_eq!(database.owner.query_one(
+        "SELECT row_to_json(c)::text FROM auth_abuse_counters c WHERE scope='alpha_send' AND subject_hash=$1",
+        &[&&other[..]],
+    ).await.unwrap().get::<_, String>(0), untouched);
+    assert_eq!(
+        database
+            .owner
+            .query_one(
+                "SELECT count(*) FROM auth_abuse_counters WHERE scope='alpha_send'",
+                &[]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        2
+    );
+    database.finish().await;
 }

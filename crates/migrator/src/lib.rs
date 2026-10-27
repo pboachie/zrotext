@@ -16,6 +16,7 @@ mod owner_queue_index;
 mod pending_recipient_index;
 mod radio_evidence_index;
 mod recent_attempt_index;
+mod restore107_compat;
 use abuse_counters_index_drop::*;
 use admission_pending_index::*;
 use conversation_erasure_fk_indexes::*;
@@ -92,6 +93,8 @@ WHERE ns.nspname = 'public' AND idx.relname = 'messages_in_flight_updated'
 
 #[derive(Debug, Error)]
 pub enum MigrationError {
+    #[error("migration 107 restore compatibility refused: {0}")]
+    Restore107Compatibility(&'static str),
     #[error("migration file error: {0}")]
     File(#[from] std::io::Error),
     #[error("invalid migration directory: {0}")]
@@ -489,6 +492,13 @@ async fn apply_locked(
             prepare_conversation_erasure_fk_indexes(client).await?;
         }
         let tx = client.transaction().await?;
+        if migration.version == 108
+            && migration.filename == "108_payload_profile_writer_fences.sql"
+            && ledger.len() == 107
+            && (1..=107).all(|version| ledger.contains_key(&version))
+        {
+            restore107_compat::prepare(&tx, &migration.sql, migrations).await?;
+        }
         if let Err(error) = tx.batch_execute(&migration.sql).await {
             // Dropping the transaction closes it without committing the failed file.
             return Err(MigrationError::Database(error));
@@ -973,11 +983,15 @@ mod radio_evidence_index_tests;
 #[cfg(test)]
 mod recent_attempt_index_tests;
 #[cfg(test)]
+mod restore107_compat_tests;
+#[cfg(test)]
 mod review_workspace_tests;
 #[cfg(test)]
 mod user_membership_tests;
 #[cfg(test)]
 mod webhook_history_index_tests;
+#[cfg(test)]
+mod writer_policy_tests;
 
 #[cfg(test)]
 mod tests {

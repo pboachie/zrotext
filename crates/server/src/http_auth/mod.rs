@@ -58,7 +58,7 @@ pub use trusted_cidrs::TrustedNetworks;
 
 pub(crate) const SESSION_COOKIE: &str = "__Host-zrotext_session";
 pub(crate) const CSRF_COOKIE: &str = "__Host-zrotext_csrf";
-const CSRF_HEADER: &str = "x-zrotext-csrf";
+pub(crate) const CSRF_HEADER: &str = "x-zrotext-csrf";
 /// Argon2id uses 64 MiB per operation, so a process runs at most this many
 /// password hashes at once.
 const HASH_PERMITS: usize = 2;

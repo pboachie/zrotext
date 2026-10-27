@@ -210,15 +210,19 @@ Content/state rules must distinguish effect creation from invalidation:
 
 ## Required inventory and acceptance before mounting
 
-`profile03-writer-inventory-candidate.json` pins the numbered migration104
-catalog: 168 public relations. The original migration101 inventory has 158
-relations; migration102 adds five closed review-foundation classifications and
-migration104 adds five review-access classifications. Migration103 changes the
-existing user/member trigger graph without adding a relation. Its CI fixture
-runs the actual migrator in
-a unique database and compares column shape, FK edges and trigger definitions.
-These are extraction **review obligations**, not installed policies. The hashes
-do not replace exact function-body, privilege, state or cryptographic checks.
+`profile03-writer-inventory-candidate.json` pins the numbered migration111
+catalog:186 public relations, each with an extraction class and explicit
+operation policy. Migrations108/109 provide mandatory writer participation and
+original activation retention;110 adds the narrow first-election ledger and
+positive-epoch policy;111 retains separate same-phone physical approval and
+installation without changing that epoch or permitting message effects.
+Its fixture runs the actual migrator in a unique database
+and compares column shape, FK edges and trigger definitions. Separate closed
+validators pin bodies, declarations, rules, inheritance, RLS and privileges.
+These structural checks do not replace cryptographic authentication or current
+permission. See `docs/profile03-atomic-election-storage.md` for the bounded
+initial selection and `docs/profile03-selection-refresh-storage.md` for the
+separate physical selection and production-adapter obligations.
 
 | Extraction class | Required treatment before installation |
 |---|---|
@@ -302,3 +306,45 @@ same-root manifest successor. Password login or one phone's acceptance does not
 qualify a different reviewer's nonexportable key or current line. This first
 upgrade contract cannot supply that operation by widening E500 or resetting
 authority.
+
+
+### Retained same-root03 successor storage
+
+The112 candidate storage retains exact signed successor ancestry after the
+original election. Browser role5 enrollment, same-point signed key-window
+renewal and explicit current-line browser replacement share one narrow receipt
+factory. Receipt, authority tip, accepted history, purpose-separated unique
+signing-point claim and actual stable-anchor tuple version commit together.
+Original historical bytes and current content contexts never translate.
+
+A full-prefix commitment binds original root-signature bytes, possession
+signatures and actual acceptance checkpoints for independently verified cache
+provenance. It is no authentication or effect witness. Complete ancestry
+verification, bounded transport pages and local highwater, current owner/phone
+adapters and content/effect paths remain separate integration work. See
+[manifest successor storage](../../docs/profile03-manifest-successors.md).
+# Original content consent storage
+
+Migration113 retains additive ZTCA03 consent reservations, exact owner/phone
+proofs, installed acknowledgement and separately attributed owner/device
+withdrawal. Its six narrow methods and closed ordinary-runtime capability
+checks are storage primitives. Genuine authentication, fresh owner request
+step-up, original signatures, local private custody and current physical/source
+selection remain independent adapter obligations. An interval phase does not
+authorize a reviewed send, grant, fetch or radio effect. Those typed paths remain
+separate; no legacy conversation02 permission is inferred or translated.
+
+## Original reviewed-message admission storage
+
+Migration114 adds a distinct `sealed_profile03` initial queue path coupled to an
+immutable reviewed-intent sidecar, exact installed interval, sole ciphertext,
+authenticated segment ceiling and one actual existing outbound quota reservation.
+Deferred checks require the complete same-transaction queue and initial job;
+NULL or substituted ceilings refuse. Configured finite manual self-hosted quotas
+remain supported without a hosted paid subscription. Genuine owner/current
+selection, role5 and envelope verification and the actual billing adapter remain
+independent obligations. Admission does not unlock claim, grant, fetch or effects.
+Exact historical retries never requeue or renew authority. Actual content erasure
+clears the personal original intent/signature/peer together and retains replay
+hashes and original context. See
+[reviewed admission storage](../../docs/profile03-reviewed-admission-storage.md).

@@ -37,6 +37,7 @@ internal class InstalledSelectedLineV2 private constructor(
 ) {
     @Volatile private var retired = false
     internal val selected get() = lease.selected
+    internal val refresh03 get() = permit.refresh03
     fun isCurrent(): Boolean = !retired && lease.isCurrent() && owner.isInstalled(this) &&
         permit.installationCurrent() && !retired && lease.isCurrent()
     internal fun matches(binding: LocalLineBinding): Boolean = record.matchesBinding(binding) && isCurrent()
@@ -156,6 +157,10 @@ internal object LineActivationV2SelectedLineMount {
     fun lookup(binding: LocalLineBinding) = owner?.lookup(binding)
     fun retireAtEntry() { owner?.retireAtEntry() }
     fun retireInstalled() { owner?.retireInstalled() }
+    internal fun publishRefresh(permit: LineActivationV2PublicationPermit): InstalledSelectedLineV2? {
+        require(permit.refresh03 != null)
+        return owner?.publish(permit)
+    }
     fun permissionLost() { owner?.permissionLost() }
     fun selectCurrent() { owner?.selectCurrent() }
 }

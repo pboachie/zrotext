@@ -90,6 +90,19 @@ for maintenance windows. Two past examples show the shape of these: migration
 and the inbound pilot required draining pre-retention-change workers (both
 described in [Self-hosting](../../docs/SELF-HOSTING.md)).
 
+For a PostgreSQL 18.6 logical restore at migration 107, the migrator recognizes
+one exact, reviewed catalog representation produced by dump and restore. It
+reconstructs three equivalent validated CHECK constraints inside the same
+transaction as migration 108, then runs migration 108's original guards. The
+historical migration files and ledger checks remain unchanged. Other catalog
+shapes and unsupported constraint metadata are refused. This restored form is
+recognized only on PostgreSQL 18.6; the migrator does not attempt general schema
+repair. The reconstruction takes
+exclusive locks on the affected tables and validates existing rows, so an upgrade
+may fail closed if the existing lock or statement deadlines are exceeded. Rehearse
+the exact backup and target image before upgrading; do not remove constraints or
+alter the migration ledger to bypass a refusal.
+
 ## Upgrade sequence
 
 The Compose file already orders the stack correctly: `migrate` runs to

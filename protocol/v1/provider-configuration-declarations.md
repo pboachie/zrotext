@@ -110,22 +110,32 @@ this inventory. The optional export is empty on a wholly absent schema, after
 the same current-owner fence; a supplied cursor then is not found. A partial
 schema refuses export. Current details remain a separately authenticated read.
 
-The maintained full account erasure deletes mutation, version and head rows in
-its existing password/MFA/current-session transaction. Missing schema contributes
-no rows; partial schema fails and rolls back the erasure. No cross-account
+The candidate deletion helper orders mutation, version and head deletion inside
+the caller's transaction. Its historical SQL tests retain exact deletion counts
+and account isolation; they do not establish current HTTP erasure support for an
+installed proposal. The current native erasure route refuses the unsupported
+legacy proposal installation without changing its business rows. On the stock
+numbered schema, the wholly absent proposal contributes no rows and ordinary
+account export and erasure remain available. A partial proposal is rejected by
+the candidate deletion helper as well as its export helper. No cross-account
 identity retention or global configuration tombstone is promised after complete
 account deletion. This cut adds no financial attempt or unknown-liability rows.
 
 ## Validation and remaining integration
 
 Pure tests cover typed duplicate/escaped-alias rejection, bounds and replay
-commitments. Discoverable PostgreSQL tests apply all maintained migrations in
-unique disposable schemas, then explicitly install the unnumbered proposal.
-They use actual register, email verification, login and session authentication,
-the candidate router, maintained owner export and password-proven account
-erasure. Controls cover CAS/replay, current-owner loss, account isolation,
-absence/partial installation, immutable scrub and deferred rollback, version
-limits, pagination and all 64 reserved withdrawals at the full 1,024 cap.
+commitments. Historical PostgreSQL fixtures apply the complete prefix through
+migration 107 in unique disposable schemas, then explicitly install the
+unnumbered proposal. They use actual registration, email verification, login,
+session authentication, the candidate router and maintained metadata export.
+Wrong-password refusal and native erasure refusal are HTTP controls; successful
+candidate deletion is a separate historical SQL proof using the real deletion
+helper and shared ordered account-erasure statements. A separate current public
+installation with the unchanged numbered migrations and stock runtime role proves
+successful export and account erasure when the proposal is wholly absent.
+Controls retain CAS/replay, current-owner loss, account isolation, absence/partial
+installation, immutable scrub and deferred rollback, version limits, pagination
+and all 64 reserved withdrawals at the full 1,024 cap.
 
 Installing a numbered schema, mounting a router, presenting an ordinary owner
 review journey, verifying provider identity/eligibility, accepting processing and

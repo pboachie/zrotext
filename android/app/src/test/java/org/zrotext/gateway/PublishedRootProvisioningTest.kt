@@ -32,8 +32,11 @@ class PublishedRootProvisioningTest {
         override fun open(ciphertext: ByteArray) = Draft02RootStateCipher.open(key, aad, ciphertext)
         override fun write(ciphertext: ByteArray, preCommit: () -> Unit) { preCommit(); this.ciphertext = ciphertext.copyOf() }
     }
-    private fun session(account: String, store: EncryptedMemory, current: () -> Unit) =
-        ConversationEnrollmentSession(account, current, { error("Reader creation forbidden") }, store, { error("Content protection forbidden") })
+    private fun session(account: String, store: EncryptedMemory, current: () -> Unit): ConversationEnrollmentSession {
+        val lifetime = EnrollmentStorageLifetime()
+        return ConversationEnrollmentSession(account, { lifetime.validateOutsideStorage(current) }, lifetime::requireCurrent,
+            { error("Reader creation forbidden") }, store, { error("Content protection forbidden") }, lifetime::close)
+    }
     private fun denied(action: () -> Unit) {
         try { action(); fail("Expected provisioning refusal") }
         catch (_: IllegalArgumentException) {} catch (_: IllegalStateException) {}

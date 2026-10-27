@@ -131,8 +131,8 @@ zrotext-webhook = { version = "=0.1.0", registry = "candidate" }
 
 
 def go(stage, output, env):
-    if "go1.22.12 " not in run("go", "version", env=env, capture_output=True, text=True).stdout:
-        raise ValueError("Go 1.22.12 required")
+    if "go1.26.10 " not in run("go", "version", env=env, capture_output=True, text=True).stdout:
+        raise ValueError("Go 1.26.10 required")
     source = stage_source(stage, "go")
     if (source / "go.mod").read_text().split() != ["module", MODULE, "go", "1.22"]:
         raise ValueError("Expected dependency-free module without overrides")
@@ -194,7 +194,7 @@ def main():
         report = {"experimental": True, "published": False, "language": args.language,
                   "license": "AGPL-3.0-only", "version": VERSION, "artifact": artifact.name,
                   "runtime_requirement": "Rust 1.88.0" if args.language == "rust" else "Go 1.22",
-                  "tested_toolchain": "Rust/Cargo 1.88.0" if args.language == "rust" else "Go 1.22.12",
+                  "tested_toolchain": "Rust/Cargo 1.88.0" if args.language == "rust" else "Go 1.26.10",
                   "public_registry_dependencies": {"crates.io": {"hmac": "0.12", "sha2": "0.10"}} if args.language == "rust" else {},
                   "tungsten_runtime_dependency": False,
                   "consumer_lock_scope": "qualification-only; temporary candidate registry" if args.language == "rust" else "module content checksums",

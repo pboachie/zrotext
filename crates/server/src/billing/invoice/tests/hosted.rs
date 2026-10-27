@@ -346,7 +346,7 @@ async fn hosted_final_expiry_and_legacy_risk_rollback_message_and_device() {
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated hosted invoice schema"]
 async fn concurrent_hosted_attempts_serialize_the_last_existing_invoice_unit() {
     let (mut case, gate, _) = installed().await;
-    case.send("prior hosted unit").await.unwrap();
+    reserve_historical_unit(&mut case, &gate).await;
     let mut other = case.connect().await;
     let first = Uuid::new_v4();
     let second = Uuid::new_v4();
@@ -417,11 +417,7 @@ async fn concurrent_hosted_attempts_serialize_the_last_existing_invoice_unit() {
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated hosted invoice schema"]
 async fn hosted_renewal_retains_original_attribution_and_unresolved_carry() {
     let (mut case, gate, scope) = installed_horizon(30).await;
-    let old = case
-        .send("old unresolved hosted invoice")
-        .await
-        .unwrap()
-        .message_id;
+    let old = reserve_historical_unit(&mut case, &gate).await;
     let original: Uuid = case
         .db
         .query_one(
@@ -589,6 +585,25 @@ async fn hosted_lease_expiring_during_actual_invoice_lock_wait_refuses() {
         0
     );
     case.cleanup().await;
+}
+
+// This suite exercises the explicit pre-runtime admission contract, not the
+// current native-identity Store. Its setup uses the same historical admission
+// and canonical ledger writes as the concurrent/replay assertions below.
+async fn reserve_historical_unit(case: &mut Case, gate: &Gate) -> Uuid {
+    let message = Uuid::new_v4();
+    let tx = case.db.transaction().await.unwrap();
+    let prepared = admission::prepare(&tx, gate, case.account).await.unwrap();
+    admission::outbound(&tx, gate, &prepared, message, false)
+        .await
+        .unwrap();
+    write_existing_ledger(&tx, case.account, case.device, message).await;
+    admission::outbound(&tx, gate, &prepared, message, true)
+        .await
+        .unwrap();
+    drop(prepared);
+    tx.commit().await.unwrap();
+    message
 }
 
 async fn write_existing_ledger(tx: &Transaction<'_>, account: Uuid, device: Uuid, id: Uuid) {

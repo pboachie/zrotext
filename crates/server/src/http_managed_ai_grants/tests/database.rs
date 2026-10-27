@@ -547,43 +547,107 @@ async fn owner_export_pages_grants_twenty_at_a_time_with_real_account_isolation(
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; unique disposable managed-grant schema"]
-async fn maintained_erasure_reports_six_child_counts_and_later_failure_rolls_back() {
-    Fixture::run(async |f| {
-    f.install_candidate().await;
-    f.synthetic_grant(&request_scope(), 1).await;
-    let before = f.counts().await;
-    let app = crate::http_owner_erasure::router(crate::http_owner_erasure::OwnerErasureState {
-        database_url: f.url.clone(),
-        auth_hasher: f.hasher.clone(),
-        canonical_origin: ORIGIN.into(),
-        mfa_cipher: None,
-    });
-    f.db.batch_execute("CREATE FUNCTION synthetic_reject_account_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic erasure rollback'; END $$; CREATE TRIGGER synthetic_reject_account_delete BEFORE DELETE ON accounts FOR EACH ROW EXECUTE FUNCTION synthetic_reject_account_delete()").await.unwrap();
-    let body = json!({"current_password":f.owner.password,"code":null});
-    let response = f.send(app.clone(), "/v1/owner/erasure", body.clone()).await;
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(f.counts().await, before);
-    f.db.batch_execute("DROP TRIGGER synthetic_reject_account_delete ON accounts; DROP FUNCTION synthetic_reject_account_delete()").await.unwrap();
-    let response = f.send(app, "/v1/owner/erasure", body).await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let erased = json_response(response).await;
-    let deleted = erased["deleted"].as_array().unwrap();
-    for (i, table) in crate::managed_ai::lifecycle::TABLES.iter().enumerate() {
-        let entry = deleted.iter().find(|v| v["table"] == *table).unwrap();
-        assert_eq!(entry["rows"], before[i]);
-    }
-    assert_eq!(f.counts().await, [0; 6]);
-    assert_eq!(
-        f.db.query_one(
-            "SELECT count(*) FROM accounts WHERE id=$1",
-            &[&f.owner.principal.tenant.account_id()]
-        )
-        .await
-        .unwrap()
-        .get::<_, i64>(0),
-        0
-    );
-
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; disposable current public database and roles"]
+async fn current_erasure_refuses_unpromoted_managed_candidate_without_row_changes() {
+    Fixture::run_current(async |f| {
+        crate::hosted_runtime_identity::require(&f.db).await.unwrap();
+        {
+            let mut client = crate::runtime_db::connect(&f.url).await.unwrap();
+            crate::http_owner_erasure::begin_erasure_transaction(&mut client)
+                .await.unwrap().rollback().await.unwrap();
+        }
+        let graph_matches = async |db: &tokio_postgres::Client| {
+            db.query_one("SELECT graph_sha256=public.payload_profile_writer_graph() FROM public.payload_profile_writer_catalog WHERE singleton", &[])
+                .await.unwrap().get::<_, bool>(0)
+        };
+        assert!(graph_matches(&f.db).await);
+        f.install_candidate().await;
+        f.synthetic_grant(&request_scope(), 1).await;
+        assert_eq!(f.counts().await, [1; 6]);
+        let before = f.erasure_rows().await;
+        assert!(!graph_matches(&f.db).await);
+        assert!(matches!(crate::hosted_runtime_identity::require(&f.db).await,
+            Err(crate::hosted_runtime_identity::IdentitySchemaError::Invalid)));
+        {
+            let mut client = crate::runtime_db::connect(&f.url).await.unwrap();
+            assert!(matches!(crate::http_owner_erasure::begin_erasure_transaction(&mut client).await,
+                Err(crate::runtime_db::ConnectError::Identity)));
+        }
+        // No synthetic failure trigger: the candidate itself invalidates the
+        // closed current graph before any erasure business work is admitted.
+        let app = crate::http_owner_erasure::router(crate::http_owner_erasure::OwnerErasureState {
+            database_url: f.url.clone(),
+            auth_hasher: f.hasher.clone(),
+            canonical_origin: ORIGIN.into(),
+            mfa_cipher: None,
+        });
+        let response = f.send(app, "/v1/owner/erasure",
+            json!({"current_password":f.owner.password,"code":null})).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        assert!(!response.headers().contains_key(header::SET_COOKIE));
+        assert_eq!(json_response(response).await, json!({"code":"unavailable"}));
+        assert_eq!(f.counts().await, [1; 6]);
+        assert_eq!(f.erasure_rows().await, before);
     }).await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; disposable current public database and roles"]
+async fn current_erasure_preserves_ordinary_managed_candidate_absence() {
+    Fixture::run_current(async |f| {
+        let tx = crate::runtime_db::begin_native(&mut f.db).await.unwrap();
+        assert!(!crate::managed_ai::lifecycle::installed(&tx).await.unwrap());
+        tx.rollback().await.unwrap();
+        let app = crate::http_owner_erasure::router(crate::http_owner_erasure::OwnerErasureState {
+            database_url: f.url.clone(),
+            auth_hasher: f.hasher.clone(),
+            canonical_origin: ORIGIN.into(),
+            mfa_cipher: None,
+        });
+        let response = f
+            .send(
+                app,
+                "/v1/owner/erasure",
+                json!({"current_password":f.owner.password,"code":null}),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let report = json_response(response).await;
+        let deleted = report["deleted"].as_array().unwrap();
+        assert!(deleted.iter().all(|row| {
+            !row["table"]
+                .as_str()
+                .unwrap()
+                .starts_with("managed_reader_")
+        }));
+        assert_eq!(
+            deleted
+                .iter()
+                .find(|row| row["table"] == "accounts")
+                .unwrap()["rows"],
+            1
+        );
+        assert_eq!(
+            deleted
+                .iter()
+                .find(|row| row["table"] == "sessions")
+                .unwrap()["rows"],
+            1
+        );
+        for (table, id) in [
+            ("accounts", f.owner.principal.tenant.account_id()),
+            ("sessions", f.owner.principal.session_id),
+        ] {
+            assert_eq!(
+                f.db.query_one(&format!("SELECT count(*) FROM {table} WHERE id=$1"), &[&id])
+                    .await
+                    .unwrap()
+                    .get::<_, i64>(0),
+                0
+            );
+        }
+    })
+    .await;
 }

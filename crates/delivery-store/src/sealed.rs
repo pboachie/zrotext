@@ -12,6 +12,9 @@ use sha2::{Digest, Sha256};
 use tokio_postgres::Transaction;
 use uuid::Uuid;
 
+mod profile03;
+pub use profile03::Profile03QueueInput;
+
 pub struct CandidateQueueInput<'a> {
     pub message_id: Uuid,
     pub device_id: Uuid,

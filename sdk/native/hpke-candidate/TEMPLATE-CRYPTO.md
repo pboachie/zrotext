@@ -1,6 +1,6 @@
 # Candidate encrypted templates
 
-Rust `template_crypto` and Go `EncryptedTemplateScope` implement ZTWT01 AES128-GCM HPKE templates using the existing native P-256/HKDF-SHA256 suite. Rust requires 1.97.1; Go requires 1.26.9. Dependencies and licenses are unchanged.
+Rust `template_crypto` and Go `EncryptedTemplateScope` implement ZTWT01 AES128-GCM HPKE templates using the existing native P-256/HKDF-SHA256 suite. Rust requires 1.99.1; Go requires 1.26.10. Dependencies and licenses are unchanged.
 
 The caller supplies independent scope, a root-pinned verified profile02 manifest, and trusted comparison time. Scope includes account/device/line/interval/template identifiers, binding generation, revision, expiry, trust generation, manifest version, peer digest, reader identifier and manifest digest. The exact 222-byte scope encoding is authenticated as AAD and included in the HPKE info domain. The selected active role2 reader must have workflow scope8; an active role4 workflow signer with exact scope2 must match device and line. Expiry must be future and within thirty days. Comparison cannot precede the manifest's verified comparison.
 

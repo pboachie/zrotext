@@ -1,22 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Current runtime isolation remains mandatory beside historical contract tests.
-use super::fixture::connect;
 use tokio_postgres::error::SqlState;
 use uuid::Uuid;
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; complete schema and both installation orders"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; current public schema and both installation orders"]
 async fn current_runtime_refuses_legacy_billing_mixtures_in_both_installation_orders() {
-    let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL").unwrap();
     for legacy_first in [true, false] {
-        let db = connect(&url).await;
-        let schema = format!("hosted_isolation_{}", Uuid::new_v4().simple());
-        db.batch_execute(&format!(
-            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
-        ))
-        .await
-        .unwrap();
-        crate::auth::test_schema::apply(&db).await;
+        let fixture = crate::test_database::Fixture::for_store("ZT_AUTH_TEST_DATABASE_URL").await;
+        let db = &fixture.owner;
         assert!(
             db.query_one("SELECT hosted_runtime_schema_ready()", &[])
                 .await
@@ -47,8 +39,6 @@ async fn current_runtime_refuses_legacy_billing_mixtures_in_both_installation_or
             .unwrap();
         assert_eq!(counts.get::<_, i64>(0), i64::from(legacy_first));
         assert_eq!(counts.get::<_, i64>(1), i64::from(!legacy_first));
-        db.batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-            .await
-            .unwrap();
+        fixture.finish().await;
     }
 }

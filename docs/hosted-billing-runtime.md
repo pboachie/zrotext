@@ -51,6 +51,9 @@ the proof to the backend start time. Nonces are single use and expire after
 60 seconds; a fresh challenge first invalidates previous trust. Protected
 functions fix their search path to `pg_catalog`, the exact installation schema,
 then `pg_temp`. Custom settings are dispatch hints and confer no authority.
+Migration116 adds native invoker defaults and an exact-transaction entry before
+each protected business transaction. Checkout proof alone does not prepare a
+later transaction. See [the storage and caller boundary](hosted-native-transaction-identity.md).
 
 ## Owner journey and interrupted checkout
 
@@ -155,10 +158,10 @@ these explicit storage classifications:
 | `hosted_billing_namespaces` | Operator provisioned deployment identity; immutable namespace/mode/account, explicit revision/fence, application can only latch review. |
 | `hosted_runtime_secrets`, `hosted_runtime_sessions` | Owner-only proof state; no ordinary role relation or column privileges. |
 
-The profile03 candidate hash inventory remains its separate reviewed 104
-baseline. These additive classifications and guards do not install a new payload
-profile policy, advance selection epochs, or replace its combined-inventory
-qualification. A focused disposable fixture on an earlier baseline is not
-whole-migrator qualification. Provider/account acceptance, physical phone/carrier
+The combined profile03 writer inventory evolves with each numbered schema;
+migration116 also classifies its transient native requests and transaction entries
+as global backend-proof state. These identity records do not grant payload
+authority or advance selection epochs. A focused disposable fixture on an earlier
+baseline is not whole-migrator qualification. Provider/account acceptance, physical phone/carrier
 behavior, credentials, activation and deployment require separate authorized
 validation; source tests do not establish them.

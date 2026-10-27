@@ -5,6 +5,8 @@ use super::{super::ConversationError, store};
 use tokio_postgres::{GenericClient, Transaction, types::Type};
 use uuid::Uuid;
 #[cfg(test)]
+mod current_tests;
+#[cfg(test)]
 mod tests;
 fn reject() -> ConversationError {
     ConversationError::Forbidden
@@ -257,11 +259,18 @@ pub(crate) async fn installed<C: GenericClient + Sync>(db: &C) -> Result<bool, C
             return Err(reject());
         }
     }
+    // Migration108 adds exactly its mandatory writer trigger. Recognize that
+    // pair only after the shared validator proves this table's complete public
+    // graph and pinned writer implementation; a matching name alone is not
+    // readiness. Historical pre-writer schemas retain the single-trigger rule.
+    let writers = crate::payload_profile_writer::optional(db, "owner_android_proposals")
+        .await
+        .map_err(|_| reject())?;
     let trigger_count: i64 = db.query_one(
         "SELECT count(*) FROM pg_trigger WHERE tgrelid=to_regclass('owner_android_proposals') AND NOT tgisinternal",
         &[],
     ).await?.get(0);
-    if trigger_count != 1 {
+    if trigger_count != 1 + i64::from(writers) {
         return Err(reject());
     }
     let trigger=db.query_opt("SELECT p.prosrc FROM pg_trigger t JOIN pg_proc p ON p.oid=t.tgfoid JOIN pg_language l ON l.oid=p.prolang WHERE t.tgrelid=to_regclass('owner_android_proposals') AND t.tgname='owner_android_proposals_immutable' AND NOT t.tgisinternal AND t.tgenabled='O' AND t.tgtype=19 AND t.tgqual IS NULL AND t.tgnargs=0 AND cardinality(t.tgattr::smallint[])=0 AND t.tgconstraint=0 AND p.proname='reject_owner_android_proposal_update' AND p.pronamespace=$1 AND p.pronargs=0 AND p.prorettype='trigger'::regtype AND p.prokind='f' AND NOT p.prosecdef AND NOT p.proisstrict AND NOT p.proleakproof AND p.provolatile='v' AND p.proparallel='u' AND p.proconfig IS NULL AND l.lanname='plpgsql'",&[&namespace]).await?.ok_or_else(reject)?;

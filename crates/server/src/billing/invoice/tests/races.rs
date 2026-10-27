@@ -3,7 +3,7 @@ use super::*;
 use zrotext_delivery_store::{DeliveryStore, NewMessage, StoreError};
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; uses a unique disposable schema"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; disposable current public database"]
 async fn concurrent_admission_wins_exactly_one_remaining_invoice_unit() {
     let mut case = Case::new().await;
     let paid = case.observation("active", "paid", "subscription_cycle");
@@ -38,22 +38,24 @@ async fn concurrent_admission_wins_exactly_one_remaining_invoice_unit() {
         .unwrap()
         .get(0);
     assert_eq!(reserved, 2);
+    drop(first);
+    drop(second);
     case.cleanup().await;
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; uses a unique disposable schema"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; disposable current public database"]
 async fn audit_failure_rolls_back_period_marker_entitlement_and_processed_generation() {
     let mut case = Case::new().await;
     // A crash boundary in the unique disposable schema; no real guard bypass.
-    case.db.batch_execute("CREATE FUNCTION reject_invoice_audit_fixture() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic audit fault'; END $$; CREATE TRIGGER reject_invoice_audit_fixture BEFORE INSERT ON billing_invoice_audit FOR EACH ROW EXECUTE FUNCTION reject_invoice_audit_fixture()").await.unwrap();
+    case.migration_owner().batch_execute("CREATE FUNCTION public.reject_invoice_audit_fixture() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic audit fault'; END $$; CREATE TRIGGER reject_invoice_audit_fixture BEFORE INSERT ON billing_invoice_audit FOR EACH ROW EXECUTE FUNCTION reject_invoice_audit_fixture()").await.unwrap();
     let paid = case.observation("active", "paid", "subscription_cycle");
     assert!(case.observe(&paid).await.is_err());
     let row=case.db.query_one("SELECT (SELECT count(*) FROM billing_invoice_periods),(SELECT count(*) FROM billing_invoice_entitlements),(SELECT processed_generation FROM billing_reconciliations)",&[]).await.unwrap();
     assert_eq!(row.get::<_, i64>(0), 0);
     assert_eq!(row.get::<_, i64>(1), 0);
     assert_eq!(row.get::<_, i64>(2), 0);
-    case.db.batch_execute("DROP TRIGGER reject_invoice_audit_fixture ON billing_invoice_audit; DROP FUNCTION reject_invoice_audit_fixture()").await.unwrap();
+    case.migration_owner().batch_execute("DROP TRIGGER reject_invoice_audit_fixture ON billing_invoice_audit; DROP FUNCTION reject_invoice_audit_fixture()").await.unwrap();
     case.observe(&paid).await.unwrap();
     let count: i64 = case
         .db

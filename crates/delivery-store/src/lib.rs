@@ -9,6 +9,9 @@ use uuid::Uuid;
 use zrotext_domain::{Evidence, MessageState};
 
 pub mod exposure;
+pub mod hosted_runtime_identity;
+mod hosted_transaction;
+pub use hosted_transaction::{HostedBackendCandidate, enter_hosted_transaction};
 
 mod recovery;
 pub use recovery::{RECOVERY_BATCH, RECOVERY_BATCHES_PER_TICK, RecoveryBacklog, RecoveryPass};
@@ -63,6 +66,8 @@ pub enum StoreError {
     PaymentHold,
     #[error("recipient is suppressed for this account")]
     RecipientSuppressed,
+    #[error("hosted runtime transaction identity is unavailable")]
+    RuntimeIdentityUnavailable,
 }
 
 #[derive(Clone, Copy)]
@@ -178,6 +183,7 @@ pub struct RadioEvent {
 pub struct DeliveryStore<'a> {
     client: &'a mut Client,
     idempotency_days: i32,
+    hosted_backend: Option<HostedBackendCandidate>,
 }
 
 impl<'a> DeliveryStore<'a> {
@@ -185,6 +191,7 @@ impl<'a> DeliveryStore<'a> {
         Self {
             client,
             idempotency_days: 7,
+            hosted_backend: None,
         }
     }
 
@@ -195,7 +202,17 @@ impl<'a> DeliveryStore<'a> {
         Self {
             client,
             idempotency_days: days,
+            hosted_backend: None,
         }
+    }
+
+    /// Candidate configuration from the initializer of this same actual
+    /// Client. It supplies no HMAC or native proof; every internal transaction
+    /// independently enters before business locks, and missing/changed proof
+    /// refuses. A hosted database cannot use the unconfigured manual default.
+    pub fn with_hosted_backend(mut self, candidate: HostedBackendCandidate) -> Self {
+        self.hosted_backend = Some(candidate);
+        self
     }
 
     /// Every caller supplies the authenticated tenant ID; a cross-tenant ID
@@ -270,6 +287,7 @@ impl<'a> DeliveryStore<'a> {
         let recipient_digest = Sha256::digest(input.recipient_e164.as_bytes()).to_vec();
         let expiry = input.expires_at_ms as f64;
         let tx = self.client.transaction().await?;
+        enter_hosted_transaction(&tx, self.hosted_backend.as_ref()).await?;
         let (require_reservation, bound) = if let MeteringTime::Alpha { billing_enabled } = metering
         {
             lock_billing_account(&tx, input.account_id, billing_enabled).await?
@@ -466,6 +484,7 @@ impl<'a> DeliveryStore<'a> {
             return Err(StoreError::InvalidInput);
         }
         let tx = self.client.transaction().await?;
+        enter_hosted_transaction(&tx, self.hosted_backend.as_ref()).await?;
         let device = tx
             .query_opt(
                 "SELECT revoked_at IS NOT NULL FROM devices WHERE account_id=$1 AND id=$2 FOR UPDATE",
@@ -625,6 +644,7 @@ impl<'a> DeliveryStore<'a> {
             return Err(StoreError::InvalidInput);
         }
         let tx = self.client.transaction().await?;
+        enter_hosted_transaction(&tx, self.hosted_backend.as_ref()).await?;
         let row = tx
             .query_opt(
                 "WITH picked AS ( \
@@ -688,6 +708,7 @@ impl<'a> DeliveryStore<'a> {
     /// grant was issued. A claimed job remains cancellable before that grant.
     pub async fn cancel(&mut self, account_id: Uuid, message_id: Uuid) -> Result<bool, StoreError> {
         let tx = self.client.transaction().await?;
+        enter_hosted_transaction(&tx, self.hosted_backend.as_ref()).await?;
         let cancelled = cancel_in_transaction(&tx, account_id, message_id).await?;
         tx.commit().await?;
         Ok(cancelled)
@@ -700,6 +721,7 @@ impl<'a> DeliveryStore<'a> {
             return Err(StoreError::InvalidInput);
         }
         let tx = self.client.transaction().await?;
+        enter_hosted_transaction(&tx, self.hosted_backend.as_ref()).await?;
         // One set-based statement per batch: pick under the job lock, expire
         // the still-eligible messages, close their jobs, and refund each
         // exactly-once through the unique ledger entry, all inside this
@@ -709,12 +731,14 @@ impl<'a> DeliveryStore<'a> {
                 "WITH picked AS ( \
                    SELECT j.account_id,j.message_id FROM dispatch_jobs j JOIN messages m ON m.id=j.message_id \
                    WHERE j.grant_issued_at IS NULL AND j.finished_at IS NULL \
+                     AND m.transport_mode<>'sealed_profile03' \
                      AND m.expires_at<=now() AND m.state IN ('queued','claimed') \
                    ORDER BY m.expires_at,m.id FOR UPDATE OF j SKIP LOCKED LIMIT $1), \
                  expired AS ( \
                    UPDATE messages m SET state='expired',state_version=state_version+1,updated_at=now() \
                    FROM picked WHERE m.account_id=picked.account_id AND m.id=picked.message_id \
                      AND m.state IN ('queued','claimed') AND m.expires_at<=now() \
+                     AND m.transport_mode<>'sealed_profile03' \
                    RETURNING m.account_id,m.id AS message_id), \
                  jobs AS ( \
                    UPDATE dispatch_jobs j SET lease_owner=NULL,lease_until=NULL,finished_at=now() \
@@ -751,6 +775,7 @@ impl<'a> DeliveryStore<'a> {
             return Err(StoreError::InvalidInput);
         }
         let tx = self.client.transaction().await?;
+        enter_hosted_transaction(&tx, self.hosted_backend.as_ref()).await?;
         // One set-based statement per batch: lock the message rows, move each
         // to unknown with the evidence its prior state implies, mark its
         // attempt and fence unknown, and emit the matching event. The digest
@@ -765,9 +790,10 @@ impl<'a> DeliveryStore<'a> {
                    FROM messages m \
                    JOIN dispatch_fences f ON (f.account_id,f.message_id)=(m.account_id,m.id) \
                    JOIN message_attempts a ON a.id=f.attempt_id \
-                   WHERE (m.state='claimed' AND f.outcome='granted' AND f.grant_expires_at<=now()) \
+                   WHERE m.transport_mode<>'sealed_profile03' AND ( \
+                         (m.state='claimed' AND f.outcome='granted' AND f.grant_expires_at<=now()) \
                       OR (m.state='submitting' AND f.outcome='submitting' \
-                          AND a.updated_at<=now()-interval '2 minutes') \
+                          AND a.updated_at<=now()-interval '2 minutes')) \
                    ORDER BY m.updated_at,m.id FOR UPDATE OF m SKIP LOCKED LIMIT $1), \
                  swept AS ( \
                    UPDATE messages m SET state='unknown',state_version=state_version+1,updated_at=now() \
@@ -807,6 +833,7 @@ impl<'a> DeliveryStore<'a> {
             return Err(StoreError::InvalidInput);
         }
         let tx = self.client.transaction().await?;
+        enter_hosted_transaction(&tx, self.hosted_backend.as_ref()).await?;
         // One set-based statement per batch: lock the message rows, move
         // each still-submitted message to delivery_unknown and emit its
         // delivery_timeout event with the same digest the per-row loop
@@ -819,6 +846,7 @@ impl<'a> DeliveryStore<'a> {
                    JOIN dispatch_fences f ON (f.account_id,f.message_id)=(m.account_id,m.id) \
                    JOIN message_attempts a ON a.id=f.attempt_id \
                    WHERE m.state='submitted' AND f.outcome='submitted' AND a.status='submitted' \
+                     AND m.transport_mode<>'sealed_profile03' \
                      AND m.updated_at<=now()-interval '24 hours' \
                    ORDER BY m.updated_at,m.id FOR UPDATE OF m SKIP LOCKED LIMIT $1), \
                  swept AS ( \
@@ -853,6 +881,7 @@ impl<'a> DeliveryStore<'a> {
         attempt_id: Uuid,
     ) -> Result<GrantRecord, StoreError> {
         let tx = self.client.transaction().await?;
+        enter_hosted_transaction(&tx, self.hosted_backend.as_ref()).await?;
         let result = grant_in_transaction(
             &tx,
             claim,
@@ -995,6 +1024,7 @@ impl<'a> DeliveryStore<'a> {
         let digest = radio_event_digest(&event, code);
         let observed_at = event.observed_at_ms as f64;
         let tx = self.client.transaction().await?;
+        enter_hosted_transaction(&tx, self.hosted_backend.as_ref()).await?;
         let mut sealed_intent = false;
         // Sealed intent shares the grant/fetch lock order. Lock authority and
         // account before the message so revocation cannot race a first submit.
@@ -1073,7 +1103,7 @@ impl<'a> DeliveryStore<'a> {
         }
         let row = tx
             .query_typed_opt(
-                "SELECT state,recipient_e164 IS NULL FROM messages \
+                "SELECT state,recipient_e164 IS NULL,transport_mode='sealed_profile03' FROM messages \
                  WHERE account_id=$1 AND id=$2 FOR UPDATE",
                 &[
                     (&event.account_id, Type::UUID),
@@ -1082,6 +1112,11 @@ impl<'a> DeliveryStore<'a> {
             )
             .await?
             .ok_or(StoreError::NotFound)?;
+        if row.get::<_, bool>(2) {
+            // Profile03 requires distinct one-attempt/current submit and
+            // historical outcome factories. Legacy evidence cannot release it.
+            return Err(StoreError::InvalidTransition);
+        }
         let current = state_from_row(&row)?;
         // After terminal content retention, a late receipt is stale even if
         // its old event ID has since been removed from the audit timeline.
@@ -1610,6 +1645,7 @@ pub async fn cancel_pending_recipient(
             "SELECT j.message_id FROM dispatch_jobs j JOIN messages m ON m.id=j.message_id \
          WHERE j.account_id=$1 AND m.account_id=$1 AND m.recipient_e164=$2 \
          AND j.grant_issued_at IS NULL AND j.finished_at IS NULL \
+         AND m.transport_mode<>'sealed_profile03' \
          AND m.state IN ('queued','claimed') ORDER BY j.message_id FOR UPDATE OF j,m",
             &[&account_id, &recipient],
         )
@@ -1638,10 +1674,13 @@ pub async fn cancel_in_transaction(
     }
     let row = tx
         .query_one(
-            "SELECT state,transport_mode='sealed_candidate02' AND expires_at<=clock_timestamp(),transport_mode='sealed_candidate02' FROM messages WHERE account_id=$1 AND id=$2 FOR UPDATE",
+            "SELECT state,transport_mode='sealed_candidate02' AND expires_at<=clock_timestamp(),transport_mode='sealed_candidate02',transport_mode='sealed_profile03' FROM messages WHERE account_id=$1 AND id=$2 FOR UPDATE",
             &[&account_id, &message_id],
         )
         .await?;
+    if row.get::<_, bool>(3) {
+        return Err(StoreError::InvalidTransition);
+    }
     let current = state_from_row(&row)?;
     if current == MessageState::Cancelled && row.get::<_, bool>(2) {
         return Ok(true);
@@ -2019,3 +2058,6 @@ mod usage_projection_tests;
 
 #[cfg(test)]
 mod alpha_id_tests;
+
+#[cfg(test)]
+mod test_database;

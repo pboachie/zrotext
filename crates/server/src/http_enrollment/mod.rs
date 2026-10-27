@@ -106,10 +106,12 @@ async fn no_store(request: axum::extract::Request, next: Next) -> Response {
     response
 }
 
-async fn connect(state: &EnrollmentHttpState) -> Result<crate::runtime_db::PooledClient, Response> {
+async fn connect(
+    state: &EnrollmentHttpState,
+) -> Result<crate::runtime_db::PooledClient, Box<Response>> {
     crate::runtime_db::connect(&state.database_url)
         .await
-        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE.into_response())
+        .map_err(|_| Box::new(StatusCode::SERVICE_UNAVAILABLE.into_response()))
 }
 
 /// `live` runs only after anonymous callers exhaust the route budget, so junk
@@ -121,11 +123,11 @@ async fn public_admission(
     limit: Limit,
     subject: &str,
     live: impl Future<Output = Result<bool, EnrollmentError>>,
-) -> Result<(), Response> {
+) -> Result<(), Box<Response>> {
     match abuse_limits::consume_or_verify(client, &state.auth_hasher, limit, subject, live).await {
         Ok(true) => Ok(()),
-        Ok(false) => Err(StatusCode::TOO_MANY_REQUESTS.into_response()),
-        Err(_) => Err(StatusCode::SERVICE_UNAVAILABLE.into_response()),
+        Ok(false) => Err(Box::new(StatusCode::TOO_MANY_REQUESTS.into_response())),
+        Err(_) => Err(Box::new(StatusCode::SERVICE_UNAVAILABLE.into_response())),
     }
 }
 
@@ -309,7 +311,7 @@ async fn claim_pairing(
     )
     .await
     {
-        return response;
+        return *response;
     }
     if body.token.len() != 47 {
         return StatusCode::NOT_FOUND.into_response();
@@ -382,7 +384,7 @@ async fn prove_pairing(
     )
     .await
     {
-        return response;
+        return *response;
     }
     let nonce = match decode_nonce(&body.challenge_nonce) {
         Ok(nonce) => nonce,

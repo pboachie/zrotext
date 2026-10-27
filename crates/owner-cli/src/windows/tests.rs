@@ -352,7 +352,7 @@ fn unlock_child(stage: &str) {
             .collect();
         assert_eq!(hex.len(), 128);
         let mut signature = [0_u8; 64];
-        for (index, pair) in hex.as_bytes().chunks_exact(2).enumerate() {
+        for (index, pair) in hex.as_bytes().as_chunks::<2>().0.iter().enumerate() {
             signature[index] = u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap();
         }
         let parsed = zrotext_root_material::sealed_root_enrollment::parse(&unsigned).unwrap();

@@ -6,7 +6,7 @@
 These coordinates are experimental and are not published by this gate. They are
 separate from Tungsten's generated HTTP SDK packages.
 
-Run with Python 3.11+, Node, OpenSSL, Cargo/Rust 1.97.1 or Go 1.26.9 on PATH.
+Run with Python 3.11+, Node, OpenSSL, Cargo/Rust 1.99.1 or Go 1.26.10 on PATH.
 The signed TLS fixture producer additionally requires Python `cryptography==46.0.5` and `ada-url==1.27.0`:
 
 ```sh

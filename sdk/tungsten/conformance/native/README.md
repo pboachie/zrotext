@@ -10,8 +10,10 @@ python3 sdk/tungsten/conformance/native/run.py --foundation /path/to/foundation 
 ```
 
 First generate the foundation using its `scripts/tungsten_sdk.py --source
-/path/to/lf-tungsten --check`. Rust 1.88, Go 1.22 and Python 3.12 are the tested
-compiler/runtime baseline. Dedicated CI prepares these source checkouts.
+/path/to/lf-tungsten --check`. Rust 1.88, Go 1.26.10 and Python 3.12 are the CI
+compiler/runtime baseline. The generated Go source-language floor remains 1.22;
+this lane does not qualify the unsupported Go 1.22 compiler. Dedicated CI prepares
+these source checkouts.
 
 The shared synthetic HTTP suite covers bearer scope, preflight validation,
 cursor page requests, strict malformed-success rejection, zero retry on reads,

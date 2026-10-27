@@ -18,6 +18,8 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34], application = android.app.Application::class)
 class JournaledPreparedRadioSubmissionTest {
     private class Harness(private val enabled: Boolean = true) : AutoCloseable {
+        val health = InboundProtectionEpochs()
+        private val protectionEpoch = health.snapshot()
         private val fixture = PreparationFixture()
         private val candidate = fixture.grant()
         private val binding = fixture.binding()
@@ -34,6 +36,7 @@ class JournaledPreparedRadioSubmissionTest {
         var selections = 0
         var ackHook: () -> Unit = {}
         var selectedHook: () -> Unit = {}
+        var clockHook: () -> Unit = {}
         var event: AlphaRadioEvent? = null
         private val session = SealedDispatchExecutor.Session(UUID.fromString(candidate.accountId),
             UUID.fromString(candidate.deviceId), candidate.connectionEpoch, candidate.deploymentEpoch,
@@ -58,7 +61,7 @@ class JournaledPreparedRadioSubmissionTest {
             override val deadlineMs = candidate.expiresAtMs
             override val grant get() = SealedEnvelopeFetch.snapshot(fields)
             override val session = this@Harness.session
-            override val local = SealedDispatchExecutor.Local(binding, fields.readerKeyId,
+            override val local = SealedDispatchExecutor.Local(this@Harness.binding, fields.readerKeyId,
                 candidate.manifestGeneration, candidate.manifestVersion, candidate.manifestDigest,
                 candidate.recipientDigest)
         }
@@ -67,6 +70,7 @@ class JournaledPreparedRadioSubmissionTest {
         val body: CharArray
         private val holder: Draft02OutboundPreparation.Prepared
         private fun fresh(): Long {
+            clockHook()
             check(current && now > 0 && now < context.deadlineMs)
             check(db.attempts().currentLineBinding() == binding)
             return now
@@ -119,7 +123,7 @@ class JournaledPreparedRadioSubmissionTest {
                     assertEquals(binding, it); factories++
                     ConversationRadioPlatform(it, driver, ConversationExistingSuppressionTokens {
                         SecretKeySpec(ByteArray(32) { 9 }, "HmacSHA256")
-                    }, true)
+                    }, true, healthCurrent = { health.checked(protectionEpoch) })
                 }, enabled).submit(context, relay, ::fresh)
             } finally { relay.close(); holder.close() } // Lane retains and closes the executor holder.
         }
@@ -185,5 +189,28 @@ class JournaledPreparedRadioSubmissionTest {
         assertEquals(AttemptState.UNKNOWN, h.attempt()?.state)
         assertEquals(1, h.fakeCalls); h.assertZeroized(); h.assertPermanentReplayFence()
         assertEquals(1, h.fakeCalls)
+    }
+    @Test fun suppressionIdentityLossDuringSelectedProviderWithdrawsTheActualJournaledConsumer() = Harness().use { h ->
+        h.selectedHook = { if (h.selections == 3) h.health.revoke() }
+        assertEquals(ConversationSubmission.UNKNOWN, h.submit())
+        assertEquals(0, h.fakeCalls); h.assertZeroized(); h.assertPermanentReplayFence()
+    }
+    @Test fun completedStopDuringProviderCannotRestoreTheConsumersOriginalHealthEpoch() = Harness().use { h ->
+        h.selectedHook = {
+            if (h.selections == 3) checkNotNull(h.health.beforeProtectionWait(OptOutParser.OPT_OUT)).completeKnownWithdrawal()
+        }
+        assertEquals(ConversationSubmission.UNKNOWN, h.submit())
+        assertTrue(h.health.available()); assertEquals(0, h.fakeCalls)
+        h.assertZeroized(); h.assertPermanentReplayFence()
+    }
+    @Test fun withdrawalAtTheLastClockAfterDurableRadioCasCannotInvokeTheDriver() = Harness().use { h ->
+        var afterCas = 0
+        h.clockHook = {
+            if (h.attempt()?.state == AttemptState.RADIO_STARTED && ++afterCas == 2) h.health.revoke()
+        }
+        assertEquals(ConversationSubmission.UNKNOWN, h.submit())
+        assertEquals(2, afterCas); assertEquals(0, h.fakeCalls)
+        assertNotEquals(AttemptState.RADIO_STARTED, h.attempt()?.state)
+        h.assertZeroized(); h.assertPermanentReplayFence()
     }
 }

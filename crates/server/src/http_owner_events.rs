@@ -381,7 +381,7 @@ async fn events(State(state): State<Arc<OwnerEventsState>>, headers: HeaderMap) 
     // before streaming, so failures and refusals return ordinary statuses.
     let watch = match open_watch(&state, &headers).await {
         Ok(watch) => watch,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let stream = futures_util::stream::unfold(watch, move |mut watch| {
         let state = state.clone();
@@ -460,7 +460,7 @@ async fn events(State(state): State<Arc<OwnerEventsState>>, headers: HeaderMap) 
     response
 }
 
-async fn open_watch(state: &OwnerEventsState, headers: &HeaderMap) -> Result<Watch, Response> {
+async fn open_watch(state: &OwnerEventsState, headers: &HeaderMap) -> Result<Watch, Box<Response>> {
     let unavailable = || {
         (
             StatusCode::SERVICE_UNAVAILABLE,

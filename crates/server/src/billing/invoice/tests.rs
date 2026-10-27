@@ -6,6 +6,7 @@ use serde_json::json;
 use sha2::Sha256;
 use tokio_postgres::{Client, NoTls};
 mod hosted;
+mod liability;
 mod lifecycle;
 mod races;
 mod recovery;
@@ -14,8 +15,12 @@ mod status;
 
 struct Case {
     db: Client,
-    setup: Client,
+    setup: Option<Client>,
     schema: String,
+    url: String,
+    current: Option<crate::test_database::Fixture>,
+    db_driver: crate::test_database::Driver,
+    peer_drivers: std::sync::Mutex<Vec<crate::test_database::Driver>>,
     account: Uuid,
     customer: String,
     device: Uuid,
@@ -40,28 +45,31 @@ impl Case {
     }
 
     async fn build(schema_kind: FixtureSchema) -> Self {
-        let base = std::env::var("ZT_AUTH_TEST_DATABASE_URL").unwrap();
-        let (setup, connection) = tokio_postgres::connect(&base, NoTls).await.unwrap();
-        tokio::spawn(async move { connection.await.unwrap() });
-        let label = match schema_kind {
-            FixtureSchema::Maintained => "invoice_policy",
-            FixtureSchema::PreRuntimeInvoiceContract => "invoice_pre_runtime_contract",
-        };
-        let schema = format!("{label}_{}", Uuid::new_v4().simple());
-        setup
-            .batch_execute(&format!("CREATE SCHEMA {schema}"))
-            .await
-            .unwrap();
-        let separator = if base.contains('?') { '&' } else { '?' };
-        let url = format!("{base}{separator}options=-csearch_path%3D{schema}");
-        let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
-        tokio::spawn(async move { connection.await.unwrap() });
-        match schema_kind {
-            FixtureSchema::Maintained => crate::auth::test_schema::apply(&db).await,
-            FixtureSchema::PreRuntimeInvoiceContract => {
-                crate::auth::test_schema::apply_pre_runtime_invoice_contract(&db).await;
+        let (mut db, db_driver, setup, current, schema, url) = match schema_kind {
+            FixtureSchema::Maintained => {
+                let fixture =
+                    crate::test_database::Fixture::for_store("ZT_AUTH_TEST_DATABASE_URL").await;
+                let (db, driver) = fixture.another_runtime().await;
+                let url = fixture.runtime_url.clone();
+                (db, driver, None, Some(fixture), "public".to_owned(), url)
             }
-        }
+            FixtureSchema::PreRuntimeInvoiceContract => {
+                let base = std::env::var("ZT_AUTH_TEST_DATABASE_URL").unwrap();
+                let (setup, connection) = tokio_postgres::connect(&base, NoTls).await.unwrap();
+                tokio::spawn(async move { connection.await.unwrap() });
+                let schema = format!("invoice_pre_runtime_contract_{}", Uuid::new_v4().simple());
+                setup
+                    .batch_execute(&format!("CREATE SCHEMA {schema}"))
+                    .await
+                    .unwrap();
+                let separator = if base.contains('?') { '&' } else { '?' };
+                let url = format!("{base}{separator}options=-csearch_path%3D{schema}");
+                let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+                let driver = tokio::spawn(connection);
+                crate::auth::test_schema::apply_pre_runtime_invoice_contract(&db).await;
+                (db, driver, Some(setup), None, schema, url)
+            }
+        };
         let hasher = crate::auth::TokenHasher::new(crate::test_keys::key(77)).unwrap();
         let password = crate::test_keys::password(77);
         let signup =
@@ -101,6 +109,10 @@ impl Case {
             db,
             setup,
             schema,
+            url,
+            current,
+            db_driver,
+            peer_drivers: std::sync::Mutex::new(Vec::new()),
             account,
             customer,
             device,
@@ -191,23 +203,40 @@ impl Case {
         .await
     }
 
+    fn migration_owner(&self) -> &Client {
+        self.current
+            .as_ref()
+            .map_or(&self.db, |fixture| &fixture.owner)
+    }
+
     async fn cleanup(self) {
-        self.setup
-            .batch_execute(&format!("DROP SCHEMA {} CASCADE", self.schema))
-            .await
-            .unwrap();
+        crate::test_database::Fixture::close_connection(self.db, self.db_driver).await;
+        if let Some(fixture) = self.current {
+            for driver in self.peer_drivers.into_inner().unwrap() {
+                tokio::time::timeout(std::time::Duration::from_secs(5), driver)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+            }
+            fixture.finish().await;
+        } else {
+            self.setup
+                .unwrap()
+                .batch_execute(&format!("DROP SCHEMA {} CASCADE", self.schema))
+                .await
+                .unwrap();
+        }
     }
 
     async fn connect(&self) -> Client {
-        let base = std::env::var("ZT_AUTH_TEST_DATABASE_URL").unwrap();
-        let separator = if base.contains('?') { '&' } else { '?' };
-        let (db, connection) = tokio_postgres::connect(
-            &format!("{base}{separator}options=-csearch_path%3D{}", self.schema),
-            NoTls,
-        )
-        .await
-        .unwrap();
-        tokio::spawn(async move { connection.await.unwrap() });
+        let (db, connection) = zrotext_postgres_connection::connect(&self.url)
+            .await
+            .unwrap();
+        let driver = tokio::spawn(connection);
+        if self.current.is_some() {
+            self.peer_drivers.lock().unwrap().push(driver);
+        }
         db
     }
 
@@ -230,7 +259,7 @@ impl Case {
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; uses a unique disposable schema"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; disposable current public database"]
 async fn current_invoice_allowance_is_enforced_atomically_and_paid_recovery_never_replenishes_it() {
     let mut case = Case::new().await;
     let paid = case.observation("active", "paid", "subscription_cycle");
@@ -260,30 +289,80 @@ async fn current_invoice_allowance_is_enforced_atomically_and_paid_recovery_neve
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; uses a unique disposable schema"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; disposable current public database"]
 async fn partial_invoice_guard_installation_cannot_bypass_the_existing_monthly_limit() {
     let mut case = Case::new().await;
     let paid = case.observation("active", "paid", "subscription_cycle");
     case.observe(&paid).await.unwrap();
-    // Fault injection is confined to this test's unique disposable schema.
-    case.db
+    // Fault injection is confined to this test's owned disposable database.
+    case.migration_owner()
         .batch_execute("ALTER TABLE usage_ledger DISABLE TRIGGER billing_invoice_ledger")
         .await
         .unwrap();
+    // The complete current installation authenticates its catalog before the
+    // invoice guard. A disabled ledger trigger invalidates that exact graph;
+    // no caller may reach quota accounting through a damaged native boundary.
+    assert!(!case.db.query_one(
+        "SELECT graph_sha256=public.payload_profile_writer_graph() FROM public.payload_profile_writer_catalog WHERE singleton",
+        &[],
+    ).await.unwrap().get::<_, bool>(0));
     assert!(matches!(
         case.send("partial").await,
-        Err(zrotext_delivery_store::StoreError::QuotaNotConfigured)
+        Err(zrotext_delivery_store::StoreError::RuntimeIdentityUnavailable)
     ));
-    case.db
+    assert_no_admission_writes(&case.db).await;
+    case.migration_owner()
         .batch_execute("ALTER TABLE usage_ledger ENABLE TRIGGER billing_invoice_ledger")
+        .await
+        .unwrap();
+    zrotext_delivery_store::hosted_runtime_identity::require(&case.db)
         .await
         .unwrap();
     assert!(case.send("restored").await.unwrap().created);
     case.cleanup().await;
 }
 
+async fn assert_no_admission_writes(db: &Client) {
+    let counts = db.query_one(
+        "SELECT (SELECT count(*) FROM messages),(SELECT count(*) FROM dispatch_jobs),(SELECT count(*) FROM billing_usage_outbox),(SELECT count(*) FROM usage_ledger),(SELECT count(*) FROM billing_invoice_usage),(SELECT reserved_units FROM billing_invoice_periods),(SELECT open_units FROM billing_invoice_periods)",
+        &[],
+    ).await.unwrap();
+    for index in 0..counts.len() {
+        assert_eq!(counts.get::<_, i64>(index), 0);
+    }
+}
+
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; uses a unique disposable schema"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; genuine historical105 invoice contract in a disposable schema"]
+async fn historical_invoice_guard_damage_refuses_quota_before_any_ledger_write() {
+    let mut case = Case::pre_runtime_invoice_contract().await;
+    // No hosted graph is installed: this is the supported absent-hosted legacy
+    // path, not a native-identity substitute for the current public database.
+    assert!(case.db.query_one(
+        "SELECT to_regclass('hosted_billing_namespaces') IS NULL AND to_regprocedure('hosted_runtime_schema_ready()') IS NULL",
+        &[],
+    ).await.unwrap().get::<_, bool>(0));
+    let paid = case.observation("active", "paid", "subscription_cycle");
+    case.observe(&paid).await.unwrap();
+    case.db
+        .batch_execute("ALTER TABLE usage_ledger DISABLE TRIGGER billing_invoice_ledger")
+        .await
+        .unwrap();
+    assert!(matches!(
+        case.send("historical-partial").await,
+        Err(zrotext_delivery_store::StoreError::QuotaNotConfigured)
+    ));
+    assert_no_admission_writes(&case.db).await;
+    case.db
+        .batch_execute("ALTER TABLE usage_ledger ENABLE TRIGGER billing_invoice_ledger")
+        .await
+        .unwrap();
+    assert!(case.send("historical-restored").await.unwrap().created);
+    case.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; disposable current public database"]
 async fn duplicate_current_paid_observations_preserve_original_period_and_consumption() {
     let mut case = Case::new().await;
     let paid = case.observation("active", "paid", "subscription_cycle");
@@ -304,7 +383,7 @@ async fn duplicate_current_paid_observations_preserve_original_period_and_consum
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; uses a unique disposable schema"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; disposable current public database"]
 async fn paid_proration_cannot_create_a_fresh_period_and_missing_proof_rolls_back() {
     let mut case = Case::new().await;
     let update = case.observation("active", "paid", "subscription_update");

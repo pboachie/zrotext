@@ -1,110 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+use super::super::test_database::Fixture;
 use super::*;
 use p256::{
     ecdsa::{Signature, SigningKey, signature::Signer},
     elliptic_curve::Generate,
 };
-use postgres_protocol::escape::{escape_identifier, escape_literal};
+use postgres_protocol::escape::escape_identifier;
 use sha2::{Digest, Sha256};
-use tokio_postgres::{Config, NoTls, error::SqlState};
+use tokio_postgres::error::SqlState;
 
 const ORIGIN: &str = "https://registration.example";
-type Driver = tokio::task::JoinHandle<std::result::Result<(), tokio_postgres::Error>>;
-async fn connect(config: &Config) -> (Client, Driver) {
-    let (client, connection) = config.connect(NoTls).await.unwrap();
-    (client, tokio::spawn(connection))
-}
-async fn close(client: Client, driver: Driver) {
-    drop(client);
-    tokio::time::timeout(std::time::Duration::from_secs(5), driver)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-}
-
-// Administrative access creates only disposable LOGIN roles/database. All
-// migrations and data writes use their ordinary owner; reads use a different
-// ordinary role with narrow SELECT and the column privilege required by SHARE.
-struct Fixture {
-    admin: Client,
-    admin_driver: Driver,
-    owner: Client,
-    owner_driver: Driver,
-    reader: Client,
-    reader_driver: Driver,
-    database: String,
-    owner_role: String,
-    read_role: String,
-}
-impl Fixture {
-    async fn new() -> Self {
-        let raw = std::env::var("ZT_AUTH_TEST_DATABASE_URL").expect("disposable test cluster");
-        let mut config: Config = raw.parse().unwrap();
-        let (admin, admin_driver) = connect(&config).await;
-        let suffix = Uuid::new_v4().simple().to_string();
-        let database = format!("registration_{suffix}");
-        let owner_role = format!("registration_owner_{suffix}");
-        let read_role = format!("registration_read_{suffix}");
-        let password = Uuid::new_v4().simple().to_string();
-        let verifier = postgres_protocol::password::scram_sha_256(password.as_bytes());
-        for role in [&owner_role, &read_role] {
-            admin.batch_execute(&format!("CREATE ROLE {} LOGIN PASSWORD {} NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS", escape_identifier(role), escape_literal(&verifier))).await.unwrap();
-        }
-        admin
-            .batch_execute(&format!(
-                "CREATE DATABASE {} OWNER {}",
-                escape_identifier(&database),
-                escape_identifier(&owner_role)
-            ))
-            .await
-            .unwrap();
-        config
-            .dbname(&database)
-            .user(&owner_role)
-            .password(&password);
-        let (mut owner, owner_driver) = connect(&config).await;
-        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../deploy/compose/migrations");
-        zrotext_migrator::apply(&mut owner, &directory, false)
-            .await
-            .unwrap();
-        owner.batch_execute(&format!("GRANT USAGE ON SCHEMA public TO {r}; GRANT SELECT ON public.accounts,public.payload_profile_account_anchors,public.sealed_manifest_authorities,public.sealed_line_key_receipts,public.device_keys,public.line_owner_approval_keys TO {r}; GRANT UPDATE(id) ON public.accounts TO {r}; GRANT UPDATE(account_id) ON public.payload_profile_account_anchors,public.sealed_manifest_authorities,public.sealed_line_key_receipts,public.device_keys,public.line_owner_approval_keys TO {r}", r=escape_identifier(&read_role))).await.unwrap();
-        config.user(&read_role);
-        let (reader, reader_driver) = connect(&config).await;
-        assert!(!reader.query_one("SELECT rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls FROM pg_catalog.pg_roles WHERE rolname=current_user", &[]).await.unwrap().get::<_,bool>(0));
-        assert!(!reader.query_one("SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_class WHERE relnamespace='public'::regnamespace AND relowner=current_user::regrole)", &[]).await.unwrap().get::<_,bool>(0));
-        Self {
-            admin,
-            admin_driver,
-            owner,
-            owner_driver,
-            reader,
-            reader_driver,
-            database,
-            owner_role,
-            read_role,
-        }
-    }
-    async fn finish(self) {
-        close(self.reader, self.reader_driver).await;
-        close(self.owner, self.owner_driver).await;
-        self.admin
-            .batch_execute(&format!(
-                "DROP DATABASE {}",
-                escape_identifier(&self.database)
-            ))
-            .await
-            .unwrap();
-        for role in [&self.read_role, &self.owner_role] {
-            self.admin
-                .batch_execute(&format!("DROP ROLE {}", escape_identifier(role)))
-                .await
-                .unwrap();
-        }
-        close(self.admin, self.admin_driver).await;
-    }
-}
 struct Seed {
     locator: Locator,
     identity: OriginalIdentity,

@@ -1,8 +1,10 @@
 use super::*;
 
-// Keep the admission fixtures on the complete, reviewed schema. SQL is
-// embedded at build time so tests never execute files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 107] = [
+// Keep the source inventory on the complete numbered schema. Legacy isolated
+// delivery fixtures deliberately stop at107; actual108+ public/ledger/runtime
+// coverage lives in current_schema_tests and uses the genuine migrator.
+const LEGACY_ISOLATED_MIGRATIONS: usize = 107;
+const TEST_MIGRATIONS: [(&str, &str); 119] = [
     (
         "001_foundation.sql",
         include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -441,12 +443,72 @@ const TEST_MIGRATIONS: [(&str, &str); 107] = [
         "107_registration_browser_intents.sql",
         include_str!("../../../deploy/compose/migrations/107_registration_browser_intents.sql"),
     ),
+    (
+        "108_payload_profile_writer_fences.sql",
+        include_str!("../../../deploy/compose/migrations/108_payload_profile_writer_fences.sql"),
+    ),
+    (
+        "109_original_sealed_activation_receipts.sql",
+        include_str!(
+            "../../../deploy/compose/migrations/109_original_sealed_activation_receipts.sql"
+        ),
+    ),
+    (
+        "110_payload_profile_elections.sql",
+        include_str!("../../../deploy/compose/migrations/110_payload_profile_elections.sql"),
+    ),
+    (
+        "111_payload_profile_selection_refresh.sql",
+        include_str!(
+            "../../../deploy/compose/migrations/111_payload_profile_selection_refresh.sql"
+        ),
+    ),
+    (
+        "112_payload_profile_manifest_successors.sql",
+        include_str!(
+            "../../../deploy/compose/migrations/112_payload_profile_manifest_successors.sql"
+        ),
+    ),
+    (
+        "113_conversation_profile03_intervals.sql",
+        include_str!("../../../deploy/compose/migrations/113_conversation_profile03_intervals.sql"),
+    ),
+    (
+        "114_conversation_reviewed_sends03.sql",
+        include_str!("../../../deploy/compose/migrations/114_conversation_reviewed_sends03.sql"),
+    ),
+    (
+        "115_conversation_profile03_grants.sql",
+        include_str!("../../../deploy/compose/migrations/115_conversation_profile03_grants.sql"),
+    ),
+    (
+        "116_hosted_native_transaction_identity.sql",
+        include_str!(
+            "../../../deploy/compose/migrations/116_hosted_native_transaction_identity.sql"
+        ),
+    ),
+    (
+        "117_explicit_reviewed_intent_v2.sql",
+        include_str!("../../../deploy/compose/migrations/117_explicit_reviewed_intent_v2.sql"),
+    ),
+    (
+        "118_device_protection_origins.sql",
+        include_str!("../../../deploy/compose/migrations/118_device_protection_origins.sql"),
+    ),
+    (
+        "119_conversation_profile03_effects.sql",
+        include_str!("../../../deploy/compose/migrations/119_conversation_profile03_effects.sql"),
+    ),
 ];
 
-/// Applies every numbered migration in order. Shared by the PostgreSQL-backed
-/// test modules so each one runs against the complete reviewed schema.
-pub(crate) async fn apply_test_migrations(client: &Client) {
-    for (name, migration) in TEST_MIGRATIONS {
+#[path = "current_schema_tests.rs"]
+mod current_schema_tests;
+
+/// Preserve pre108 isolated-schema delivery coverage explicitly.108+ requires
+/// exact public installation and a real checksummed ledger; it must not be
+/// namespace-rewritten or run by this manual historical fixture.
+pub(crate) async fn apply_legacy_isolated_test_migrations(client: &Client) {
+    for &(name, migration) in TEST_MIGRATIONS.iter().take(LEGACY_ISOLATED_MIGRATIONS) {
         if name == "070_message_summary_metadata.sql" {
             client.batch_execute("CREATE INDEX CONCURRENTLY messages_summary_queue ON messages(account_id,state,created_at) WHERE state IN ('accepted','queued','claimed','submitting','submitted')").await.unwrap();
             client.batch_execute("BEGIN").await.unwrap();
@@ -592,25 +654,22 @@ fn admission_fixture_tracks_numbered_migrations() {
         .map(|(name, _)| name.to_string())
         .collect::<Vec<_>>();
     assert_eq!(discovered, embedded, "update the embedded migration list");
+    assert_eq!(TEST_MIGRATIONS.len(), 119);
+    assert_eq!(
+        TEST_MIGRATIONS[LEGACY_ISOLATED_MIGRATIONS - 1].0,
+        "107_registration_browser_intents.sql"
+    );
+    assert_eq!(
+        TEST_MIGRATIONS[LEGACY_ISOLATED_MIGRATIONS].0,
+        "108_payload_profile_writer_fences.sql"
+    );
 }
 
 #[tokio::test]
 #[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn radio_timestamp_rejection_preserves_state_and_accepts_offline_evidence() {
-    let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
-        .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
-    let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
-        .await
-        .unwrap();
-    tokio::spawn(async move { connection.await.unwrap() });
-    let schema = format!("radio_time_test_{}", Uuid::new_v4().simple());
-    client
-        .batch_execute(&format!(
-            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
-        ))
-        .await
-        .unwrap();
-    apply_test_migrations(&client).await;
+    let mut fixture = crate::test_database::Fixture::for_store().await;
+    let client = &fixture.owner;
     let account_id = Uuid::new_v4();
     let device_id = Uuid::new_v4();
     let message_id = Uuid::new_v4();
@@ -629,7 +688,7 @@ async fn radio_timestamp_rejection_preserves_state_and_accepts_offline_evidence(
         .execute("UPDATE deployment_authority SET dispatch_enabled=TRUE", &[])
         .await
         .unwrap();
-    let mut store = DeliveryStore::new(&mut client);
+    let mut store = DeliveryStore::new(&mut fixture.runtime);
     store
         .accept(NewMessage {
             account_id,
@@ -720,14 +779,14 @@ async fn radio_timestamp_rejection_preserves_state_and_accepts_offline_evidence(
         ..event
     };
     assert_eq!(
-        DeliveryStore::new(&mut client)
+        DeliveryStore::new(&mut fixture.runtime)
             .record_radio_event(offline)
             .await
             .unwrap(),
         MessageState::Submitting
     );
     assert_eq!(
-        DeliveryStore::new(&mut client)
+        DeliveryStore::new(&mut fixture.runtime)
             .record_radio_event(offline)
             .await
             .unwrap(),
@@ -742,12 +801,7 @@ async fn radio_timestamp_rejection_preserves_state_and_accepts_offline_evidence(
         .unwrap()
         .get(0);
     assert_eq!(events, 1, "exact replay must not create another event");
-    client
-        .batch_execute(&format!(
-            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
-        ))
-        .await
-        .unwrap();
+    fixture.finish().await;
 }
 
 #[test]
@@ -770,20 +824,8 @@ fn radio_timestamp_window_includes_both_clock_skew_boundaries() {
 #[tokio::test]
 #[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn released_attempt_cannot_change_a_new_grant() {
-    let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
-        .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
-    let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
-        .await
-        .unwrap();
-    tokio::spawn(async move { connection.await.unwrap() });
-    let schema = format!("stale_attempt_test_{}", Uuid::new_v4().simple());
-    client
-        .batch_execute(&format!(
-            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
-        ))
-        .await
-        .unwrap();
-    apply_test_migrations(&client).await;
+    let mut fixture = crate::test_database::Fixture::for_store().await;
+    let client = &fixture.owner;
     let account_id = Uuid::new_v4();
     let device_id = Uuid::new_v4();
     let message_id = Uuid::new_v4();
@@ -802,7 +844,7 @@ async fn released_attempt_cannot_change_a_new_grant() {
         .execute("UPDATE deployment_authority SET dispatch_enabled=TRUE", &[])
         .await
         .unwrap();
-    let mut store = DeliveryStore::new(&mut client);
+    let mut store = DeliveryStore::new(&mut fixture.runtime);
     store
         .accept(NewMessage {
             account_id,
@@ -930,31 +972,14 @@ async fn released_attempt_cannot_change_a_new_grant() {
             .state,
         MessageState::Submitted
     );
-    client
-        .batch_execute(&format!(
-            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
-        ))
-        .await
-        .unwrap();
+    fixture.finish().await;
 }
 
 #[tokio::test]
 #[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn expired_message_replay_keeps_identity_without_new_dispatch() {
-    let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
-        .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
-    let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
-        .await
-        .unwrap();
-    tokio::spawn(async move { connection.await.unwrap() });
-    let schema = format!("expired_replay_{}", Uuid::new_v4().simple());
-    client
-        .batch_execute(&format!(
-            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
-        ))
-        .await
-        .unwrap();
-    apply_test_migrations(&client).await;
+    let mut fixture = crate::test_database::Fixture::for_store().await;
+    let client = &fixture.owner;
     let account = Uuid::new_v4();
     let device = Uuid::new_v4();
     let message = Uuid::new_v4();
@@ -980,7 +1005,7 @@ async fn expired_message_replay_keeps_identity_without_new_dispatch() {
         expires_at_ms: expiry,
     };
     assert!(
-        DeliveryStore::new(&mut client)
+        DeliveryStore::new(&mut fixture.runtime)
             .accept(input())
             .await
             .unwrap()
@@ -998,14 +1023,14 @@ async fn expired_message_replay_keeps_identity_without_new_dispatch() {
         );
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    let replay = DeliveryStore::new(&mut client)
+    let replay = DeliveryStore::new(&mut fixture.runtime)
         .accept(input())
         .await
         .unwrap();
     assert_eq!(replay.message_id, message);
     assert!(!replay.created);
     assert!(matches!(
-        DeliveryStore::new(&mut client)
+        DeliveryStore::new(&mut fixture.runtime)
             .accept(NewMessage {
                 synthetic_payload: b"changed",
                 ..input()
@@ -1014,7 +1039,7 @@ async fn expired_message_replay_keeps_identity_without_new_dispatch() {
         Err(StoreError::IdempotencyConflict)
     ));
     assert!(matches!(
-        DeliveryStore::new(&mut client)
+        DeliveryStore::new(&mut fixture.runtime)
             .accept(NewMessage {
                 client_message_id: Uuid::new_v4(),
                 idempotency_key: "expired-new",
@@ -1024,7 +1049,7 @@ async fn expired_message_replay_keeps_identity_without_new_dispatch() {
         Err(StoreError::InvalidInput)
     ));
     assert!(matches!(
-        DeliveryStore::new(&mut client)
+        DeliveryStore::new(&mut fixture.runtime)
             .accept(NewMessage {
                 idempotency_key: "expired-new-same-id",
                 ..input()
@@ -1048,7 +1073,7 @@ async fn expired_message_replay_keeps_identity_without_new_dispatch() {
             &[&account],
         ).await.unwrap();
     let replacement_id = Uuid::new_v4();
-    let replacement = DeliveryStore::with_idempotency_days(&mut client, 1)
+    let replacement = DeliveryStore::with_idempotency_days(&mut fixture.runtime, 1)
         .accept(NewMessage {
             client_message_id: replacement_id,
             synthetic_payload: b"new request after key expiry",
@@ -1066,31 +1091,14 @@ async fn expired_message_replay_keeps_identity_without_new_dispatch() {
         ).await.unwrap();
     assert_eq!(row.get::<_, Uuid>(0), replacement_id);
     assert!(row.get::<_, bool>(1));
-    client
-        .batch_execute(&format!(
-            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
-        ))
-        .await
-        .unwrap();
+    fixture.finish().await;
 }
 
 #[tokio::test]
 #[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn exact_alpha_replay_survives_customer_binding_without_new_work() {
-    let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
-        .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
-    let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
-        .await
-        .unwrap();
-    tokio::spawn(async move { connection.await.unwrap() });
-    let schema = format!("alpha_replay_{}", Uuid::new_v4().simple());
-    client
-        .batch_execute(&format!(
-            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
-        ))
-        .await
-        .unwrap();
-    apply_test_migrations(&client).await;
+    let mut fixture = crate::test_database::Fixture::for_store().await;
+    let client = &fixture.owner;
     let account = Uuid::new_v4();
     let device = Uuid::new_v4();
     let message = Uuid::new_v4();
@@ -1115,7 +1123,7 @@ async fn exact_alpha_replay_survives_customer_binding_without_new_work() {
         synthetic_payload: b"fixture",
         expires_at_ms: expiry,
     };
-    let first = DeliveryStore::new(&mut client)
+    let first = DeliveryStore::new(&mut fixture.runtime)
         .accept_alpha(input(), false)
         .await
         .unwrap();
@@ -1130,7 +1138,7 @@ async fn exact_alpha_replay_survives_customer_binding_without_new_work() {
         .await
         .unwrap();
     for billing_enabled in [false, true] {
-        let replay = DeliveryStore::new(&mut client)
+        let replay = DeliveryStore::new(&mut fixture.runtime)
             .accept_alpha(input(), billing_enabled)
             .await
             .unwrap();
@@ -1138,7 +1146,7 @@ async fn exact_alpha_replay_survives_customer_binding_without_new_work() {
         assert!(!replay.created);
     }
     assert!(matches!(
-        DeliveryStore::new(&mut client)
+        DeliveryStore::new(&mut fixture.runtime)
             .accept_alpha(
                 NewMessage {
                     synthetic_payload: b"changed",
@@ -1150,7 +1158,7 @@ async fn exact_alpha_replay_survives_customer_binding_without_new_work() {
         Err(StoreError::IdempotencyConflict)
     ));
     assert!(matches!(
-        DeliveryStore::new(&mut client)
+        DeliveryStore::new(&mut fixture.runtime)
             .accept_alpha(
                 NewMessage {
                     idempotency_key: "alternate-key",
@@ -1162,7 +1170,7 @@ async fn exact_alpha_replay_survives_customer_binding_without_new_work() {
         Err(StoreError::MessageIdConflict | StoreError::IdempotencyConflict)
     ));
     assert!(matches!(
-        DeliveryStore::new(&mut client)
+        DeliveryStore::new(&mut fixture.runtime)
             .accept_alpha(
                 NewMessage {
                     client_message_id: Uuid::new_v4(),
@@ -1194,32 +1202,14 @@ async fn exact_alpha_replay_survives_customer_binding_without_new_work() {
         .unwrap()
         .get(0);
     assert_eq!(reservations, 0);
-    client
-        .batch_execute(&format!(
-            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
-        ))
-        .await
-        .unwrap();
+    fixture.finish().await;
 }
 
 #[tokio::test]
 #[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn parallel_acceptance_respects_pending_queue_capacity() {
-    let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
-        .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
-    let (client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
-        .await
-        .unwrap();
-    tokio::spawn(async move { connection.await.unwrap() });
-    let schema = format!("delivery_test_{}", Uuid::new_v4().simple());
-    client
-        .batch_execute(&format!(
-            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
-        ))
-        .await
-        .unwrap();
-    // Apply the complete numbered schema, including accept-time metering.
-    apply_test_migrations(&client).await;
+    let fixture = crate::test_database::Fixture::for_store().await;
+    let client = &fixture.owner;
     let account = Uuid::new_v4();
     let device = Uuid::new_v4();
     client
@@ -1238,20 +1228,12 @@ async fn parallel_acceptance_respects_pending_queue_capacity() {
     // account-row lock holder can count and insert at a time.
     let mut tasks = tokio::task::JoinSet::new();
     for index in 0..32 {
-        let url = url.clone();
-        let schema = schema.clone();
+        let config = fixture.config.clone();
         tasks.spawn(async move {
-            let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
-                .await
-                .unwrap();
-            tokio::spawn(async move { connection.await.unwrap() });
-            client
-                .batch_execute(&format!("SET search_path TO {schema}"))
-                .await
-                .unwrap();
+            let mut peer = crate::test_database::RuntimeConnection::connect(&config).await;
             let id = Uuid::new_v4();
             let key = format!("parallel-{index}");
-            let result = DeliveryStore::new(&mut client)
+            let result = DeliveryStore::new(&mut peer.client)
                 .accept(NewMessage {
                     account_id: account,
                     client_message_id: id,
@@ -1262,6 +1244,7 @@ async fn parallel_acceptance_respects_pending_queue_capacity() {
                     expires_at_ms: now_ms() + 300_000,
                 })
                 .await;
+            peer.finish().await;
             match result {
                 Ok(outcome) => {
                     assert!(outcome.created);
@@ -1290,18 +1273,11 @@ async fn parallel_acceptance_respects_pending_queue_capacity() {
     assert_eq!(rows, MAX_PENDING_PER_DEVICE);
     // An exact replay still succeeds while the queue is full.
     let (id, key) = &accepted[0];
-    let (mut replay_client, replay_connection) =
-        tokio_postgres::connect(&url, tokio_postgres::NoTls)
-            .await
-            .unwrap();
-    tokio::spawn(async move { replay_connection.await.unwrap() });
-    replay_client
-        .batch_execute(&format!("SET search_path TO {schema}"))
-        .await
-        .unwrap();
+    let mut replay = crate::test_database::RuntimeConnection::connect(&fixture.config).await;
     // The original request deadline is read from its committed row so
     // the digest is identical to the first acceptance.
-    let expiry: i64 = replay_client
+    let expiry: i64 = replay
+        .client
         .query_one(
             "SELECT (extract(epoch FROM expires_at)*1000)::bigint FROM messages WHERE id=$1",
             &[id],
@@ -1310,7 +1286,7 @@ async fn parallel_acceptance_respects_pending_queue_capacity() {
         .unwrap()
         .get(0);
     assert!(
-        !DeliveryStore::new(&mut replay_client)
+        !DeliveryStore::new(&mut replay.client)
             .accept(NewMessage {
                 account_id: account,
                 client_message_id: *id,
@@ -1338,7 +1314,7 @@ async fn parallel_acceptance_respects_pending_queue_capacity() {
             .unwrap();
         for slot in 0..MAX_PENDING_PER_DEVICE {
             let key = format!("account-{ordinal}-{slot}");
-            DeliveryStore::new(&mut replay_client)
+            DeliveryStore::new(&mut replay.client)
                 .accept(NewMessage {
                     account_id: account,
                     client_message_id: Uuid::new_v4(),
@@ -1371,47 +1347,31 @@ async fn parallel_acceptance_respects_pending_queue_capacity() {
         expires_at_ms: now_ms() + 300_000,
     };
     assert!(matches!(
-        DeliveryStore::new(&mut replay_client).accept(extra()).await,
+        DeliveryStore::new(&mut replay.client).accept(extra()).await,
         Err(StoreError::QueueFull)
     ));
     assert!(
-        DeliveryStore::new(&mut replay_client)
+        DeliveryStore::new(&mut replay.client)
             .cancel(account, *id)
             .await
             .unwrap()
     );
     assert!(
-        DeliveryStore::new(&mut replay_client)
+        DeliveryStore::new(&mut replay.client)
             .accept(extra())
             .await
             .unwrap()
             .created
     );
-    client
-        .batch_execute(&format!(
-            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
-        ))
-        .await
-        .unwrap();
+    replay.finish().await;
+    fixture.finish().await;
 }
 
 #[tokio::test]
 #[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn postgres_fences_unknown_and_tenant_idempotency() {
-    let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
-        .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
-    let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
-        .await
-        .unwrap();
-    tokio::spawn(async move { connection.await.unwrap() });
-    let schema = format!("delivery_test_{}", Uuid::new_v4().simple());
-    client
-        .batch_execute(&format!(
-            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
-        ))
-        .await
-        .unwrap();
-    apply_test_migrations(&client).await;
+    let mut fixture = crate::test_database::Fixture::for_store().await;
+    let client = &fixture.owner;
 
     let account = Uuid::new_v4();
     let other_account = Uuid::new_v4();
@@ -1449,7 +1409,7 @@ async fn postgres_fences_unknown_and_tenant_idempotency() {
         expires_at_ms: expiry,
     };
     {
-        let mut store = DeliveryStore::new(&mut client);
+        let mut store = DeliveryStore::new(&mut fixture.runtime);
         assert!(store.accept(input()).await.unwrap().created);
         assert!(!store.accept(input()).await.unwrap().created);
         assert_eq!(
@@ -1491,16 +1451,8 @@ async fn postgres_fences_unknown_and_tenant_idempotency() {
             .connect_session(account, device, "a", "hub", 60)
             .await
             .unwrap();
-        let (mut blocker, blocker_connection) =
-            tokio_postgres::connect(&url, tokio_postgres::NoTls)
-                .await
-                .unwrap();
-        tokio::spawn(async move { blocker_connection.await.unwrap() });
-        blocker
-            .batch_execute(&format!("SET search_path TO {schema}"))
-            .await
-            .unwrap();
-        let locked = blocker.transaction().await.unwrap();
+        let mut blocker = crate::test_database::RuntimeConnection::connect(&fixture.config).await;
+        let locked = blocker.client.transaction().await.unwrap();
         locked
             .query_one(
                 "SELECT message_id FROM dispatch_jobs WHERE message_id=$1 FOR UPDATE",
@@ -1510,6 +1462,7 @@ async fn postgres_fences_unknown_and_tenant_idempotency() {
             .unwrap();
         assert!(store.claim_due("blocked-worker").await.unwrap().is_none());
         locked.rollback().await.unwrap();
+        blocker.finish().await;
         let claim = store.claim_due("worker-a").await.unwrap().unwrap();
         assert_eq!(claim.message_id, message);
         let attempt = Uuid::new_v4();
@@ -1615,7 +1568,7 @@ async fn postgres_fences_unknown_and_tenant_idempotency() {
     let third_message = Uuid::new_v4();
     let third_attempt = Uuid::new_v4();
     {
-        let mut store = DeliveryStore::new(&mut client);
+        let mut store = DeliveryStore::new(&mut fixture.runtime);
         store
             .accept(NewMessage {
                 client_message_id: third_message,
@@ -1713,7 +1666,7 @@ async fn postgres_fences_unknown_and_tenant_idempotency() {
         .await
         .unwrap();
     {
-        let mut store = DeliveryStore::new(&mut client);
+        let mut store = DeliveryStore::new(&mut fixture.runtime);
         assert_eq!(store.expire_due(10).await.unwrap(), 1);
         assert!(store.claim_due("worker-e").await.unwrap().is_none());
     }
@@ -1728,7 +1681,7 @@ async fn postgres_fences_unknown_and_tenant_idempotency() {
     assert_eq!(state, "expired");
 
     assert_eq!(
-        DeliveryStore::new(&mut client)
+        DeliveryStore::new(&mut fixture.runtime)
             .reconcile_delivery_timeouts(10)
             .await
             .unwrap(),
@@ -1742,7 +1695,7 @@ async fn postgres_fences_unknown_and_tenant_idempotency() {
         .await
         .unwrap();
     {
-        let mut store = DeliveryStore::new(&mut client);
+        let mut store = DeliveryStore::new(&mut fixture.runtime);
         assert_eq!(store.reconcile_delivery_timeouts(10).await.unwrap(), 1);
         assert_eq!(store.reconcile_delivery_timeouts(10).await.unwrap(), 0);
         assert_eq!(
@@ -1776,7 +1729,7 @@ async fn postgres_fences_unknown_and_tenant_idempotency() {
     let silent_grant_message = Uuid::new_v4();
     let silent_grant_attempt = Uuid::new_v4();
     {
-        let mut store = DeliveryStore::new(&mut client);
+        let mut store = DeliveryStore::new(&mut fixture.runtime);
         store
             .accept(NewMessage {
                 account_id: account,
@@ -1808,16 +1761,9 @@ async fn postgres_fences_unknown_and_tenant_idempotency() {
             "UPDATE dispatch_fences SET grant_expires_at=now()-interval '1 second' WHERE attempt_id=$1",
             &[&silent_grant_attempt],
         ).await.unwrap();
-    let (mut timeout_blocker, timeout_connection) =
-        tokio_postgres::connect(&url, tokio_postgres::NoTls)
-            .await
-            .unwrap();
-    tokio::spawn(async move { timeout_connection.await.unwrap() });
-    timeout_blocker
-        .batch_execute(&format!("SET search_path TO {schema}"))
-        .await
-        .unwrap();
-    let timeout_lock = timeout_blocker.transaction().await.unwrap();
+    let mut timeout_blocker =
+        crate::test_database::RuntimeConnection::connect(&fixture.config).await;
+    let timeout_lock = timeout_blocker.client.transaction().await.unwrap();
     timeout_lock
         .query_one(
             "SELECT id FROM messages WHERE id=$1 FOR UPDATE",
@@ -1826,15 +1772,16 @@ async fn postgres_fences_unknown_and_tenant_idempotency() {
         .await
         .unwrap();
     assert_eq!(
-        DeliveryStore::new(&mut client)
+        DeliveryStore::new(&mut fixture.runtime)
             .reconcile_silent_attempts(10)
             .await
             .unwrap(),
         0
     );
     timeout_lock.rollback().await.unwrap();
+    timeout_blocker.finish().await;
     {
-        let mut store = DeliveryStore::new(&mut client);
+        let mut store = DeliveryStore::new(&mut fixture.runtime);
         assert_eq!(store.reconcile_silent_attempts(10).await.unwrap(), 1);
         assert_eq!(store.reconcile_silent_attempts(10).await.unwrap(), 0);
         assert_eq!(
@@ -1908,7 +1855,7 @@ async fn postgres_fences_unknown_and_tenant_idempotency() {
     let silent_callback_message = Uuid::new_v4();
     let silent_callback_attempt = Uuid::new_v4();
     {
-        let mut store = DeliveryStore::new(&mut client);
+        let mut store = DeliveryStore::new(&mut fixture.runtime);
         store
             .accept(NewMessage {
                 account_id: account,
@@ -1957,7 +1904,7 @@ async fn postgres_fences_unknown_and_tenant_idempotency() {
         .await
         .unwrap();
     {
-        let mut store = DeliveryStore::new(&mut client);
+        let mut store = DeliveryStore::new(&mut fixture.runtime);
         assert_eq!(store.reconcile_silent_attempts(10).await.unwrap(), 1);
         assert_eq!(
             store
@@ -1992,7 +1939,7 @@ async fn postgres_fences_unknown_and_tenant_idempotency() {
         ).await.unwrap().get(0);
     assert_eq!(timeout_evidence, "sent_callback_timeout");
     {
-        let mut store = DeliveryStore::new(&mut client);
+        let mut store = DeliveryStore::new(&mut fixture.runtime);
         assert_eq!(
             store
                 .record_radio_event(RadioEvent {
@@ -2074,7 +2021,7 @@ async fn postgres_fences_unknown_and_tenant_idempotency() {
         segment_count: None,
     };
     {
-        let mut store = DeliveryStore::new(&mut client);
+        let mut store = DeliveryStore::new(&mut fixture.runtime);
         store
             .accept(NewMessage {
                 account_id: account,
@@ -2208,12 +2155,7 @@ async fn postgres_fences_unknown_and_tenant_idempotency() {
         .unwrap()
         .get(0);
     assert_eq!(old_fence_count, 0);
-    client
-        .batch_execute(&format!(
-            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
-        ))
-        .await
-        .unwrap();
+    fixture.finish().await;
 }
 #[tokio::test]
 #[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
@@ -2411,20 +2353,8 @@ async fn terminal_dispatch_backfill_and_live_claims_ignore_large_history() {
 #[tokio::test]
 #[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn recent_grant_precheck_is_one_bounded_index_probe() {
-    let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
-        .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
-    let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
-        .await
-        .unwrap();
-    tokio::spawn(async move { connection.await.unwrap() });
-    let schema = format!("recent_grant_test_{}", Uuid::new_v4().simple());
-    client
-        .batch_execute(&format!(
-            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
-        ))
-        .await
-        .unwrap();
-    apply_test_migrations(&client).await;
+    let mut fixture = crate::test_database::Fixture::for_store().await;
+    let client = &fixture.owner;
     let account_id = Uuid::new_v4();
     let device_id = Uuid::new_v4();
     let message_id = Uuid::new_v4();
@@ -2449,7 +2379,7 @@ async fn recent_grant_precheck_is_one_bounded_index_probe() {
         .unwrap()
         .get(0);
     {
-        let mut store = DeliveryStore::new(&mut client);
+        let mut store = DeliveryStore::new(&mut fixture.runtime);
         store
             .accept(NewMessage {
                 account_id,
@@ -2539,7 +2469,7 @@ async fn recent_grant_precheck_is_one_bounded_index_probe() {
         })
         .sum();
     assert!(blocks <= 4, "probe touched {blocks} blocks: {shown}");
-    let mut store = DeliveryStore::new(&mut client);
+    let mut store = DeliveryStore::new(&mut fixture.runtime);
     assert!(
         store
             .synthetic_grant_may_be_due(account_id, device_id, epoch, 60)
@@ -2581,7 +2511,7 @@ async fn recent_grant_precheck_is_one_bounded_index_probe() {
         )
         .await
         .unwrap();
-    let mut store = DeliveryStore::new(&mut client);
+    let mut store = DeliveryStore::new(&mut fixture.runtime);
     assert!(
         !store
             .synthetic_grant_may_be_due(account_id, device_id, epoch, 60)
@@ -2603,7 +2533,7 @@ async fn recent_grant_precheck_is_one_bounded_index_probe() {
         )
         .await
         .unwrap();
-    let mut store = DeliveryStore::new(&mut client);
+    let mut store = DeliveryStore::new(&mut fixture.runtime);
     assert!(
         !store
             .synthetic_grant_may_be_due(account_id, device_id, epoch, 60)
@@ -2614,7 +2544,7 @@ async fn recent_grant_precheck_is_one_bounded_index_probe() {
         .execute("UPDATE deployment_authority SET dispatch_enabled=TRUE", &[])
         .await
         .unwrap();
-    let mut store = DeliveryStore::new(&mut client);
+    let mut store = DeliveryStore::new(&mut fixture.runtime);
     assert!(
         store
             .synthetic_grant_may_be_due(account_id, device_id, epoch, 60)
@@ -2638,7 +2568,7 @@ async fn recent_grant_precheck_is_one_bounded_index_probe() {
             )
             .await
             .unwrap();
-        let mut store = DeliveryStore::new(&mut client);
+        let mut store = DeliveryStore::new(&mut fixture.runtime);
         assert_eq!(
             store
                 .synthetic_grant_may_be_due(account_id, device_id, epoch, 60)
@@ -2653,15 +2583,16 @@ async fn recent_grant_precheck_is_one_bounded_index_probe() {
     // fixed, so an attempt exactly 60 s old no longer refuses and one 59 s
     // old still does.
     for (age, due) in [("60 seconds", true), ("59 seconds", false)] {
-        client.batch_execute("BEGIN").await.unwrap();
-        client
+        fixture.runtime.batch_execute("BEGIN").await.unwrap();
+        fixture
+            .runtime
             .execute(
                 "UPDATE message_attempts SET created_at=now()-($2::text)::interval WHERE id=$1",
                 &[&attempt_id, &age],
             )
             .await
             .unwrap();
-        let mut store = DeliveryStore::new(&mut client);
+        let mut store = DeliveryStore::new(&mut fixture.runtime);
         assert_eq!(
             store
                 .synthetic_grant_may_be_due(account_id, device_id, epoch, 60)
@@ -2670,113 +2601,13 @@ async fn recent_grant_precheck_is_one_bounded_index_probe() {
             due,
             "attempt aged {age}"
         );
-        client.batch_execute("ROLLBACK").await.unwrap();
+        fixture.runtime.batch_execute("ROLLBACK").await.unwrap();
     }
-    client
-        .batch_execute(&format!(
-            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
-        ))
-        .await
-        .unwrap();
+    fixture.finish().await;
 }
 
-/// A byte-pipe between the client and PostgreSQL that counts Sync-terminated
-/// batches the client sends. Every extended-protocol round trip ends with a
-/// Sync message, so the count is the number of client waits per operation:
-/// the legacy `query(&str)` path needs a Parse/Describe wait before each
-/// Bind/Execute, while the typed API sends Parse+Bind+Execute in one flight.
-struct DescribeCountingProxy {
-    url: String,
-    round_trips: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-}
-
-impl DescribeCountingProxy {
-    /// Forwards one client connection to `target` and reports its URL plus the
-    /// shared round-trip counter.
-    async fn start(target: &str) -> (Self, tokio::task::JoinHandle<()>) {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        use tokio::net::{TcpListener, TcpStream};
-
-        let (authority, rest) = target
-            .split_once("://")
-            .expect("database URL with scheme")
-            .1
-            .split_once('/')
-            .expect("database URL with a path");
-        let userinfo = match authority.rsplit_once('@') {
-            Some((userinfo, _)) => format!("{userinfo}@"),
-            None => String::new(),
-        };
-        let upstream = authority
-            .rsplit_once('@')
-            .map_or(authority, |(_, host)| host)
-            .to_string();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let url = format!("postgres://{userinfo}127.0.0.1:{port}/{rest}");
-        let round_trips = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let counter = round_trips.clone();
-        let task = tokio::spawn(async move {
-            let (mut client, _) = listener.accept().await.unwrap();
-            let mut server = TcpStream::connect(upstream).await.unwrap();
-            // The counting direction is client to server. The first message
-            // is the untagged startup frame; every later one is a one-byte
-            // tag followed by a big-endian length that counts itself.
-            let mut from_client = Vec::new();
-            let mut startup_skipped = false;
-            let mut client_buf = [0u8; 8192];
-            let mut server_buf = [0u8; 8192];
-            loop {
-                tokio::select! {
-                    read = client.read(&mut client_buf) => {
-                        let read = match read { Ok(0) | Err(_) => break, Ok(read) => read };
-                        from_client.extend_from_slice(&client_buf[..read]);
-                        let mut cursor = 0;
-                        if !startup_skipped {
-                            let startup = from_client
-                                .get(..4)
-                                .map(|prefix| u32::from_be_bytes(prefix.try_into().unwrap()) as usize);
-                            match startup {
-                                Some(length) if from_client.len() >= length && length >= 8 => {
-                                    cursor = length;
-                                    startup_skipped = true;
-                                }
-                                // The rest of the startup frame has not
-                                // arrived yet; nothing is countable so far.
-                                _ => cursor = 0,
-                            }
-                        }
-                        while from_client.len() - cursor >= 5 {
-                            let length =
-                                u32::from_be_bytes(from_client[cursor + 1..cursor + 5].try_into().unwrap())
-                                    as usize;
-                            if from_client.len() - cursor < 1 + length {
-                                break;
-                            }
-                            if from_client[cursor] == b'S' {
-                                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                            }
-                            cursor += 1 + length;
-                        }
-                        from_client.drain(..cursor);
-                        if server.write_all(&client_buf[..read]).await.is_err() {
-                            break;
-                        }
-                    }
-                    read = server.read(&mut server_buf) => {
-                        let read = match read { Ok(0) | Err(_) => break, Ok(read) => read };
-                        if client.write_all(&server_buf[..read]).await.is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-            let _ = client.shutdown().await;
-            let _ = server.shutdown().await;
-        });
-        (Self { url, round_trips }, task)
-    }
-}
+#[path = "test_wire.rs"]
+pub(crate) mod test_wire;
 
 /// The admission transaction must pay exactly one round trip per statement:
 /// six extended-protocol statements for a fresh unmetered accept, and the
@@ -2797,7 +2628,7 @@ async fn admission_pending_count_reads_the_account_pending_index_only() {
         ))
         .await
         .unwrap();
-    apply_test_migrations(&client).await;
+    apply_legacy_isolated_test_migrations(&client).await;
     let account = Uuid::new_v4();
     let device = Uuid::new_v4();
     let other_account = Uuid::new_v4();
@@ -2922,20 +2753,8 @@ async fn admission_pending_count_reads_the_account_pending_index_only() {
 #[tokio::test]
 #[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn admission_pays_one_round_trip_per_statement() {
-    let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
-        .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
-    let (setup, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
-        .await
-        .unwrap();
-    tokio::spawn(async move { connection.await.unwrap() });
-    let schema = format!("round_trip_test_{}", Uuid::new_v4().simple());
-    setup
-        .batch_execute(&format!(
-            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
-        ))
-        .await
-        .unwrap();
-    apply_test_migrations(&setup).await;
+    let fixture = crate::test_database::Fixture::for_store().await;
+    let setup = &fixture.owner;
     let account_id = Uuid::new_v4();
     let device_id = Uuid::new_v4();
     setup
@@ -2950,18 +2769,14 @@ async fn admission_pays_one_round_trip_per_statement() {
         .await
         .unwrap();
 
-    let (proxy, proxy_task) = DescribeCountingProxy::start(&url).await;
-    let (mut client, connection) = tokio_postgres::connect(&proxy.url, tokio_postgres::NoTls)
-        .await
-        .unwrap();
-    tokio::spawn(async move { connection.await.unwrap() });
-    client
-        .batch_execute(&format!("SET search_path TO {schema}"))
-        .await
-        .unwrap();
-    let before = proxy.round_trips.load(std::sync::atomic::Ordering::SeqCst);
-    assert_eq!(before, 0, "setup runs outside the proxied connection");
-    let mut store = DeliveryStore::new(&mut client);
+    let mut proxy = test_wire::Proxy::start(&fixture.config).await;
+    let before = proxy.mark();
+    assert_eq!(
+        proxy.syncs(0, before),
+        0,
+        "setup runs outside the proxied connection"
+    );
+    let mut store = DeliveryStore::new(&mut proxy.client);
     store
         .accept(NewMessage {
             account_id,
@@ -2976,10 +2791,11 @@ async fn admission_pays_one_round_trip_per_statement() {
         .unwrap();
     // One Sync-terminated batch per statement: account lock, suppression
     // check, idempotency insert, pending counts, message insert, dispatch job
-    // insert. BEGIN/COMMIT use the simple protocol and add none.
-    let after_accept = proxy.round_trips.load(std::sync::atomic::Ordering::SeqCst);
+    // insert. START TRANSACTION/COMMIT are visible simple queries, with no Sync.
+    let (after_accept, business) = proxy.transaction(before, &test_wire::UNMETERED);
+    assert_eq!(proxy.syncs(before, after_accept), 51);
     assert_eq!(
-        after_accept, 6,
+        business, 6,
         "fresh unmetered admission must pay exactly one round trip per statement"
     );
     // A billed alpha admission adds the billing statements: the tenant is
@@ -3008,7 +2824,7 @@ async fn admission_pays_one_round_trip_per_statement() {
     ] {
         setup.execute(statement, &[&billed_account]).await.unwrap();
     }
-    DeliveryStore::new(&mut client)
+    DeliveryStore::new(&mut proxy.client)
         .accept_alpha(
             NewMessage {
                 account_id: billed_account,
@@ -3026,10 +2842,10 @@ async fn admission_pays_one_round_trip_per_statement() {
     // Customer binding FOR SHARE, account lock, suppression check,
     // idempotency insert, pending counts, message insert, billing guards,
     // period upsert with its ledger entry, dispatch job insert.
-    let after_billed = proxy.round_trips.load(std::sync::atomic::Ordering::SeqCst);
+    let (after_billed, business) = proxy.transaction(after_accept, &test_wire::BILLED);
+    assert_eq!(proxy.syncs(after_accept, after_billed), 54);
     assert_eq!(
-        after_billed - after_accept,
-        9,
+        business, 9,
         "fresh billed admission must pay exactly one round trip per statement"
     );
     let reserved: i64 = setup
@@ -3043,38 +2859,24 @@ async fn admission_pays_one_round_trip_per_statement() {
     assert_eq!(reserved, 1, "the billed admission must reserve its unit");
     // Control: the legacy `query(&str)` path waits on Parse/Describe before
     // Bind/Execute, so the same single statement costs at least two batches.
-    client
+    proxy
+        .client
         .query_opt("SELECT $1::text", &[&"legacy-control"])
         .await
         .unwrap();
-    let after_control = proxy.round_trips.load(std::sync::atomic::Ordering::SeqCst);
+    let after_control = proxy.mark();
     assert!(
-        after_control >= after_billed + 2,
+        proxy.syncs(after_billed, after_control) >= 2,
         "legacy query(&str) must still pay a separate prepare round trip"
     );
-    proxy_task.abort();
-    setup
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
+    proxy.finish(after_billed, true).await;
+    fixture.finish().await;
 }
 #[tokio::test]
 #[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn one_evidence_aggregate_keeps_conflict_segment_and_proof_rules() {
-    let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
-        .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
-    let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
-        .await
-        .unwrap();
-    tokio::spawn(async move { connection.await.unwrap() });
-    let schema = format!("evidence_aggregate_test_{}", Uuid::new_v4().simple());
-    client
-        .batch_execute(&format!(
-            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
-        ))
-        .await
-        .unwrap();
-    apply_test_migrations(&client).await;
+    let mut fixture = crate::test_database::Fixture::for_store().await;
+    let client = &fixture.owner;
     let account_id = Uuid::new_v4();
     let device_id = Uuid::new_v4();
     let message_id = Uuid::new_v4();
@@ -3093,7 +2895,7 @@ async fn one_evidence_aggregate_keeps_conflict_segment_and_proof_rules() {
         .execute("UPDATE deployment_authority SET dispatch_enabled=TRUE", &[])
         .await
         .unwrap();
-    let mut store = DeliveryStore::new(&mut client);
+    let mut store = DeliveryStore::new(&mut fixture.runtime);
     store
         .accept(NewMessage {
             account_id,
@@ -3204,12 +3006,7 @@ async fn one_evidence_aggregate_keeps_conflict_segment_and_proof_rules() {
         .map(|row| row.get(0))
         .collect();
     assert_eq!(recorded.len(), 3);
-    client
-        .batch_execute(&format!(
-            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
-        ))
-        .await
-        .unwrap();
+    fixture.finish().await;
 }
 
 /// The folded billing guard statement must keep every FOR SHARE lock the
@@ -3234,7 +3031,7 @@ async fn billed_admission_guard_share_locks_every_row_it_reads() {
         ))
         .await
         .unwrap();
-    apply_test_migrations(&client).await;
+    apply_legacy_isolated_test_migrations(&client).await;
     let account = Uuid::new_v4();
     client
         .execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
@@ -3324,20 +3121,8 @@ async fn billed_admission_guard_share_locks_every_row_it_reads() {
 #[tokio::test]
 #[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn recovery_sweeps_pay_one_round_trip_per_batch() {
-    let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
-        .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
-    let (setup, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
-        .await
-        .unwrap();
-    tokio::spawn(async move { connection.await.unwrap() });
-    let schema = format!("sweep_wire_{}", Uuid::new_v4().simple());
-    setup
-        .batch_execute(&format!(
-            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
-        ))
-        .await
-        .unwrap();
-    apply_test_migrations(&setup).await;
+    let fixture = crate::test_database::Fixture::for_store().await;
+    let setup = &fixture.owner;
     let account = Uuid::new_v4();
     setup
         .execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
@@ -3371,30 +3156,20 @@ async fn recovery_sweeps_pay_one_round_trip_per_batch() {
         .await
         .unwrap();
 
-    let (proxy, proxy_task) = DescribeCountingProxy::start(&url).await;
-    let (mut client, connection) = tokio_postgres::connect(&proxy.url, tokio_postgres::NoTls)
-        .await
-        .unwrap();
-    tokio::spawn(async move { connection.await.unwrap() });
-    client
-        .batch_execute(&format!("SET search_path TO {schema}"))
-        .await
-        .unwrap();
-    let before = proxy.round_trips.load(std::sync::atomic::Ordering::SeqCst);
-    assert_eq!(before, 0);
-    let expired = DeliveryStore::new(&mut client)
+    let mut proxy = test_wire::Proxy::start(&fixture.config).await;
+    let before = proxy.mark();
+    assert_eq!(proxy.syncs(0, before), 0);
+    let expired = DeliveryStore::new(&mut proxy.client)
         .expire_due(30)
         .await
         .unwrap();
     assert_eq!(expired, 30);
+    let (after, business) = proxy.transaction(before, &test_wire::EXPIRY);
+    assert_eq!(proxy.syncs(before, after), 46);
     assert_eq!(
-        proxy.round_trips.load(std::sync::atomic::Ordering::SeqCst),
-        1,
+        business, 1,
         "a full batch must be exactly one statement, not one per row"
     );
-    proxy_task.abort();
-    setup
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
+    proxy.finish(after, false).await;
+    fixture.finish().await;
 }

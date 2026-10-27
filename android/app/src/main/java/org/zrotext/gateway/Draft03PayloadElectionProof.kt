@@ -9,11 +9,13 @@ import java.security.Signature
 /** Historical public proof only. No storage, sessions, install, grant or radio permission. */
 internal class Draft03PayloadElectionProof private constructor(
     private val accepted: AcceptedRecord03,
-    private val root: ByteArray
+    private val root: ByteArray,
+    private val originalDeviceProofDigest: ByteArray
 ) {
     override fun toString() = "Draft03PayloadElectionProof(verified)"
     internal fun acceptedRecord() = accepted.ownedCopy()
     internal fun rootPoint() = root.copyOf()
+    internal fun deviceProofSha256() = originalDeviceProofDigest.copyOf()
 
     /** All values must originate in independently authenticated durable acceptance state. */
     class AcceptedRecord03(
@@ -220,7 +222,7 @@ internal class Draft03PayloadElectionProof private constructor(
             verifySignature(device, deviceProof, framed("ZTSE/line/payload-profile/device/v1", core))
             verifySignature(owner, bytes.copyOfRange(564, 628),
                 framed("ZTSE/line/payload-profile/owner/v1", core + sha(deviceProof)))
-            return Draft03PayloadElectionProof(a, manifest.rootPoint)
+            return Draft03PayloadElectionProof(a, manifest.rootPoint, sha(deviceProof))
         }
 
         private val ORDER = BigInteger("FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551", 16)

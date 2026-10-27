@@ -19,6 +19,8 @@ use tokio_postgres::Client;
 use uuid::Uuid;
 
 pub mod binding;
+mod socket_actor;
+pub use socket_actor::VerifiedDevice;
 
 const PAIRING_LIFETIME_SECS: i32 = 300;
 /// A stateless socket challenge stays verifiable this long after issuance.
@@ -636,17 +638,19 @@ pub async fn list_account_devices(
 
 /// The owner must compare both values as shown on the phone and in the browser.
 /// Five failed approvals lock the pairing. Returns the new tenant-owned device.
-pub async fn approve_pairing(
-    client: &mut Client,
+pub async fn approve_pairing<C: crate::runtime_db::NativeConnection>(
+    client: &mut C,
     principal: &SessionPrincipal,
     pairing_id: Uuid,
     comparison_code: &str,
     key_fingerprint: &str,
 ) -> Result<Uuid, EnrollmentError> {
-    if !owner_session_active(client, principal).await? {
+    if !owner_session_active(client.native_client(), principal).await? {
         return Err(EnrollmentError::Unauthorized);
     }
-    let tx = client.transaction().await?;
+    let tx = crate::runtime_db::begin_native(client)
+        .await
+        .map_err(|_| EnrollmentError::AuthorityUnavailable)?;
     // Serialize approvals and subscription cap changes for this account.
     tx.query_one(
         "SELECT id FROM accounts WHERE id=$1 FOR UPDATE",
@@ -800,13 +804,13 @@ pub async fn cancel_pairing(
 /// still be active. A valid proof authorizes `claim_session`; an invalid
 /// nonce, an expired challenge, or a bad signature all return `Unauthorized`
 /// without distinguishing which check failed.
-pub(crate) async fn authenticate_socket_proof(
+pub(crate) async fn authenticate_socket_actor(
     client: &Client,
     hasher: &EnrollmentHasher,
     challenge: &DeviceChallenge,
     signature_der: &[u8],
     now_ms: u64,
-) -> Result<AuthenticatedDevice, EnrollmentError> {
+) -> Result<VerifiedDevice, EnrollmentError> {
     if !socket_challenge_is_current(hasher, challenge, now_ms) {
         return Err(EnrollmentError::Unauthorized);
     }
@@ -819,13 +823,22 @@ pub(crate) async fn authenticate_socket_proof(
     let Some(sec1) = row.map(|row| row.get::<_, Vec<u8>>(0)) else {
         return Err(EnrollmentError::Unauthorized);
     };
-    if !verify_signature(&sec1, &device_challenge_bytes(challenge), signature_der) {
-        return Err(EnrollmentError::Unauthorized);
-    }
-    Ok(AuthenticatedDevice {
-        account_id: challenge.account_id,
-        device_id: challenge.device_id,
-    })
+    socket_actor::verify(challenge, &sec1, signature_der)
+}
+
+// Historical fixtures exercise UUID-only consumers separately. Production
+// socket admission retains the opaque verified point instead of this projection.
+#[cfg(test)]
+pub(crate) async fn authenticate_socket_proof(
+    client: &Client,
+    hasher: &EnrollmentHasher,
+    challenge: &DeviceChallenge,
+    signature_der: &[u8],
+    now_ms: u64,
+) -> Result<AuthenticatedDevice, EnrollmentError> {
+    authenticate_socket_actor(client, hasher, challenge, signature_der, now_ms)
+        .await
+        .map(|actor| actor.identity())
 }
 
 pub async fn device_still_active(
@@ -842,15 +855,17 @@ pub async fn device_still_active(
 /// verify against the enrolled key at proof time) and removes the current
 /// database session lease. Socket handlers must check active state before
 /// accepting events or issuing dispatch grants.
-pub async fn revoke_device(
-    client: &mut Client,
+pub async fn revoke_device<C: crate::runtime_db::NativeConnection>(
+    client: &mut C,
     principal: &SessionPrincipal,
     device_id: Uuid,
 ) -> Result<bool, EnrollmentError> {
-    if !owner_session_active(client, principal).await? {
+    if !owner_session_active(client.native_client(), principal).await? {
         return Err(EnrollmentError::Unauthorized);
     }
-    let tx = client.transaction().await?;
+    let tx = crate::runtime_db::begin_native(client)
+        .await
+        .map_err(|_| EnrollmentError::AuthorityUnavailable)?;
     let updated = tx.execute(
         "UPDATE devices SET revoked_at=now() WHERE id=$1 AND account_id=$2 AND revoked_at IS NULL",
         &[&device_id, &principal.tenant.account_id()],

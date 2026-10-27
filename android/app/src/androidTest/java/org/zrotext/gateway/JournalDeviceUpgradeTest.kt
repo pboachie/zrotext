@@ -131,16 +131,16 @@ class JournalDeviceUpgradeTest {
             SmsJournalDatabase.MIGRATION_7_8, SmsJournalDatabase.MIGRATION_8_9,
             SmsJournalDatabase.MIGRATION_9_10, SmsJournalDatabase.MIGRATION_10_11,
             SmsJournalDatabase.MIGRATION_11_12, SmsJournalDatabase.MIGRATION_12_13,
-            SmsJournalDatabase.MIGRATION_13_14,
+            SmsJournalDatabase.MIGRATION_13_14, SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17, SmsJournalDatabase.MIGRATION_17_18, SmsJournalDatabase.MIGRATION_18_19, SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24, SmsJournalDatabase.MIGRATION_24_25, SmsJournalDatabase.MIGRATION_25_26,
         ) else arrayOf(SmsJournalDatabase.MIGRATION_11_12, SmsJournalDatabase.MIGRATION_12_13,
-            SmsJournalDatabase.MIGRATION_13_14)
+            SmsJournalDatabase.MIGRATION_13_14, SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17, SmsJournalDatabase.MIGRATION_17_18, SmsJournalDatabase.MIGRATION_18_19, SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24, SmsJournalDatabase.MIGRATION_24_25, SmsJournalDatabase.MIGRATION_25_26)
         return Room.databaseBuilder(context, SmsJournalDatabase::class.java, name)
             .allowMainThreadQueries().addMigrations(*migrations).build()
     }
 
     private fun assertCurrentSchema(room: SmsJournalDatabase): String {
         val db = room.openHelper.writableDatabase
-        assertEquals(14, db.version)
+        assertEquals(26, db.version)
         val expectedBindingColumns = legacyColumns(11).getValue("local_line_binding") + listOf(
             Column("continuityKind", "TEXT", true, "'physical'"),
             Column("profilePortIndex", "INTEGER", false, "NULL"),
@@ -166,6 +166,83 @@ class JournalDeviceUpgradeTest {
             ))
         }
         assertEquals(expectedBindingColumns, bindingColumns)
+        // Independent exact current typed schema, including the nullable UNKNOWN witness.
+        // Constructor defaults are not SQL defaults; existing old facts remain untouched.
+        val expectedTypedColumns = mapOf(
+            "typed_submit03" to listOf(
+                Column("attemptId", "TEXT", true, primary = 1),
+                Column("eventId", "TEXT", true),
+                Column("accountId", "TEXT", true),
+                Column("deviceId", "TEXT", true),
+                Column("messageId", "TEXT", true),
+                Column("commandB64url", "TEXT", true),
+                Column("commandSha256", "TEXT", true),
+                Column("originalEnrolledPoint", "TEXT", true),
+                Column("originalEnrolledKeyId", "TEXT", true),
+                Column("phase", "TEXT", true),
+                Column("ackSha256", "TEXT", false),
+                Column("entryReservedMs", "INTEGER", false),
+                Column("closureB64url", "TEXT", false),
+                Column("closureSha256", "TEXT", false),
+                Column("conflict", "INTEGER", true),
+                Column("originalOriginSha256", "TEXT", false),
+                Column("lastCallbackOrdinal", "INTEGER", false),
+                Column("closingId", "TEXT", false),
+                Column("closingFrom", "INTEGER", false),
+                Column("closureProofState", "TEXT", false),
+            ),
+            "typed_no_submit03_lineages" to listOf(
+                Column("closureId", "TEXT", true, primary = 1),
+                Column("attemptId", "TEXT", true),
+                Column("closureSha256", "TEXT", true),
+                Column("originalCommandSha256", "TEXT", true),
+                Column("rootRequestId", "TEXT", true),
+                Column("currentRequestId", "TEXT", true),
+                Column("proofCount", "INTEGER", true),
+                Column("ioCount", "INTEGER", true),
+            ),
+            "typed_no_submit03_proofs" to listOf(
+                Column("requestId", "TEXT", true, primary = 1),
+                Column("attemptId", "TEXT", true),
+                Column("closureId", "TEXT", true),
+                Column("closureSha256", "TEXT", true),
+                Column("commandSha256", "TEXT", true),
+                Column("previousRequestId", "TEXT", false),
+                Column("previousChallengeId", "TEXT", false),
+                Column("previousCoreSha256", "TEXT", false),
+                Column("previousExpiresMs", "INTEGER", false),
+                Column("coreB64url", "TEXT", false),
+                Column("nonceB64url", "TEXT", false),
+                Column("signatureState", "TEXT", true),
+                Column("signatureB64url", "TEXT", false),
+                Column("signatureClockId", "TEXT", false),
+                Column("signatureStatusId", "TEXT", false),
+                Column("acceptedMs", "INTEGER", false),
+            ),
+            "typed_no_submit03_io" to listOf(
+                Column("requestId", "TEXT", true, primary = 1),
+                Column("proofRequestId", "TEXT", true),
+                Column("closureId", "TEXT", true),
+                Column("kind", "TEXT", true),
+                Column("connectionEpoch", "INTEGER", true),
+                Column("requestB64url", "TEXT", true),
+                Column("replyB64url", "TEXT", false),
+            ),
+        )
+        for ((table, expected) in expectedTypedColumns) {
+            val actual = mutableListOf<Column>()
+            db.query("PRAGMA table_info(`$table`)").use { cursor ->
+                while (cursor.moveToNext()) actual.add(Column(
+                    cursor.getString(cursor.getColumnIndexOrThrow("name")),
+                    cursor.getString(cursor.getColumnIndexOrThrow("type")),
+                    cursor.getInt(cursor.getColumnIndexOrThrow("notnull")) == 1,
+                    cursor.getColumnIndexOrThrow("dflt_value").let { if (cursor.isNull(it)) null else cursor.getString(it) },
+                    cursor.getInt(cursor.getColumnIndexOrThrow("pk")),
+                ))
+            }
+            assertEquals("Exact current columns: $table", expected, actual)
+        }
+        for (table in expectedTypedColumns.keys) assertEquals(0L, count(room, table))
         db.query("PRAGMA foreign_key_check").use { assertFalse(it.moveToFirst()) }
         val tables = mutableSetOf<String>()
         db.query("SELECT name FROM sqlite_master WHERE type = 'table'").use { cursor ->
@@ -174,7 +251,7 @@ class JournalDeviceUpgradeTest {
                 if (isApplicationTable(table)) tables.add(table)
             }
         }
-        assertEquals(legacyColumns(11).keys + setOf("sealed_preparations", "line_activation_v2"), tables)
+        assertEquals(legacyColumns(11).keys + setOf("sealed_preparations", "line_activation_v2", "profile03_elections", "selection_refresh03", "profile03_unaccepted_closures", "selection_refresh03_closures", "capture03_routes", "capture03_counters", "capture03_records", "capture03_modes", "inbound_protection_state", "protection_setup_command", "protection_setup_providers", "protection_origin_attempts", "protection_origin_installed", "typed_submit03", "typed_callback03", "typed_history03_sources", "typed_history03_clocks", "typed_submit03_requests", "typed_outcome03_reports", "typed_outcome03_uploads", "typed_no_submit03_lineages", "typed_no_submit03_proofs", "typed_no_submit03_io"), tables)
         val indexes = mutableSetOf<String>()
         db.query("SELECT name FROM sqlite_master WHERE type = 'index'").use { cursor ->
             while (cursor.moveToNext()) {
@@ -182,7 +259,16 @@ class JournalDeviceUpgradeTest {
                 if (!index.startsWith("sqlite_")) indexes.add(index)
             }
         }
-        assertEquals(legacyIndexes(11).map { it.name }.toSet() + "index_sealed_preparations_attemptId", indexes)
+        assertEquals(legacyIndexes(11).map { it.name }.toSet() + setOf("index_sealed_preparations_attemptId", "index_profile03_elections_newBindingId",
+            "index_selection_refresh03_bindingId_deviceSessionSha256", "index_capture03_routes_captureId",
+            "index_capture03_records_routeToken", "index_capture03_records_accountId_deviceId_sequence", "index_protection_setup_providers_operationId", "index_protection_origin_attempts_attemptId",
+            "index_typed_submit03_eventId", "index_typed_submit03_accountId_messageId", "index_typed_callback03_attemptId",
+            "index_typed_callback03_attemptId_segmentIndex_delivery_resultCode_deliveryStatus", "index_typed_callback03_attemptId_arrivalOrdinal",
+            "index_typed_history03_sources_eventId", "index_typed_history03_sources_attemptId",
+            "index_typed_history03_clocks_attemptId", "index_typed_history03_clocks_subjectId", "index_typed_submit03_requests_eventId",
+            "index_typed_outcome03_reports_attemptId", "index_typed_outcome03_uploads_eventId_ackB64url", "index_typed_outcome03_uploads_attemptId",
+            "index_typed_no_submit03_lineages_attemptId", "index_typed_no_submit03_proofs_closureId", "index_typed_no_submit03_proofs_previousRequestId",
+            "index_typed_no_submit03_io_proofRequestId", "index_typed_no_submit03_io_closureId", "index_typed_no_submit03_io_proofRequestId_kind_replyB64url"), indexes)
         return db.query("SELECT identity_hash FROM room_master_table WHERE id = 42").use { cursor ->
             assertEquals(1, cursor.count)
             assertTrue(cursor.moveToFirst())

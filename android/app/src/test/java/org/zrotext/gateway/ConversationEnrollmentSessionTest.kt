@@ -23,7 +23,7 @@ internal class ConversationEnrollmentFixture {
     var protection = 0
     var security = PayloadKeySecurity.TRUSTED_ENVIRONMENT
     var creating: () -> Unit = {}
-    fun session() = ConversationEnrollmentSession(account, { check(live) }, {
+    fun session() = ConversationEnrollmentSession(account, { check(live) }, { check(live) }, {
         readers++; creating(); DevicePayloadPublic(pin.copyOfRange(29, 94), ByteArray(32) { 1 }, security)
     }, storage, { protection++ })
     fun compared(session: ConversationEnrollmentSession) = session.reviewRoot(pin).fingerprintHex

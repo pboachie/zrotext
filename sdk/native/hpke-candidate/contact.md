@@ -66,7 +66,7 @@ version or every future URL standard.
 Use a clean checkout of producer commit
 `ccf28fe445ba959aa01d99fed6bd9ee3188b749c`, then run `npm ci --ignore-scripts`
 and `npm run build` in its `sdk/typescript` directory. Build `go/cmd/contact`
-with Go1.26.9 or Rust's `contact` example with Rust1.97.1, then run:
+with Go1.26.10 or Rust's `contact` example with Rust1.99.1, then run:
 
 ```sh
 python sdk/native/hpke-candidate/test-contact-field.py --producer PATH_TO_PINNED_CHECKOUT --binary PATH_TO_NATIVE_PROBE

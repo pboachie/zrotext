@@ -18,11 +18,8 @@ async fn owner_status(case: &Case) -> serde_json::Value {
     )
     .await
     .unwrap();
-    let base = std::env::var("ZT_AUTH_TEST_DATABASE_URL").unwrap();
-    let separator = if base.contains('?') { '&' } else { '?' };
-    let url = format!("{base}{separator}options=-csearch_path%3D{}", case.schema);
     let state = AuthHttpState::new(
-        url,
+        case.url.clone(),
         hasher,
         "https://zrotext.example".into(),
         Arc::new(DisabledVerificationDispatcher),
@@ -82,7 +79,7 @@ fn assert_current(view: &serde_json::Value, eligible: bool, limit: i64) {
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; uses a unique disposable schema"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; disposable current public database"]
 async fn owner_projection_rechecks_missing_dirty_cancelled_and_held_invoice_authority() {
     let mut case = Case::new().await;
     let missing = owner_status(&case).await;
@@ -141,7 +138,7 @@ async fn owner_projection_rechecks_missing_dirty_cancelled_and_held_invoice_auth
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; uses a unique disposable schema"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; disposable current public database"]
 async fn unpaid_upgrade_status_uses_original_grace_ceiling_and_rechecks_its_deadline() {
     let mut case = Case::new().await;
     let paid = case.observation("active", "paid", "subscription_cycle");
@@ -213,7 +210,7 @@ async fn unpaid_upgrade_status_uses_original_grace_ceiling_and_rechecks_its_dead
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; uses a unique disposable schema"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; disposable current public database"]
 async fn owner_invoice_status_does_not_label_expired_period_as_current_authority() {
     let mut case = Case::new().await;
     let now: i64 = case

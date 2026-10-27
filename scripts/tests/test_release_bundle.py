@@ -34,7 +34,8 @@ def embedded_web_files(root: Path) -> set[str]:
             match = literal.match(argument)
             if match is None:
                 # Existing test macros interpolate migration filenames only.
-                if (source.name == "tests.rs" or source.name.endswith("_tests.rs")) \
+                if (source.name == "tests.rs" or source.name.endswith("_tests.rs")
+                        or source == root / "crates/server/src/test_migration_inventory.rs") \
                         and migration.match(argument):
                     continue
                 raise ValueError(f"Unclassified embedded source in {source.name}")
@@ -173,16 +174,27 @@ include_str!("../../../protocol/v1/schema.json");
     def test_inventory_classifies_only_known_migration_test_macros(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source = root / "crates/server/src/queue_tests.rs"
-            source.parent.mkdir(parents=True)
-            for prefix in ('"../../../../deploy/compose/migrations/"',
-                           'env!("CARGO_MANIFEST_DIR"), "/../../deploy/compose/migrations/"'):
-                source.write_text(f'include_str!(concat!({prefix}, $name))', encoding="utf-8")
-                self.assertEqual(embedded_web_files(root), set())
-            source.write_text('include_str!(concat!("../../../web/owner/", $name))',
-                              encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "Unclassified embedded"):
-                embedded_web_files(root)
+            sources = root / "crates/server/src"
+            sources.mkdir(parents=True)
+            for name in ("queue_tests.rs", "test_migration_inventory.rs"):
+                source = sources / name
+                for prefix in ('"../../../../deploy/compose/migrations/"',
+                               'env!("CARGO_MANIFEST_DIR"), "/../../deploy/compose/migrations/"'):
+                    source.write_text(f'include_str!(concat!({prefix}, $name))', encoding="utf-8")
+                    self.assertEqual(embedded_web_files(root), set())
+                source.write_text('include_str!(concat!("../../../web/owner/", $name))',
+                                  encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "Unclassified embedded"):
+                    embedded_web_files(root)
+                source.unlink()
+            # A production file or same-named helper elsewhere is not exempt.
+            for name in ("owner_ui.rs", "feature/test_migration_inventory.rs"):
+                source = sources / name
+                source.parent.mkdir(exist_ok=True)
+                source.write_text('include_str!(concat!("../../../deploy/compose/migrations/", $name))', encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "Unclassified embedded"):
+                    embedded_web_files(root)
+                source.unlink()
 
     def test_each_embedded_asset_changes_the_release_web_digest(self):
         embedded = embedded_web_files(ROOT)

@@ -14,6 +14,7 @@ use uuid::Uuid;
 pub(super) struct Policy {
     origin_hash: [u8; 32],
     pub(super) sealed_line_setup: bool,
+    pub(super) profile03_origin: Option<String>,
 }
 pub(super) struct Negotiated {
     phone_session: Uuid,
@@ -22,7 +23,13 @@ pub(super) struct Negotiated {
     deployment_epoch: i64,
 }
 impl Policy {
+    pub(super) fn protection_origin_digest(&self) -> [u8; 32] {
+        self.origin_hash
+    }
     pub(super) fn new(origin: &str) -> Result<Self, &'static str> {
+        if origin.chars().any(char::is_whitespace) {
+            return Err("Conversation WSS origin invalid");
+        }
         let url = url::Url::parse(origin).map_err(|_| "Conversation WSS origin invalid")?;
         if url.scheme() != "wss"
             || !url.username().is_empty()
@@ -42,6 +49,7 @@ impl Policy {
         Ok(Self {
             origin_hash: Sha256::digest(canonical.as_bytes()).into(),
             sealed_line_setup: false,
+            profile03_origin: None,
         })
     }
     pub(super) fn negotiate(

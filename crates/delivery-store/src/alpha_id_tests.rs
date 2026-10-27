@@ -19,20 +19,8 @@ fn alpha_message_id_is_stable_per_account_and_never_the_client_id() {
 #[tokio::test]
 #[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn alpha_client_message_ids_are_scoped_per_account() {
-    let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
-        .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
-    let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
-        .await
-        .unwrap();
-    tokio::spawn(async move { connection.await.unwrap() });
-    let schema = format!("alpha_ids_{}", Uuid::new_v4().simple());
-    client
-        .batch_execute(&format!(
-            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
-        ))
-        .await
-        .unwrap();
-    crate::tests::apply_test_migrations(&client).await;
+    let mut fixture = crate::test_database::Fixture::for_store().await;
+    let client = &fixture.owner;
     let (account_a, device_a) = (Uuid::new_v4(), Uuid::new_v4());
     let (account_b, device_b) = (Uuid::new_v4(), Uuid::new_v4());
     for (account, device) in [(account_a, device_a), (account_b, device_b)] {
@@ -60,7 +48,7 @@ async fn alpha_client_message_ids_are_scoped_per_account() {
         expires_at_ms: expiry,
     };
 
-    let first_a = DeliveryStore::new(&mut client)
+    let first_a = DeliveryStore::new(&mut fixture.runtime)
         .accept_alpha(input(account_a, device_a, shared, "shared-key"), false)
         .await
         .unwrap();
@@ -69,7 +57,7 @@ async fn alpha_client_message_ids_are_scoped_per_account() {
 
     // Another account reusing the same client ID and key is ordinary new work,
     // not a conflict that would reveal account A's message.
-    let first_b = DeliveryStore::new(&mut client)
+    let first_b = DeliveryStore::new(&mut fixture.runtime)
         .accept_alpha(input(account_b, device_b, shared, "shared-key"), false)
         .await
         .unwrap();
@@ -78,7 +66,7 @@ async fn alpha_client_message_ids_are_scoped_per_account() {
     assert_ne!(first_b.message_id, shared);
 
     // Probing with account A's returned server ID is also just new work.
-    let probe = DeliveryStore::new(&mut client)
+    let probe = DeliveryStore::new(&mut fixture.runtime)
         .accept_alpha(
             input(account_b, device_b, first_a.message_id, "probe-key"),
             false,
@@ -89,20 +77,20 @@ async fn alpha_client_message_ids_are_scoped_per_account() {
     assert_ne!(probe.message_id, first_a.message_id);
 
     // Within one account the client ID still names one message.
-    let replay_a = DeliveryStore::new(&mut client)
+    let replay_a = DeliveryStore::new(&mut fixture.runtime)
         .accept_alpha(input(account_a, device_a, shared, "shared-key"), false)
         .await
         .unwrap();
     assert_eq!(replay_a.message_id, first_a.message_id);
     assert!(!replay_a.created);
     assert!(matches!(
-        DeliveryStore::new(&mut client)
+        DeliveryStore::new(&mut fixture.runtime)
             .accept_alpha(input(account_a, device_a, shared, "other-key"), false)
             .await,
         Err(StoreError::MessageIdConflict)
     ));
 
-    let store = DeliveryStore::new(&mut client);
+    let store = DeliveryStore::new(&mut fixture.runtime);
     assert!(
         store
             .status(account_a, first_a.message_id)
@@ -135,10 +123,5 @@ async fn alpha_client_message_ids_are_scoped_per_account() {
         .map(|row| (0..3).map(|index| row.get(index)).collect())
         .unwrap();
     assert_eq!(counts, vec![1, 2, 0]);
-    client
-        .batch_execute(&format!(
-            "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
-        ))
-        .await
-        .unwrap();
+    fixture.finish().await;
 }

@@ -146,6 +146,57 @@ class WolfHpkeKeystoreBridgeDeviceTest {
         }
     }
 
+    @Test fun maintainedPublicSenderOpensThroughExistingKeystoreWithoutChangingCallerKey() {
+        assumeTrue(Build.VERSION.SDK_INT >= 31)
+        val alias = newAlias(); val store = openStore()
+        val cek = ByteArray(32) { (it + 1).toByte() }; val expected = cek.copyOf()
+        try {
+            val public = recipient(alias).getOrCreateForEnrollment()
+            val info = "ZTSE/wrap/v3\u0000".toByteArray(Charsets.US_ASCII) + public.keyId
+            val aad = "ZTSE/wrap-aad/v3\u0000".toByteArray(Charsets.US_ASCII) + public.keyId
+            val wrapped = WolfHpkePublicSender().seal(public.point, cek, info, aad) {}
+            assertArrayEquals(expected, cek)
+            assertEquals(113, wrapped.size)
+            val opened = receiver(alias).open(public.keyId, wrapped.copyOfRange(0, 65), wrapped.copyOfRange(65, 113), info, aad)
+            try { assertArrayEquals(expected, opened) } finally { opened.fill(0) }
+            rejects { receiver(alias).open(public.keyId, wrapped.copyOfRange(0, 65), wrapped.copyOfRange(65, 113), info, aad + 1) }
+            rejects { WolfHpkePublicSender().seal(public.point, cek, info, byteArrayOf()) {} }
+            rejects { WolfHpkePublicSender().seal(public.point, cek, info, info.copyOf()) {} }
+            assertArrayEquals(public.point, recipient(alias).existingPublic().point)
+            assertNull((store.getKey(alias, null) as java.security.PrivateKey).encoded)
+        } finally {
+            cek.fill(0); expected.fill(0)
+            if (store.containsAlias(alias)) store.deleteEntry(alias)
+            assertFalse(store.containsAlias(alias))
+        }
+    }
+
+    @Test fun maintainedSenderWithdrawalRefusesEveryWaitAndClearsTheScopedCallback() {
+        assumeTrue(Build.VERSION.SDK_INT >= 31)
+        val alias = newAlias(); val store = openStore(); val cek = ByteArray(32) { 7 }
+        try {
+            val public = recipient(alias).getOrCreateForEnrollment(); val sender = WolfHpkePublicSender()
+            val info = "ZTSE/wrap/v3\u0000".toByteArray(Charsets.US_ASCII) + public.keyId
+            val aad = "ZTSE/wrap-aad/v3\u0000".toByteArray(Charsets.US_ASCII) + public.keyId
+            var checks = 0
+            sender.seal(public.point, cek, info, aad) { checks++ }
+            assertTrue("Ephemeral acquisition, native entry, ECDH and return must be guarded", checks >= 8)
+            val boundaries = checks
+            for (stopAt in 1..boundaries) {
+                checks = 0
+                rejects { sender.seal(public.point, cek, info, aad) { checks++; check(checks < stopAt) } }
+                assertEquals(stopAt, checks)
+            }
+            val wrapped = sender.seal(public.point, cek, info, aad) {}
+            val opened = receiver(alias).open(public.keyId, wrapped.copyOfRange(0, 65), wrapped.copyOfRange(65, 113), info, aad)
+            try { assertArrayEquals(cek, opened) } finally { opened.fill(0) }
+        } finally {
+            cek.fill(0)
+            if (store.containsAlias(alias)) store.deleteEntry(alias)
+            assertFalse(store.containsAlias(alias))
+        }
+    }
+
     @Test fun lostRecipientKeyRefusesWithoutRegeneration() {
         assumeTrue(Build.VERSION.SDK_INT >= 31)
         val alias = newAlias()
@@ -158,6 +209,43 @@ class WolfHpkeKeystoreBridgeDeviceTest {
             // The refused receive must not resurrect or replace the identity.
             assertFalse(store.containsAlias(alias))
         } finally {
+            if (store.containsAlias(alias)) store.deleteEntry(alias)
+            assertFalse(store.containsAlias(alias))
+        }
+    }
+
+    @Test fun currentAdmissionRefusesAtEveryHardwareWaitAndCannotLeakTheGuardIntoAnotherOpen() {
+        assumeTrue(Build.VERSION.SDK_INT >= 31)
+        val alias = newAlias()
+        val store = openStore()
+        val cek = ByteArray(32) { (it + 1).toByte() }
+        try {
+            val public = recipient(alias).getOrCreateForEnrollment()
+            val info = "ZTSE/wrap/v3\u0000".toByteArray(Charsets.US_ASCII) + public.keyId
+            val aad = "ZTSE/wrap-aad/v3\u0000".toByteArray(Charsets.US_ASCII) + public.keyId
+            val (enc, sealed) = SoftwareHpkeSeal.seal(public.point, cek, info, aad)
+            val target = receiver(alias)
+            var checks = 0
+            val opened = target.openCurrent(public.keyId, enc, sealed, info, aad) { checks++ }
+            try { assertArrayEquals(cek, opened) } finally { opened.fill(0) }
+            assertTrue("Acquisition, every ECDH wait and the post-lifecycle return must be guarded", checks >= 8)
+            val boundaries = checks
+            for (stopAt in 1..boundaries) {
+                checks = 0
+                rejects {
+                    target.openCurrent(public.keyId, enc, sealed, info, aad) {
+                        checks++
+                        check(checks < stopAt) { "Synthetic admission withdrawal" }
+                    }
+                }
+                assertEquals(stopAt, checks)
+            }
+            // A primitive open has no admission policy and grants no replay/effect authority.
+            // This independent KAT proves the failed call removed its scoped thread callback.
+            val again = target.open(public.keyId, enc, sealed, info, aad)
+            try { assertArrayEquals(cek, again) } finally { again.fill(0) }
+        } finally {
+            cek.fill(0)
             if (store.containsAlias(alias)) store.deleteEntry(alias)
             assertFalse(store.containsAlias(alias))
         }

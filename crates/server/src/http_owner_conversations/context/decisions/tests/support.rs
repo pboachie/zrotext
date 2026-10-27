@@ -67,7 +67,10 @@ impl Case {
         f.bytes.extend([0; 64]);
         // Manifest leaf records have a canonical role/key order.
         let mut leaves: Vec<Vec<u8>> = f.bytes[151..f.bytes.len() - 64]
-            .chunks_exact(149)
+            .as_chunks::<149>()
+            .0
+            .iter()
+            .map(|chunk| chunk.as_slice())
             .map(|v| v.to_vec())
             .collect();
         leaves.sort_by(|a, b| a[..33].cmp(&b[..33]));

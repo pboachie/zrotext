@@ -104,6 +104,9 @@ limits! {
     ReviewRootPassword,
     ReviewRootPasswordFailures,
     ReviewRootManage,
+    PayloadProfileManage,
+    PayloadProfileRead,
+    PayloadProfileFetch,
 }
 
 impl Limit {
@@ -135,6 +138,8 @@ impl Limit {
                 | Self::ReviewRootPassword
                 | Self::ReviewRootPasswordFailures
                 | Self::ReviewRootManage
+                | Self::PayloadProfileManage
+                | Self::PayloadProfileRead
         )
     }
 
@@ -208,6 +213,9 @@ impl Limit {
             Self::MfaStepUp => ("mfa_step_up", 120, 60, Some((5, 900))),
             Self::BillingSession => ("billing_session", 120, 60, Some((8, 60))),
             Self::SmsLineActivation => ("sms_line_activation", 120, 60, Some((30, 900))),
+            Self::PayloadProfileManage => ("payload_profile_manage", 60, 900, Some((60, 900))),
+            Self::PayloadProfileRead => ("payload_profile_read", 120, 60, Some((120, 60))),
+            Self::PayloadProfileFetch => ("payload_profile_fetch", 600, 60, Some((60, 60))),
             // One MMS spike grant per device and recipient per window: the
             // subject budget of 1 is the server-side one-use gate for #438.
             Self::MmsSpikeGrant => ("mms_spike_grant", 300, 7_776_000, Some((1, 7_776_000))),
@@ -288,6 +296,194 @@ pub(crate) async fn consume_owner_management(
     subject: &str,
 ) -> Result<bool, tokio_postgres::Error> {
     charge(tx, hasher, Limit::MfaManage, Some(subject), Lane::Anonymous).await
+}
+
+/// All spenders have already authenticated an actual held account owner. Keep
+/// these counters account/user scoped, with no shared deployment route row.
+/// The separately serialized genuine factor failure budget remains unchanged.
+pub(crate) async fn consume_payload_profile(
+    tx: &Transaction<'_>,
+    hasher: &TokenHasher,
+    subject: &str,
+    mutation: bool,
+) -> Result<bool, tokio_postgres::Error> {
+    charge(
+        tx,
+        hasher,
+        if mutation {
+            Limit::PayloadProfileManage
+        } else {
+            Limit::PayloadProfileRead
+        },
+        Some(subject),
+        Lane::Anonymous,
+    )
+    .await
+}
+
+/// Separately committed ordinary device-control admission. A raw UUID or
+/// owner Principal cannot supply the verified socket actor required here.
+pub(crate) async fn consume_device_protection(
+    tx: &Transaction<'_>,
+    hasher: &TokenHasher,
+    actor: &crate::enrollment::VerifiedDevice,
+    mutation: bool,
+) -> Result<bool, tokio_postgres::Error> {
+    let limit = if mutation {
+        Limit::PayloadProfileManage
+    } else {
+        Limit::PayloadProfileRead
+    };
+    let subject = format!(
+        "protection-origin:{}:{}",
+        actor.identity().account_id,
+        actor
+            .signing_key_id()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    );
+    let hash = subject_hash(hasher, limit, &subject, Lane::Verified)
+        .expect("device control policy has a subject");
+    let (scope, _, _, _) = limit.policy();
+    let (maximum, seconds) = limit
+        .subject_policy(Lane::Verified)
+        .expect("device control policy has a bound");
+    Ok(tx
+        .query_typed_one(
+            "SELECT public.auth_abuse_consume($1,$2,NULL::bytea,$3,$4,0,0)",
+            &[
+                (&scope, Type::TEXT),
+                (&&hash[..], Type::BYTEA),
+                (&maximum, Type::INT4),
+                (&seconds, Type::INT4),
+            ],
+        )
+        .await?
+        .get(0))
+}
+
+/// Typed message/evidence admission on the genuine original device actor.
+/// The caller holds its current/native history scope and commits this debit
+/// before beginning a separate effect/proof transaction. No wire account,
+/// connection-local counter or owner Principal selects the subject.
+pub(crate) async fn consume_conversation_effect03(
+    tx: &Transaction<'_>,
+    hasher: &TokenHasher,
+    actor: &crate::enrollment::VerifiedDevice,
+    admission: crate::conversation_effect03::wire::OrdinaryAdmission03,
+) -> Result<bool, tokio_postgres::Error> {
+    use crate::conversation_effect03::wire::OrdinaryAdmission03;
+    let identity = actor.identity();
+    let subject = format!(
+        "conversation-effects03:{}:{}",
+        identity.account_id, identity.device_id
+    );
+    let hash = hasher.digest(b"abuse-verified-v1", &subject);
+    let allowed: bool = tx
+        .query_typed_one(
+            "SELECT public.auth_abuse_consume($1,$2,NULL::bytea,120,60,0,0)",
+            &[
+                (&"conversation_effect03_frames", Type::TEXT),
+                (&&hash[..], Type::BYTEA),
+            ],
+        )
+        .await?
+        .get(0);
+    if !allowed || admission == OrdinaryAdmission03::Evidence {
+        return Ok(allowed);
+    }
+    let limit = if admission == OrdinaryAdmission03::Manage {
+        Limit::PayloadProfileManage
+    } else {
+        Limit::PayloadProfileRead
+    };
+    let (scope, _, _, _) = limit.policy();
+    let (maximum, seconds) = limit
+        .subject_policy(Lane::Verified)
+        .expect("device policy bound");
+    let hash =
+        subject_hash(hasher, limit, &subject, Lane::Verified).expect("device policy subject");
+    Ok(tx
+        .query_typed_one(
+            "SELECT public.auth_abuse_consume($1,$2,NULL::bytea,$3,$4,0,0)",
+            &[
+                (&scope, Type::TEXT),
+                (&&hash[..], Type::BYTEA),
+                (&maximum, Type::INT4),
+                (&seconds, Type::INT4),
+            ],
+        )
+        .await?
+        .get(0))
+}
+
+/// Profile03 fetch uses only the closed public installation. The anonymous
+/// route has no device subject: public UUIDs cannot spend a real device's
+/// share. Only a separately verified enrolled signature may name that subject.
+/// Autocommit callers retain this debit when later current permission refuses.
+pub(crate) async fn consume_profile_fetch(
+    client: &Client,
+    hasher: &TokenHasher,
+    verified_subject: Option<&str>,
+) -> Result<bool, tokio_postgres::Error> {
+    let limit = Limit::PayloadProfileFetch;
+    let (scope, maximum, seconds, _) = limit.policy();
+    let lane = if verified_subject.is_some() {
+        Lane::Verified
+    } else {
+        Lane::Anonymous
+    };
+    let route = hasher.digest(
+        if verified_subject.is_some() {
+            b"abuse-verified-v1"
+        } else {
+            b"abuse-global-v1"
+        },
+        scope,
+    );
+    let subject = verified_subject.and_then(|subject| subject_hash(hasher, limit, subject, lane));
+    let (subject_max, subject_seconds) = limit.subject_policy(lane).unwrap_or((0, 0));
+    let route_max = if verified_subject.is_some() {
+        maximum * VERIFIED_CEILING_FACTOR
+    } else {
+        maximum
+    };
+    let row = client
+        .query_typed_one(
+            "SELECT public.auth_abuse_consume($1,$2,$3,$4,$5,$6,$7)",
+            &[
+                (&scope, Type::TEXT),
+                (&&route[..], Type::BYTEA),
+                (&subject.as_ref().map(|hash| &hash[..]), Type::BYTEA),
+                (&route_max, Type::INT4),
+                (&seconds, Type::INT4),
+                (&subject_max, Type::INT4),
+                (&subject_seconds, Type::INT4),
+            ],
+        )
+        .await?;
+    Ok(row.get(0))
+}
+
+pub(crate) async fn held_factor_budget_open(
+    tx: &Transaction<'_>,
+    hasher: &TokenHasher,
+    subject: &str,
+) -> Result<bool, tokio_postgres::Error> {
+    let (scope, maximum, seconds, hash) = failure_subject(hasher, Limit::MfaStepUp, subject);
+    let row = tx.query_opt("SELECT attempts FROM public.auth_abuse_counters WHERE scope=$1 AND subject_hash=$2 AND window_started_at>pg_catalog.clock_timestamp()-pg_catalog.make_interval(secs=>$3::int4)", &[&scope, &&hash[..], &seconds]).await?;
+    Ok(row.map_or(0, |row| row.get::<_, i32>(0)) < maximum)
+}
+
+pub(crate) async fn record_held_factor_failure(
+    tx: &Transaction<'_>,
+    hasher: &TokenHasher,
+    subject: &str,
+) -> Result<(), tokio_postgres::Error> {
+    let (scope, _, seconds, hash) = failure_subject(hasher, Limit::MfaStepUp, subject);
+    tx.execute("INSERT INTO public.auth_abuse_counters(scope,subject_hash,window_started_at,attempts,updated_at) VALUES($1,$2,pg_catalog.clock_timestamp(),1,pg_catalog.clock_timestamp()) ON CONFLICT(scope,subject_hash) DO UPDATE SET window_started_at=CASE WHEN auth_abuse_counters.window_started_at<=pg_catalog.clock_timestamp()-pg_catalog.make_interval(secs=>$3::int4) THEN pg_catalog.clock_timestamp() ELSE auth_abuse_counters.window_started_at END,attempts=CASE WHEN auth_abuse_counters.window_started_at<=pg_catalog.clock_timestamp()-pg_catalog.make_interval(secs=>$3::int4) THEN 1 ELSE auth_abuse_counters.attempts+1 END,updated_at=pg_catalog.clock_timestamp()", &[&scope, &&hash[..], &seconds]).await?;
+    Ok(())
 }
 
 /// Review claim admission is charged in the same short transaction as the

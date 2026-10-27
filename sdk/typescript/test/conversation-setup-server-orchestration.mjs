@@ -3,7 +3,8 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import https from 'node:https';
-import {CleanupFailure,runOwnedProcess} from './owned-process-fixture.mjs';
+import {runOwnedProcess} from './owned-process-fixture.mjs';
+import {setupStep,finishSetupCleanup} from './setup-failure-fixture.mjs';
 import { isAbsolute } from 'node:path';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
@@ -112,15 +113,18 @@ export function allowFrontendRequest(origin,url,headers){
 /** Invoke from a supported, escalated fixture tool process. No elevation or
  * console restrictions are bypassed here; native failures remain failures. */
 export async function runCompiledSetupAcceptance({browser,ready,nativeExecutable,tls,consumePublishedRoot}){
-  const r=validateReady(ready),control=fixtureControl(r);let frontend,failure;
+  const r=validateReady(ready),control=fixtureControl(r);let frontend,failed=false,failure;
   try{
-    const prepared=await invokeNativeFixture(nativeExecutable,nativeRequest('prepareRootFixture',{account:r.baseline.accountId,origin:r.origin}));
-    const artifacts=prepared.artifacts,pin=bytes(artifacts.rootPin,94);assert.equal(hex(pin.subarray(29)),rootPoint,'Independent literal fixture root required');assert.equal(hash(Buffer.from('ZTSE/root-pin/v2\0'),pin),artifacts.rootFingerprint);
-    const fixture=copyAcceptanceFixture({...r.baseline,fixtureOnly:true,origin:r.origin,pairedPoint:bytes(r.baseline.pairedPoint,65),rootPin:pin,rootFingerprintHex:artifacts.rootFingerprint,backupId:uuid(bytes(artifacts.bundleId,16)),rootBackup:bytes(artifacts.encryptedBackup,237,748),publicCard:bytes(artifacts.publicCard,134,645)});
-    frontend=await startFixtureFrontend(r,tls);
-    return await runSetupServerAcceptance({browser,fixture,snapshot:async()=> (await control('snapshot')).counters,
-      signRootCustody:async({unsigned,expected})=>{assert.ok(unsigned.length>=151&&unsigned.length<=663);const challenge=uuid(unsigned.subarray(53,69));const scope=verifyIndependentScope((await control('root_sign_scope',challenge)).expected,expected,'root',challenge);const result=await invokeNativeFixture(nativeExecutable,nativeRequest('signCustody',scope,artifacts,unsigned));assert.deepEqual(result.artifacts,artifacts);return new TextEncoder().encode(`Enrollment signature: ${result.signatures.enrollmentSignature}\nCustody signature: ${result.signatures.custodySignature}\n`);},
-      signLineRegistration:async({unsigned,expected})=>{const parsed=parseRegistration(unsigned),scope=verifyIndependentScope((await control('line_sign_scope',parsed.challenge)).expected,expected,'line',parsed.challenge);const result=await invokeNativeFixture(nativeExecutable,nativeRequest('signLineRegistration',scope,artifacts,unsigned));assert.deepEqual(result.artifacts,artifacts);return bytes(result.signatures.rootSignature,64);},
+    const prepared=await setupStep('native-root-prepare',()=>invokeNativeFixture(nativeExecutable,nativeRequest('prepareRootFixture',{account:r.baseline.accountId,origin:r.origin})));
+    const artifacts=prepared.artifacts;
+    const fixture=await setupStep('prepared-artifacts',()=>{
+      const pin=bytes(artifacts.rootPin,94);assert.equal(hex(pin.subarray(29)),rootPoint,'Independent literal fixture root required');assert.equal(hash(Buffer.from('ZTSE/root-pin/v2\0'),pin),artifacts.rootFingerprint);
+      return copyAcceptanceFixture({...r.baseline,fixtureOnly:true,origin:r.origin,pairedPoint:bytes(r.baseline.pairedPoint,65),rootPin:pin,rootFingerprintHex:artifacts.rootFingerprint,backupId:uuid(bytes(artifacts.bundleId,16)),rootBackup:bytes(artifacts.encryptedBackup,237,748),publicCard:bytes(artifacts.publicCard,134,645)});
+    });
+    frontend=await setupStep('frontend-start',()=>startFixtureFrontend(r,tls));
+    return await setupStep('browser-acceptance',()=>runSetupServerAcceptance({browser,fixture,snapshot:async()=> (await control('snapshot')).counters,
+      signRootCustody:async({unsigned,expected})=>setupStep('root-signing',async()=>{assert.ok(unsigned.length>=151&&unsigned.length<=663);const challenge=uuid(unsigned.subarray(53,69));const scope=verifyIndependentScope((await control('root_sign_scope',challenge)).expected,expected,'root',challenge);const result=await invokeNativeFixture(nativeExecutable,nativeRequest('signCustody',scope,artifacts,unsigned));assert.deepEqual(result.artifacts,artifacts);return new TextEncoder().encode(`Enrollment signature: ${result.signatures.enrollmentSignature}\nCustody signature: ${result.signatures.custodySignature}\n`);}),
+      signLineRegistration:async({unsigned,expected})=>setupStep('line-signing',async()=>{const parsed=parseRegistration(unsigned),scope=verifyIndependentScope((await control('line_sign_scope',parsed.challenge)).expected,expected,'line',parsed.challenge);const result=await invokeNativeFixture(nativeExecutable,nativeRequest('signLineRegistration',scope,artifacts,unsigned));assert.deepEqual(result.artifacts,artifacts);return bytes(result.signatures.rootSignature,64);}),
       submitPhoneProof:async({challenge})=>{await control('submit_phone_proof',challenge.challenge_id);},acknowledgePhone:async({challenge})=>{await control('acknowledge_phone',challenge.challenge_id);},
       consumePublishedRoot:async({published,expected})=>{
         const decode=(name,min,max)=>{const v=published[name];assert.equal(typeof v,'string');const b=Buffer.from(v,'base64');assert.equal(b.toString('base64'),v);assert.ok(b.length>=min&&b.length<=max);return Uint8Array.from(b);};
@@ -133,6 +137,13 @@ export async function runCompiledSetupAcceptance({browser,ready,nativeExecutable
         assert.equal(typeof consumePublishedRoot,'function','Actual phone consumer required');
         await consumePublishedRoot({accountId:expected.accountId,rootPin:Buffer.from(verified.rootPin).toString('base64'),comparedFingerprint:expected.rootFingerprintHex,port:r.port,controlToken:r.controlToken});
       }
+    }));
+  }catch(error){failed=true;failure=error;throw error;}
+  finally{
+    await finishSetupCleanup(failed,failure,async()=>{
+      let closeFailed=false,closeFailure;
+      try{await setupStep('frontend-close',()=>frontend?.close());}catch(error){closeFailed=true;closeFailure=error;throw error;}
+      finally{await finishSetupCleanup(closeFailed,closeFailure,()=>setupStep('fixture-finish',()=>control('finish')));}
     });
-  }catch(error){failure=error;throw error;}finally{try{try{await frontend?.close();}finally{await control('finish');}}catch(error){if(!(failure instanceof CleanupFailure))throw error;}}
+  }
 }

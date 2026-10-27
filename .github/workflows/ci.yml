@@ -95,31 +95,33 @@ jobs:
           retention-days: 30
   owner-browser:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Provisioning cannot consume the separate ten-minute acceptance window.
+    # The step limits total 29 minutes; retain a bounded outer cleanup margin.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
         with:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        timeout-minutes: 2
         with:
-          node-version: "22.16.0"
-      - name: Install and build conversation SDK for owner browser flows
-        working-directory: sdk/typescript
-        run: npm ci --ignore-scripts && npm run build
-      - name: Test owner browser flows
-        run: node --test web/owner/*.test.js
-      - name: Install rendered owner acceptance dependencies
-        working-directory: web/owner
-        run: npm ci --ignore-scripts
+          node-version: "22.23.4"
+      - name: Prepare owner browser dependencies
+        timeout-minutes: 5
+        run: |
+          (cd sdk/typescript && npm ci --ignore-scripts && npm run build)
+          (cd web/owner && npm ci --ignore-scripts)
       - name: Install Chromium for rendered owner acceptance
+        timeout-minutes: 10
         working-directory: web/owner
         run: npx playwright install --with-deps chromium
-      - name: Verify rendered owner layouts and navigation
-        working-directory: web/owner
-        run: npm run test:rendered
-      - name: Test draft sealed-content vectors and TypeScript reader
-        working-directory: sdk/typescript
-        run: npm ci --ignore-scripts && npm test
+      - name: Verify owner flows, rendered layouts and TypeScript reader
+        timeout-minutes: 10
+        run: |
+          node --test web/owner/*.test.js
+          (cd web/owner && npm run test:rendered)
+          (cd sdk/typescript && npm ci --ignore-scripts && npm test)
   quality:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -141,50 +143,25 @@ jobs:
         run: python3 -m unittest discover -s sdk/python/tests -t sdk/python
       - name: Roadmap output matches docs/roadmap.json
         run: python3 scripts/roadmap.py --check
-      - name: Device stream schema examples
+      - name: Stage hash-verified pip for offline interpreter setup
+        run: python -I scripts/bootstrap_python_pip.py --fetch-only --wheel-dir "${{ runner.temp }}/python-pip-bootstrap"
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        env:
+          PIP_CONFIG_FILE: ${{ runner.os == 'Windows' && 'nul' || '/dev/null' }}
+          PIP_NO_INDEX: '1'
+          PIP_FIND_LINKS: ${{ runner.temp }}/python-pip-bootstrap/pip-26.2.2-py3-none-any.whl
+          PIP_DISABLE_PIP_VERSION_CHECK: '1'
+        with:
+          python-version: '3.12.15'
+          check-latest: true
+      - name: Qualify pip before network package operations
+        run: python -I scripts/bootstrap_python_pip.py
+      - name: Complete protocol contracts and vectors
         run: |
           python3 -m venv /tmp/zrotext-schema-venv
+          /tmp/zrotext-schema-venv/bin/python -I scripts/bootstrap_python_pip.py
           /tmp/zrotext-schema-venv/bin/pip install --disable-pip-version-check jsonschema==4.25.1
-          /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_device_stream_schema.py'
-      - name: Complete selected-line v2 protocol contract
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_line_activation_v2.py'
-      - name: Candidate encrypted workflow context contract
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_workflow_context.py'
-      - name: Candidate provider SMS submit-body codec
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_provider_submit_body_codec.py'
-      - name: Candidate exact workflow decision requests
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_workflow_decisions.py'
-      - name: Candidate provider proposal history
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_provider_proposal_history.py'
-      - name: Owner managed-grant HTTP contract
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_managed_grant_owner_http.py'
-      - name: Proposed sealed execution grant vectors
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_sealed_execution_grant_vectors.py'
-      - name: Sealed dispatch contract
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_sealed_dispatch.py'
-      - name: Authoritative message summary contract
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_message_summary_schema.py'
-
-      - name: Selected collaboration draft contract
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_collaboration_drafts_schema.py'
-      - name: Proposed opaque encrypted contact takeout shape
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_contact_encrypted_storage_proposal.py'
-      - name: Shared draft vector shape tests
-        run: python3 -m unittest discover -s protocol/v1/tests -p 'test_ztse_draft_vectors.py'
-      - name: Shared body-text vector tests
-        run: python3 -m unittest discover -s protocol/v1/tests -p 'test_ztse_body_text_vectors.py'
-      - name: Sealed draft field-layout tests
-        run: python3 -m unittest discover -s protocol/v1/tests -p 'test_zt_sealed_draft_shape.py'
-      - name: Sealed API v1 contract tests
-        run: python3 -m unittest discover -s protocol/v1/tests -p 'test_sealed_api_v1.py'
-      - name: Public API v1 contract tests
-        run: python3 -m unittest discover -s protocol/v1/tests -p 'test_public_api_v1.py'
-      - name: SMS segment estimate vectors
-        run: python3 -m unittest discover -s protocol/v1/tests -p 'test_sms_segment_estimate.py'
-      - name: OpenRouter body codec vectors
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_openrouter_request_body.py'
-      - name: Contact reader signing input key sets
-        run: python3 -m unittest discover -s protocol/v1/tests -p 'test_contact_reader_signing_input_shape.py'
+          /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_*.py'
       - name: JavaScript syntax
         run: node --check web/owner/devices.js
       - name: Commit sign-off
@@ -200,7 +177,7 @@ jobs:
         run: python3 scripts/check_dco.py
       - name: Spelling
         uses: crate-ci/typos@7f9d0819ca1c008ade73f4b41fa9d258d48f605b # v1.51.1
-  rust:
+  rust-workspace:
     needs: changes
     # Runs even if the change filter failed; its steps then run in full.
     if: ${{ !cancelled() }}
@@ -251,6 +228,9 @@ jobs:
         with:
           shared-key: linux-cargo-deps
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Verify the native Cargo runner and real doctest boundary
+        if: env.RUN_RUST == 'true'
+        run: python3 scripts/test_ci_rust_postgresql.py --native-runner-smoke
       - name: Format
         if: env.RUN_RUST == 'true'
         run: cargo fmt --all --check
@@ -281,7 +261,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: env.RUN_RUST == 'true'
         with:
-          node-version: "22.16.0"
+          node-version: "22.23.4"
       - name: Build SDK for authenticated recipe service fixtures
         if: env.RUN_RUST == 'true'
         working-directory: sdk/typescript
@@ -293,7 +273,7 @@ jobs:
         run: docker exec -i "$POSTGRES_SERVICE_ID" psql -U postgres -d postgres -v ON_ERROR_STOP=1 < scripts/registered_control_databases.sql
       - name: Test against PostgreSQL
         if: env.RUN_RUST == 'true'
-        run: cargo test --locked --workspace -- --ignored --skip real_stripe_ --test-threads=4
+        run: python3 scripts/ci_rust_postgresql.py run --suite default --lane remaining --receipt "$RUNNER_TEMP/rust-postgresql-remaining/coverage.json"
       - name: Capture authenticated workflow HTTP output canaries
         if: env.RUN_RUST == 'true'
         run: python3 scripts/workflow_log_canaries.py
@@ -309,21 +289,176 @@ jobs:
         run: |
           target/debug/zrotext-migrator
           target/debug/zrotext-migrator
+      - name: Stage hash-verified pip for offline interpreter setup
+        if: env.RUN_RUST == 'true'
+        run: python -I scripts/bootstrap_python_pip.py --fetch-only --wheel-dir "${{ runner.temp }}/python-pip-bootstrap"
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        if: env.RUN_RUST == 'true'
+        env:
+          PIP_CONFIG_FILE: ${{ runner.os == 'Windows' && 'nul' || '/dev/null' }}
+          PIP_NO_INDEX: '1'
+          PIP_FIND_LINKS: ${{ runner.temp }}/python-pip-bootstrap/pip-26.2.2-py3-none-any.whl
+          PIP_DISABLE_PIP_VERSION_CHECK: '1'
+        with:
+          python-version: '3.12.15'
+          check-latest: true
+      - name: Qualify pip before network package operations
+        if: env.RUN_RUST == 'true'
+        run: python -I scripts/bootstrap_python_pip.py
       - name: Verify PostgreSQL TLS and certificate failures
         if: env.RUN_RUST == 'true'
         run: |
           python3 -m venv /tmp/zrotext-postgres-tls-venv
+          /tmp/zrotext-postgres-tls-venv/bin/python -I scripts/bootstrap_python_pip.py
           /tmp/zrotext-postgres-tls-venv/bin/pip install --disable-pip-version-check cryptography==46.0.4
           /tmp/zrotext-postgres-tls-venv/bin/python scripts/tests/test_postgres_tls.py
       - name: Simulator timeline
         if: env.RUN_RUST == 'true'
         run: target/debug/zrotext-device-sim
+      - name: Preserve complete residual coverage only after every Rust gate passes
+        if: env.RUN_RUST == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: rust-postgresql-${{ github.run_id }}-${{ github.run_attempt }}-remaining
+          path: ${{ runner.temp }}/rust-postgresql-remaining/coverage.json
+          if-no-files-found: error
+          retention-days: 3
+  rust-postgresql:
+    needs: changes
+    # Runs even if the change filter failed; its steps then run in full.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      # Five database lanes, at most three at once, plus rust-workspace.
+      max-parallel: 3
+      matrix:
+        lane: [delivery-store, server-0, server-1, server-2, server-3]
+    services:
+      postgres:
+        image: docker.io/library/postgres:18.6-bookworm@sha256:afc7e2d441324c0388fa80c3d24f733b4194a4eb7f47dd8ee2b08eb1a24a647c
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      ZT_AUTH_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/postgres
+      ZT_DELIVERY_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/postgres
+      ZT_INBOUND_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/postgres
+      ZT_REGISTERED_OWNER_EMPTY_DATABASE_URL: postgresql://zt_registered_control@127.0.0.1:5432/zt_registered_empty
+      ZT_REGISTERED_OWNER_MFA_DATABASE_URL: postgresql://zt_registered_control@127.0.0.1:5432/zt_registered_mfa
+      # Smaller, reusable build artifacts: no incremental churn, symbols only
+      # deep enough for line-numbered backtraces.
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      ZT_FAILOVER_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/postgres
+      RUN_RUST: ${{ needs.changes.outputs.rust != 'false' }}
+    steps:
+      - name: Skip Rust suites for a change that cannot affect them
+        if: env.RUN_RUST != 'true'
+        run: echo 'Every changed file is documentation or Android-only; see scripts/ci_changes.py.'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.RUN_RUST == 'true'
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        if: env.RUN_RUST == 'true'
+        run: rustup toolchain install 1.99.1 --profile minimal --component clippy --component rustfmt
+      - name: Cache Rust build artifacts
+        if: env.RUN_RUST == 'true'
+        # Dependency cache shared with sealed-interop.yml; PR runs only read it.
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: linux-cargo-deps
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Provision PostgreSQL lock capacity for parallel schema fixtures
+        if: env.RUN_RUST == 'true'
+        env:
+          POSTGRES_SERVICE_ID: ${{ job.services.postgres.id }}
+        run: |
+          # Four full-schema fixtures can concurrently lock tables, indexes and
+          # foreign-key dependencies during DROP SCHEMA CASCADE. Keep all tests
+          # and their concurrency; size the disposable server's lock table.
+          docker exec "$POSTGRES_SERVICE_ID" psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET max_locks_per_transaction = '256'"
+          docker restart "$POSTGRES_SERVICE_ID"
+          for attempt in {1..30}; do
+            if docker exec "$POSTGRES_SERVICE_ID" pg_isready -U postgres; then
+              break
+            fi
+            sleep 1
+          done
+          docker exec "$POSTGRES_SERVICE_ID" pg_isready -U postgres
+          test "$(docker exec "$POSTGRES_SERVICE_ID" psql -U postgres -d postgres -Atc 'SHOW max_locks_per_transaction')" = '256'
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: env.RUN_RUST == 'true'
+        with:
+          node-version: "22.23.4"
+      - name: Build SDK for authenticated recipe service fixtures
+        if: env.RUN_RUST == 'true'
+        working-directory: sdk/typescript
+        run: npm ci --ignore-scripts && npm run build
+      - name: Provision isolated registered-owner control databases
+        if: env.RUN_RUST == 'true'
+        env:
+          POSTGRES_SERVICE_ID: ${{ job.services.postgres.id }}
+        run: docker exec -i "$POSTGRES_SERVICE_ID" psql -U postgres -d postgres -v ON_ERROR_STOP=1 < scripts/registered_control_databases.sql
+      - name: Test the complete assigned PostgreSQL lane
+        if: env.RUN_RUST == 'true'
+        run: python3 scripts/ci_rust_postgresql.py run --suite default --lane '${{ matrix.lane }}' --receipt "$RUNNER_TEMP/rust-postgresql-${{ matrix.lane }}/coverage.json"
+      - name: Preserve verified PostgreSQL coverage
+        if: env.RUN_RUST == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: rust-postgresql-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.lane }}
+          path: ${{ runner.temp }}/rust-postgresql-${{ matrix.lane }}/coverage.json
+          if-no-files-found: error
+          retention-days: 3
+  rust:
+    # Preserve the required context. A successful residual job alone is not a pass.
+    name: rust
+    if: ${{ always() }}
+    needs: [changes, rust-workspace, rust-postgresql]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CI_NEEDS_JSON: ${{ toJSON(needs) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Require successful prerequisites and an explicit filter decision
+        id: status
+        run: python3 scripts/ci_rust_postgresql.py status --suite default >> "$GITHUB_OUTPUT"
+      - name: Install pinned metadata toolchain
+        if: steps.status.outputs.run == 'true'
+        run: rustup toolchain install 1.99.1 --profile minimal
+      - name: Download only this invocation's coverage receipts
+        if: steps.status.outputs.run == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: rust-postgresql-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: ${{ runner.temp }}/rust-postgresql-coverage
+      - name: Require complete disjoint current-source PostgreSQL coverage
+        if: steps.status.outputs.run == 'true'
+        run: python3 scripts/ci_rust_postgresql.py verify --suite default --receipts "$RUNNER_TEMP/rust-postgresql-coverage"
+      - name: Preserve the existing documentation-only no-op
+        if: steps.status.outputs.run == 'false'
+        run: echo 'The successful change filter explicitly selected no Rust tests; all prerequisites succeeded.'
   android:
     needs: changes
     # Runs even if the change filter failed; its steps then run in full.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    # Allow cold native/Android compilation and one isolated JVM per test class.
+    # Keep every lint, unit-test and APK gate within a finite job budget.
+    timeout-minutes: 45
     env:
       RUN_ANDROID: ${{ needs.changes.outputs.android != 'false' }}
     steps:
@@ -344,7 +479,14 @@ jobs:
         if: env.RUN_ANDROID == 'true'
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '21.0.13+9'
+          check-latest: true
+      - name: Prepare job-local Java TLS trust
+        if: env.RUN_ANDROID == 'true'
+        run: python scripts/prepare_java_ci_trust.py --major 21
+      - name: Verify patched Java runtime and trust roots
+        if: env.RUN_ANDROID == 'true'
+        run: python scripts/check_java_toolchain.py --major 21
       - name: Cache Gradle distribution and dependencies
         if: env.RUN_ANDROID == 'true'
         # Open-source GitHub Actions cache provider; only main writes it.

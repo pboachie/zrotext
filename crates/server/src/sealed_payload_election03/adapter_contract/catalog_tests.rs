@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Closed proposal inventory, not installation or per-operation qualification.
+//! Closed installed writer graph; structural acceptance is not effect authority.
 use super::{
     fence_tests::{close, connect},
     sha,
@@ -91,10 +91,119 @@ async fn candidate_inventory_covers_exact_numbered_schema_relations_columns_fk_a
             expected[1].as_str().is_some_and(|scope| !scope.is_empty()),
             "{table}: extraction review class"
         );
+        let policy = corpus["operation_policies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|policy| policy["relation"] == table)
+            .unwrap();
+        for operation in ["insert", "update", "delete"] {
+            assert!(
+                policy[operation]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty()),
+                "{table}: {operation} policy"
+            );
+        }
+        assert!(
+            matches!(
+                policy["current_profile"].as_str(),
+                Some(
+                    "ordinary_state_or_actual_accepted_epoch1_with_explicit_operation_policy"
+                        | "originals_retained_without_rewrite_or_backfill_after_selection"
+                        | "relation_specific_legacy02_fence_and_typed_initial03_or_monotone_security_policy"
+                        | "closed_rows_never_accept_or_restore02_fallback"
+                        | "historical_acceptance_not_current_permission"
+                )
+            ) || matches!(
+                (table.as_str(), policy["current_profile"].as_str()),
+                (
+                    "payload_profile_selection_challenges",
+                    Some(
+                        "new_mutations_version_actual_anchor_at_unchanged_epoch1_no_historical_retry_touch"
+                    )
+                ) | (
+                    "payload_profile_selection_receipts",
+                    Some(
+                        "one_accepted_per_full_connection_historical_receipt_not_message_permission"
+                    )
+                )
+            ) || matches!(
+                (table.as_str(), policy["current_profile"].as_str()),
+                (
+                    "payload_profile_manifest_successors",
+                    Some("immutable_same_root03_successor_receipt_without_content_permission")
+                ) | (
+                    "conversation_profile03_intervals",
+                    Some(
+                        "original_content_consent_requires_live_independent_owner_device_custody_and_installed_ACK"
+                    )
+                ) | (
+                    "conversation_reviewed_sends03",
+                    Some(
+                        "retained_reviewed03_originals_require_complete_same_transaction_queue_quota_or_one_way_content_erasure"
+                    )
+                ) | (
+                    "messages",
+                    Some(
+                        "exact_reviewed03_admission_or_one_use_grant_claim_without_submit_permission"
+                    )
+                ) | (
+                    "dispatch_jobs",
+                    Some(
+                        "exact_reviewed03_initial_job_or_one_use_grant_claim_without_retry_permission"
+                    )
+                ) | (
+                    "message_attempts" | "dispatch_fences",
+                    Some("exact_initial03_granted_effect_only_no_submit_or_unknown_reset")
+                ) | (
+                    "conversation_profile03_grants",
+                    Some(
+                        "one_attempt_lifetime_nonpersonal_tombstone_not_current_effect_permission"
+                    )
+                ) | (
+                    "usage_ledger" | "usage_periods",
+                    Some(
+                        "ordinary_other_message_accounting_preserves_retained03_reserve_and_aggregate_floor"
+                    )
+                ) | (
+                    "messages",
+                    Some("exact_reviewed03_admission_or_one_use_typed_effect_without_rearm")
+                ) | (
+                    "dispatch_jobs",
+                    Some("exact_initial03_claim_or_terminal_typed_effect_completion_without_rearm")
+                ) | (
+                    "message_attempts" | "dispatch_fences",
+                    Some(
+                        "exact_original03_one_use_typed_effect_or_terminal_fence_preserving_history"
+                    )
+                ) | (
+                    "conversation_profile03_effect_actors"
+                        | "conversation_profile03_submits"
+                        | "conversation_profile03_outcomes"
+                        | "conversation_profile03_closure_records"
+                        | "conversation_profile03_closure_challenges"
+                        | "conversation_profile03_closure_receipts"
+                        | "conversation_profile03_effect_quarantines",
+                    Some("typed_one_use_effect_provenance_and_original_actor_history")
+                ) | (
+                    "device_protection_origins"
+                        | "device_protection_associations"
+                        | "device_protection_attempts"
+                        | "device_protection_receipts"
+                        | "device_protection_retirements",
+                    Some("first_origin_metadata_never_provider_or_effect_permission")
+                )
+            ),
+            "{table}: unknown current-profile writer policy"
+        );
     }
-    // These hashes pin the proposal's graph, not arbitrary runtime SQL or
-    // function-body authority. Mutation controls prove missing/extra/changed
-    // shape is visible before a production guard could be elected.
+    assert_eq!(
+        corpus["operation_policies"].as_array().unwrap().len(),
+        wanted.len()
+    );
+    // This fixture pins relation extraction metadata. The separate mandatory
+    // writer tests qualify actual locks, state policies and function/ACL checks.
     assert!(matches_graph(&rows, wanted));
     for mutation in [
         "ALTER TABLE public.device_sessions ADD COLUMN unreviewed boolean",

@@ -50,12 +50,71 @@ The schema test requires `jsonschema==4.25.1`, as installed in a separate virtua
 
 On Windows, use `gradlew.bat` and `python` where appropriate. Return to the repository root after the `sdk/typescript` or `android` commands before running the next check.
 
+### CI toolchain qualification
+
+Java CI keeps the existing JDK 17 and 21 major lines. Linux selects Temurin
+`17.0.21+9` or `21.0.13+9` with `check-latest`. Until the corresponding Temurin
+Windows builds are available, Windows uses official Corretto `17.0.21.0.10` or
+`21.0.13.0.10` archives, verified against pinned vendor SHA-256 checksums before
+installation. The runtime gate checks the actual vendor and same-major patch
+floor; it does not infer patch status from a major selector or cached JDK.
+
+Immediately after selection, `scripts/prepare_java_ci_trust.py` creates a new
+per-job copy of `cacerts` under `RUNNER_TEMP`. It removes **every alias** matching
+the four certificate DER fingerprints (emSign G1/G2/G3 and AAA) in the
+[Java trust advisory](https://www.oracle.com/security-alerts/alert-cve-2026-114820.html).
+G1/G2 belong to that additional advisory, not the older compromised-parent
+finding. Every other alias, certificate, trusted-entry type and entry attribute must be
+unchanged (including trust-usage attributes). A fresh copy enforces password
+integrity even if the vendor source is passwordless PKCS12; the public vendor
+integrity default is not an application secret. The installed store,
+vendor security policy and certificate blocklist remain byte-for-byte unchanged.
+Only after the effective default JSSE `TrustManager` matches the qualified copy
+does the helper export its `JAVA_TOOL_OPTIONS` selection to subsequent job steps.
+`scripts/check_java_toolchain.py` independently repeats the read-only checks.
+
+This mitigation is **JSSE/TLS-only**: it does not change global/installed stores,
+code-signing trust, custom trust managers, or other applications' trust stores.
+HTTPS connections relying on the removed roots fail, as intended. Pre-existing
+custom trust/security overrides, unreadable stores, or an unavailable qualified
+runtime fail closed; no platform falls back to an older JDK or skips its checks.
+Vendor archive availability and static checks do not establish runtime success
+on every platform.
+
+Go CI and native archive qualification use `1.26.10`, while existing `go.mod`
+source-language floors remain unchanged. This does not qualify the unsupported
+Go 1.22 compiler. Managed SDK CI uses Ruby `3.3.13`; exact .NET 10 SDK selectors
+use `10.0.402` without changing target frameworks. A toolchain check is not
+application exploitability, deployment, or all-platform runtime qualification.
+
 ### PostgreSQL-backed Rust tests
+
+Some isolated-schema tests deliberately apply migrations001 through107. Their
+legacy boundary is explicit and checked against the exact compiled current
+migration names and SQL. Migrations108 onward require the actual public schema
+and separate migration-owner and ordinary runtime connections; they must not be
+replayed inside an arbitrary test schema. Current-schema ACL checks are distinct
+from the legacy fixture tests, and neither proves a complete hosted flow.
 
 The Windows sealed setup CI consumer owns a fresh disposable PostgreSQL fixture.
 Before initialization it gives the current user and SYSTEM inheritable access to
 that empty fixture directory, so PostgreSQL's restricted token can create its data
 tree. It does not change ancestor permissions or existing databases and services.
+
+The sealed setup phone-build wrapper emits only fixed Gradle failure indicators:
+`dependency-verification`, `dependency-resolution`, `java-tls`, `gradle-daemon`,
+or `unknown`. These are observed fixed-string signals, not proof of a root cause.
+Its opt-in streaming matcher retains only integer match positions and category
+flags; no raw stderr is retained or exported. The first failure freezes these
+signals before process cleanup, and an output-bound failure reports `unknown`.
+Other subprocesses do not enable the matcher.
+
+Later compiled setup failures expose only fixed fixture substages, such as
+browser launch, navigation, line challenge, native signing, or the aggregate
+deadline. Branded exception identity supplies these labels; exception messages,
+stacks, URLs, readiness and signing material are never diagnostic fields. Failed
+cleanup remains a failure and records its fixed substage alongside the original
+failure. Unconfirmed owned-process cleanup retains its stronger failure priority.
 
 `cargo test --locked --workspace` reports PostgreSQL-backed tests as **ignored**. They are separate from the unit tests so a missing database cannot look like a passing SQL test. Start a disposable PostgreSQL instance bound to your machine only:
 
@@ -132,6 +191,51 @@ cargo test --locked --workspace -- --ignored --skip real_stripe_ --test-threads=
 ```
 
 The `real_stripe_` exclusion is deliberate: those two ignored tests contact Stripe TEST and need separate explicit setup. The ordinary command plus the PostgreSQL command run the same Rust test sets as CI. Stop the container with Ctrl+C when finished.
+
+CI divides the ignored tests into six disjoint lanes: delivery store, four server
+test-name shards, and every other workspace member. Each lane has its own disposable
+PostgreSQL service and retains four test threads. The required `rust` check is
+an aggregator, not just the residual workspace job: it requires all lanes and
+the original lint, nonignored, migration, TLS, canary and simulator gates.
+The existing documentation-only no-op requires a successful, explicit change
+filter and successful no-op prerequisites; failed or skipped prerequisites refuse.
+
+`scripts/ci_rust_postgresql.py` builds the complete workspace before dispatching
+its ignored harnesses through a command-local native Cargo runner. Cargo retains
+feature unification, package working directories and runtime library paths. Every
+workspace package and eligible target is discovered from current metadata; each
+lane inventories all harnesses. Nonserver packages stay together; server tests
+are assigned by the first SHA-256 byte of each UTF-8 test name, modulo four.
+This stable rule is independent of enumeration order and newly added tests.
+The original exclusion flags first establish the full selected inventory. Each
+server shard re-lists its exact native libtest multi-filter command and requires
+that selection to equal its assigned names before executing it. Empty target
+subsets are recorded but never invoked with an empty filter (which would run all
+tests). Nonempty lane coverage, exact passed-test identities, matching source-bound
+inventories and a disjoint complete union for every target are required.
+Unsupported target selection or pre-existing runner overrides refuse
+rather than silently narrowing coverage. The residual default lane separately
+executes the full ignored Cargo doctest command, without the custom runner;
+compiled harness inventory is not treated as doctest execution evidence.
+
+The conversation workflow preserves its separate `conversation-simulator-tests`
+feature selection, complete nonignored tests, ignored binary/integration targets,
+ignored doctests, and external consumer fixtures. Its ignored libraries use the
+same six lanes and a strict prerequisite aggregator. The default workflow permits
+three matrix runners plus its residual core runner; the conversation workflow
+permits at most three lane runners after its workspace prerequisite. Together
+these paths permit at most seven active Rust test runners, without increasing
+runner sizes, account quotas or the existing 45/60-minute job budgets. More server
+partitions reduce the test set per job, but add setup work and queued waves under
+the unchanged concurrency cap. Test-name sharding does not guarantee balanced
+runtimes or completion within those budgets;
+only hosted results establish that. Lane receipts contain only structural test
+identities, not fixture logs.
+Receipts are bound to one workflow attempt: after a failure, rerun the complete
+workflow rather than only failed jobs, so every prerequisite produces fresh proof.
+The dependency cache remains read-only for pull requests. To exercise the runner
+without a database or workspace dependencies, after installing the pinned Rust
+toolchain run `python3 scripts/test_ci_rust_postgresql.py --native-runner-smoke`.
 
 With `--features conversation-simulator-tests`, the selected
 `http_enrollment::setup_browser_fixture::ordinary_pairing_browser_android_fixture`

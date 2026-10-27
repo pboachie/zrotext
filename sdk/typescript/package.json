@@ -6,15 +6,16 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node scripts/generate-contact-idna.mjs --check && tsc -p tsconfig.json",
     "test": "npm run build && node --test test/*.test.mjs",
     "test:android-keystore": "node test/android-keystore-interop.mjs"
   },
   "dependencies": {
-    "@hpke/core": "1.7.5"
+    "@hpke/core": "1.9.0"
   },
   "devDependencies": {
-    "fake-indexeddb": "6.2.5",
-    "typescript": "5.9.3"
+    "fake-indexeddb": "6.2.6",
+    "tr46": "5.1.1",
+    "typescript": "7.0.2"
   }
 }

@@ -93,10 +93,14 @@ and reserving its database slot remain the embedding runtime's responsibility.
 
 Owner erasure validates and fences installed proposal storage before its final
 password/MFA/session fence and includes pending-record deletion in the same
-transaction. Ordinary absent storage is compatible with erasure; partial or
-malformed storage refuses without partial deletion. Existing immutable root,
-line-binding and approval records can block account erasure with 409 before any
-delete. A pending proposal does not override those blockers or make its required
+transaction. Current authenticated erasure first requires the complete pinned
+numbered schema and stock runtime identity; missing, partial or malformed
+proposal storage refuses without partial deletion. The historical optional
+storage SQL helper still supports absence, but that is not current native-entry
+or HTTP acceptance. Current storage includes both the immutable proposal trigger
+and its separately validated profile-writer trigger; an unexpected, disabled or
+drifted trigger is not accepted. Existing immutable root, line-binding and
+approval records can block account erasure with 409 before any delete. A pending proposal does not override those blockers or make its required
 immutable binding erasable. Session/account foreign-key deletion also removes
 pending records when the corresponding authoritative deletion is permitted.
 

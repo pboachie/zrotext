@@ -92,13 +92,17 @@ fn authority(
     if !active(reader, now, 8) {
         return Err(Error::Authentication);
     }
-    let signer = m.raw[151..m.raw.len() - 64].chunks_exact(149).any(|w| {
-        w[0] == 4
-            && w[98..114] == s.device
-            && w[114..130] == s.line
-            && active(w, now, 2)
-            && w[130..132] == [0, 2]
-    });
+    let signer = m.raw[151..m.raw.len() - 64]
+        .as_chunks::<149>()
+        .0
+        .iter()
+        .any(|w| {
+            w[0] == 4
+                && w[98..114] == s.device
+                && w[114..130] == s.line
+                && active(w.as_slice(), now, 2)
+                && w[130..132] == [0, 2]
+        });
     if !signer {
         return Err(Error::Authentication);
     };

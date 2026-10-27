@@ -102,11 +102,11 @@ def rust_package(stage, output):
     if manifest["package"]["name"] != CRATE or manifest["package"]["version"] != VERSION:
         raise ValueError("Unexpected experimental package coordinate")
     env = safe_env()
-    env.update(CARGO_HOME=str(stage / "packaging-home"), CARGO_TARGET_DIR=str(stage / "packaging-target"), RUSTUP_TOOLCHAIN="1.97.1")
-    if not run("cargo", "--version", capture_output=True, text=True).stdout.startswith("cargo 1.97.1 "):
-        raise ValueError("Cargo 1.97.1 required")
-    if not run("rustc", "--version", capture_output=True, text=True).stdout.startswith("rustc 1.97.1 "):
-        raise ValueError("Rust 1.97.1 required")
+    env.update(CARGO_HOME=str(stage / "packaging-home"), CARGO_TARGET_DIR=str(stage / "packaging-target"), RUSTUP_TOOLCHAIN="1.99.1")
+    if not run("cargo", "--version", capture_output=True, text=True).stdout.startswith("cargo 1.99.1 "):
+        raise ValueError("Cargo 1.99.1 required")
+    if not run("rustc", "--version", capture_output=True, text=True).stdout.startswith("rustc 1.99.1 "):
+        raise ValueError("Rust 1.99.1 required")
     run("cargo", "package", "--locked", "--allow-dirty", "--no-verify", cwd=project, env=env)
     artifact = stage / "packaging-target/package" / (CRATE + "-" + VERSION + ".crate")
     with tarfile.open(artifact) as archive:
@@ -211,8 +211,8 @@ def go_package(stage, output):
     env.update(GOPROXY=feed.as_uri() + ",https://proxy.golang.org", GOSUMDB="sum.golang.org", GONOSUMDB=MODULE,
                GOPRIVATE="", GONOPROXY="none", GOWORK="off", GOFLAGS="", GOENV="off", GOTOOLCHAIN="local",
                GOPATH=str(stage / "go-home"), GOMODCACHE=str(stage / "module-cache"), GOCACHE=str(stage / "build-cache"))
-    if "go1.26.9 " not in run("go", "version", capture_output=True, text=True).stdout:
-        raise ValueError("Go 1.26.9 required")
+    if "go1.26.10 " not in run("go", "version", capture_output=True, text=True).stdout:
+        raise ValueError("Go 1.26.10 required")
     run("go", "mod", "tidy", cwd=consumer, env=env)
     listing = run("go", "list", "-m", "-json", "all", cwd=consumer, env=env, capture_output=True, text=True).stdout
     if '"Replace"' in listing:
@@ -393,7 +393,7 @@ def main():
             report = {"experimental": True, "published": False, "language": args.language,
                       "version": VERSION, "archive": artifact.name, "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
                       "license": "AGPL-3.0-only", "producer_revisions": PRODUCERS,
-                      "runtime": "Rust 1.97.1" if args.language == "rust" else "Go 1.26.9",
+                      "runtime": "Rust 1.99.1" if args.language == "rust" else "Go 1.26.10",
                       "source_inventory": {name: hashlib.sha256((ROOT / args.language / name).read_bytes()).hexdigest()
                                            for name in source_files(args.language)},
                       "ordinary_registry_consumer": True, "staged_library_sources_removed": True,

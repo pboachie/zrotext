@@ -180,14 +180,14 @@ fn now_ms() -> Option<i64> {
 }
 
 /// Delivery admission and signed suppression writers take this lock first.
-async fn lock_account(tx: &Transaction<'_>, account_id: Uuid) -> Result<bool, Response> {
+async fn lock_account(tx: &Transaction<'_>, account_id: Uuid) -> Result<bool, Box<Response>> {
     tx.query_opt(
         "SELECT id FROM accounts WHERE id=$1 AND disabled_at IS NULL FOR NO KEY UPDATE",
         &[&account_id],
     )
     .await
     .map(|row| row.is_some())
-    .map_err(|_| unavailable())
+    .map_err(|_| Box::new(unavailable()))
 }
 
 impl OwnerAuthState for OwnerReviewState {
@@ -226,7 +226,7 @@ pub(super) async fn create_hold(
     match lock_account(&tx, account_id).await {
         Ok(true) => {}
         Ok(false) => return error(StatusCode::UNAUTHORIZED, "unauthorized"),
-        Err(response) => return response,
+        Err(response) => return *response,
     }
     let reported_seconds = body.reported_at_ms as f64 / 1000.0;
     let hold_id = Uuid::new_v4();
@@ -364,7 +364,7 @@ pub(super) async fn decide_review(
     match lock_account(&tx, account_id).await {
         Ok(true) => {}
         Ok(false) => return error(StatusCode::UNAUTHORIZED, "unauthorized"),
-        Err(response) => return response,
+        Err(response) => return *response,
     }
     // Only an active, ambiguous review item can be decided. A signed STOP is
     // not in the queue and never reaches this insert.

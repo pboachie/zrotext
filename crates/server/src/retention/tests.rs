@@ -105,136 +105,193 @@ async fn migrated(db: &Client) -> String {
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn retention_respects_each_cutoff_and_replay_fences() {
-    let url = env::var("ZT_INBOUND_TEST_DATABASE_URL")
-        .expect("set ZT_INBOUND_TEST_DATABASE_URL for PostgreSQL-backed tests");
-    let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
-    tokio::spawn(async move { connection.await.unwrap() });
-    let schema = migrated(&db).await;
-    let account = Uuid::new_v4();
-    let device = Uuid::new_v4();
-    db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
+    // Seed actual pre-native history without changing the current writer graph.
+    // Retention and replay checks run only after the real migration to current.
+    let (fixture, history) = crate::test_database::Fixture::with_history(
+        "ZT_INBOUND_TEST_DATABASE_URL",
+        107,
+        async |db| {
+            let account = Uuid::new_v4();
+            let device = Uuid::new_v4();
+            db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
+                .await
+                .unwrap();
+            db.execute(
+                "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'virtual fixture')",
+                &[&device, &account],
+            )
+            .await
+            .unwrap();
+            let old = message(db, account, device, "delivered", 31).await;
+            let recent = message(db, account, device, "delivered", 29).await;
+            let recently_terminal = message(db, account, device, "delivered", 1).await;
+            db.execute(
+                "UPDATE messages SET created_at=now()-interval '120 days' WHERE id=$1",
+                &[&recently_terminal],
+            )
+            .await
+            .unwrap();
+            let unknown = message(db, account, device, "unknown", 120).await;
+            let fenced = message(db, account, device, "delivered", 120).await;
+            let fenced_attempt = Uuid::new_v4();
+            db.execute("INSERT INTO message_attempts(id,account_id,message_id,device_id,generation,session_epoch,deployment_epoch,status) VALUES($1,$2,$3,$4,1,1,1,'unknown')",
+                &[&fenced_attempt,&account,&fenced,&device]).await.unwrap();
+            db.execute("INSERT INTO dispatch_fences(message_id,account_id,device_id,attempt_id,generation,session_epoch,deployment_epoch,grant_expires_at,outcome) VALUES($1,$2,$3,$4,1,1,1,now()-interval '1 day','unknown')",
+                &[&fenced,&account,&device,&fenced_attempt]).await.unwrap();
+            // Past the content window, but its positive sent callback is inside the
+            // event window: the signed STOP/START reply target must outlive content.
+            let replyable = message(db, account, device, "delivered", 31).await;
+            let replyable_attempt = Uuid::new_v4();
+            db.execute("INSERT INTO message_attempts(id,account_id,message_id,device_id,generation,session_epoch,deployment_epoch,status) VALUES($1,$2,$3,$4,1,1,1,'submitted')",
+                &[&replyable_attempt,&account,&replyable,&device]).await.unwrap();
+            let replyable_callback = Uuid::new_v4();
+            db.execute("INSERT INTO message_events(id,account_id,message_id,attempt_id,evidence_code,event_digest,observed_at,received_at,resulting_state,segment_index,segment_count) VALUES($1,$2,$3,$4,'sent_callback_ok',$5,now(),now(),'submitted',0,1)",
+                &[&replyable_callback,&account,&replyable,&replyable_attempt,&vec![7_u8; 32]]).await.unwrap();
+
+            for (key, mid, age) in [("expired", old, -1), ("live", recent, 1)] {
+                db.execute("INSERT INTO idempotency_keys(account_id,key,request_digest,message_id,expires_at) VALUES($1,$2,$3,$4,now()+$5::int * interval '1 day')",
+                    &[&account,&key,&vec![6_u8; 32],&mid,&age]).await.unwrap();
+            }
+            let mut events = Vec::new();
+            for (mid, age) in [
+                (old, 91),
+                (recent, 89),
+                (unknown, 120),
+                (fenced, 120),
+                (recently_terminal, 120),
+            ] {
+                let id = Uuid::new_v4();
+                db.execute("INSERT INTO message_events(id,account_id,message_id,evidence_code,event_digest,observed_at,received_at,resulting_state) VALUES($1,$2,$3,'fixture',$4,now(),now()-$5::int * interval '1 day','delivered')",
+                    &[&id,&account,&mid,&vec![7_u8; 32],&age]).await.unwrap();
+                events.push(id);
+            }
+            let inbound_old = inbound(db, account, device, old, 1, 31).await;
+            let inbound_recent = inbound(db, account, device, recent, 2, 29).await;
+            let inbound_unknown = inbound(db, account, device, unknown, 3, 120).await;
+            let inbound_fenced = inbound(db, account, device, fenced, 4, 120).await;
+            let inbound_no_webhook = inbound(db, account, device, old, 5, 31).await;
+            let inbound_pending = inbound(db, account, device, old, 6, 31).await;
+            // A normal completed radio attempt retains a submitted fence for late
+            // evidence. This must not prevent terminal content/history retention.
+            let old_attempt: Uuid = db
+                .query_one(
+                    "SELECT attempt_id FROM inbound_events WHERE id=$1",
+                    &[&inbound_old],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            db.execute("INSERT INTO dispatch_fences(message_id,account_id,device_id,attempt_id,generation,session_epoch,deployment_epoch,grant_expires_at,outcome) VALUES($1,$2,$3,$4,1,1,1,now()+interval '1 day','submitted')",
+                &[&old,&account,&device,&old_attempt]).await.unwrap();
+
+            let endpoint = Uuid::new_v4();
+            db.execute("INSERT INTO webhook_endpoints(id,account_id,callback_url,signing_secret_ciphertext,signing_secret_key_version) VALUES($1,$2,'https://example.test/hook',$3,1)",
+                &[&endpoint,&account,&vec![8_u8; 32]]).await.unwrap();
+            let mut deliveries = Vec::new();
+            for (event, age) in [
+                (inbound_old, 31),
+                (inbound_recent, 29),
+                (inbound_unknown, 120),
+                (inbound_fenced, 120),
+            ] {
+                let id = Uuid::new_v4();
+                db.execute("INSERT INTO webhook_deliveries(id,account_id,endpoint_id,event_id,status,created_at,updated_at) VALUES($1,$2,$3,$4,'succeeded',now()-$5::int * interval '1 day',now()-$5::int * interval '1 day')",
+                    &[&id,&account,&endpoint,&event,&age]).await.unwrap();
+                deliveries.push(id);
+            }
+            let pending_delivery = Uuid::new_v4();
+            db.execute("INSERT INTO webhook_deliveries(id,account_id,endpoint_id,event_id,status,created_at,updated_at) VALUES($1,$2,$3,$4,'pending',now()-interval '31 days',now()-interval '31 days')",
+                &[&pending_delivery,&account,&endpoint,&inbound_pending]).await.unwrap();
+            let old_webhook_attempt = Uuid::new_v4();
+            db.execute("INSERT INTO webhook_attempts(id,delivery_id,attempt_number,completed_at,outcome) VALUES($1,$2,1,now(),'ack')",
+                &[&old_webhook_attempt,&deliveries[0]]).await.unwrap();
+            db.execute("INSERT INTO webhook_replay_requests(account_id,request_id,delivery_id,generation) VALUES($1,$2,$3,2)",
+                &[&account,&Uuid::new_v4(),&deliveries[0]]).await.unwrap();
+
+            // No sealed ingest route exists; bypass its admission trigger only to seed
+            // cryptographically shaped, synthetic rows in the historical prefix.
+            db.batch_execute("ALTER TABLE sealed_inbound_events DISABLE TRIGGER sealed_inbound_active_line_before_insert")
+                .await.unwrap();
+            let mut envelope = vec![0_u8; 426];
+            envelope[..6].copy_from_slice(b"ZTSE\x01\x02");
+            let line = Uuid::new_v4();
+            db.execute(
+                "INSERT INTO phone_lines(id,account_id) VALUES($1,$2)",
+                &[&line, &account],
+            )
+            .await
+            .unwrap();
+            db.execute("INSERT INTO device_line_bindings(account_id,line_id,device_id,generation) VALUES($1,$2,$3,1)",
+                &[&account,&line,&device]).await.unwrap();
+            let sealed_old = Uuid::new_v4();
+            let sealed_recent = Uuid::new_v4();
+            for (id, seq, age) in [(sealed_old, 1_i64, 31), (sealed_recent, 2_i64, 29)] {
+                db.execute("INSERT INTO sealed_inbound_events(id,account_id,device_id,line_id,binding_generation,device_sequence,observed_at,received_at,part_count,envelope,unsigned_digest) VALUES($1,$2,$3,$4,1,$5,now(),now()-$6::int * interval '1 day',1,$7,$8)",
+                    &[&id,&account,&device,&line,&seq,&age,&envelope,&vec![9_u8; 32]]).await.unwrap();
+            }
+            db.batch_execute(
+                "ALTER TABLE sealed_inbound_events ENABLE TRIGGER sealed_inbound_active_line_before_insert",
+            )
+            .await
+            .unwrap();
+
+            db.execute("INSERT INTO device_preconditions(device_id,account_id,connection_epoch,deployment_epoch,received_at,selected_sim,sms_permission,airplane_mode) VALUES($1,$2,1,1,now()-interval '25 hours','active','granted','disabled')", &[&device,&account]).await.unwrap();
+            (
+                account,
+                device,
+                old,
+                recent,
+                recently_terminal,
+                unknown,
+                fenced,
+                replyable,
+                replyable_callback,
+                events,
+                inbound_old,
+                inbound_recent,
+                inbound_unknown,
+                inbound_fenced,
+                inbound_no_webhook,
+                inbound_pending,
+                old_attempt,
+                deliveries,
+                pending_delivery,
+                old_webhook_attempt,
+                sealed_old,
+                sealed_recent,
+            )
+        },
+    )
+    .await;
+    fixture.verify().await;
+    zrotext_delivery_store::hosted_runtime_identity::require(&fixture.runtime)
         .await
         .unwrap();
-    db.execute(
-        "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'virtual fixture')",
-        &[&device, &account],
-    )
-    .await
-    .unwrap();
-    let old = message(&db, account, device, "delivered", 31).await;
-    let recent = message(&db, account, device, "delivered", 29).await;
-    let recently_terminal = message(&db, account, device, "delivered", 1).await;
-    db.execute(
-        "UPDATE messages SET created_at=now()-interval '120 days' WHERE id=$1",
-        &[&recently_terminal],
-    )
-    .await
-    .unwrap();
-    let unknown = message(&db, account, device, "unknown", 120).await;
-    let fenced = message(&db, account, device, "delivered", 120).await;
-    let fenced_attempt = Uuid::new_v4();
-    db.execute("INSERT INTO message_attempts(id,account_id,message_id,device_id,generation,session_epoch,deployment_epoch,status) VALUES($1,$2,$3,$4,1,1,1,'unknown')",
-        &[&fenced_attempt,&account,&fenced,&device]).await.unwrap();
-    db.execute("INSERT INTO dispatch_fences(message_id,account_id,device_id,attempt_id,generation,session_epoch,deployment_epoch,grant_expires_at,outcome) VALUES($1,$2,$3,$4,1,1,1,now()-interval '1 day','unknown')",
-        &[&fenced,&account,&device,&fenced_attempt]).await.unwrap();
-    // Past the content window, but its positive sent callback is inside the
-    // event window: the signed STOP/START reply target must outlive content.
-    let replyable = message(&db, account, device, "delivered", 31).await;
-    let replyable_attempt = Uuid::new_v4();
-    db.execute("INSERT INTO message_attempts(id,account_id,message_id,device_id,generation,session_epoch,deployment_epoch,status) VALUES($1,$2,$3,$4,1,1,1,'submitted')",
-        &[&replyable_attempt,&account,&replyable,&device]).await.unwrap();
-    let replyable_callback = Uuid::new_v4();
-    db.execute("INSERT INTO message_events(id,account_id,message_id,attempt_id,evidence_code,event_digest,observed_at,received_at,resulting_state,segment_index,segment_count) VALUES($1,$2,$3,$4,'sent_callback_ok',$5,now(),now(),'submitted',0,1)",
-        &[&replyable_callback,&account,&replyable,&replyable_attempt,&vec![7_u8; 32]]).await.unwrap();
-
-    for (key, mid, age) in [("expired", old, -1), ("live", recent, 1)] {
-        db.execute("INSERT INTO idempotency_keys(account_id,key,request_digest,message_id,expires_at) VALUES($1,$2,$3,$4,now()+$5::int * interval '1 day')",
-            &[&account,&key,&vec![6_u8; 32],&mid,&age]).await.unwrap();
-    }
-    let mut events = Vec::new();
-    for (mid, age) in [
-        (old, 91),
-        (recent, 89),
-        (unknown, 120),
-        (fenced, 120),
-        (recently_terminal, 120),
-    ] {
-        let id = Uuid::new_v4();
-        db.execute("INSERT INTO message_events(id,account_id,message_id,evidence_code,event_digest,observed_at,received_at,resulting_state) VALUES($1,$2,$3,'fixture',$4,now(),now()-$5::int * interval '1 day','delivered')",
-            &[&id,&account,&mid,&vec![7_u8; 32],&age]).await.unwrap();
-        events.push(id);
-    }
-    let inbound_old = inbound(&db, account, device, old, 1, 31).await;
-    let inbound_recent = inbound(&db, account, device, recent, 2, 29).await;
-    let inbound_unknown = inbound(&db, account, device, unknown, 3, 120).await;
-    let inbound_fenced = inbound(&db, account, device, fenced, 4, 120).await;
-    let inbound_no_webhook = inbound(&db, account, device, old, 5, 31).await;
-    let inbound_pending = inbound(&db, account, device, old, 6, 31).await;
-    // A normal completed radio attempt retains a submitted fence for late
-    // evidence. This must not prevent terminal content/history retention.
-    let old_attempt: Uuid = db
-        .query_one(
-            "SELECT attempt_id FROM inbound_events WHERE id=$1",
-            &[&inbound_old],
-        )
-        .await
-        .unwrap()
-        .get(0);
-    db.execute("INSERT INTO dispatch_fences(message_id,account_id,device_id,attempt_id,generation,session_epoch,deployment_epoch,grant_expires_at,outcome) VALUES($1,$2,$3,$4,1,1,1,now()+interval '1 day','submitted')",
-        &[&old,&account,&device,&old_attempt]).await.unwrap();
-
-    let endpoint = Uuid::new_v4();
-    db.execute("INSERT INTO webhook_endpoints(id,account_id,callback_url,signing_secret_ciphertext,signing_secret_key_version) VALUES($1,$2,'https://example.test/hook',$3,1)",
-        &[&endpoint,&account,&vec![8_u8; 32]]).await.unwrap();
-    let mut deliveries = Vec::new();
-    for (event, age) in [
-        (inbound_old, 31),
-        (inbound_recent, 29),
-        (inbound_unknown, 120),
-        (inbound_fenced, 120),
-    ] {
-        let id = Uuid::new_v4();
-        db.execute("INSERT INTO webhook_deliveries(id,account_id,endpoint_id,event_id,status,created_at,updated_at) VALUES($1,$2,$3,$4,'succeeded',now()-$5::int * interval '1 day',now()-$5::int * interval '1 day')",
-            &[&id,&account,&endpoint,&event,&age]).await.unwrap();
-        deliveries.push(id);
-    }
-    let pending_delivery = Uuid::new_v4();
-    db.execute("INSERT INTO webhook_deliveries(id,account_id,endpoint_id,event_id,status,created_at,updated_at) VALUES($1,$2,$3,$4,'pending',now()-interval '31 days',now()-interval '31 days')",
-        &[&pending_delivery,&account,&endpoint,&inbound_pending]).await.unwrap();
-    let old_webhook_attempt = Uuid::new_v4();
-    db.execute("INSERT INTO webhook_attempts(id,delivery_id,attempt_number,completed_at,outcome) VALUES($1,$2,1,now(),'ack')",
-        &[&old_webhook_attempt,&deliveries[0]]).await.unwrap();
-    db.execute("INSERT INTO webhook_replay_requests(account_id,request_id,delivery_id,generation) VALUES($1,$2,$3,2)",
-        &[&account,&Uuid::new_v4(),&deliveries[0]]).await.unwrap();
-
-    // No sealed ingest route exists; bypass its admission trigger only to seed
-    // cryptographically shaped, synthetic rows in this isolated test schema.
-    db.batch_execute("ALTER TABLE sealed_inbound_events DISABLE TRIGGER sealed_inbound_active_line_before_insert")
-        .await.unwrap();
-    let mut envelope = vec![0_u8; 426];
-    envelope[..6].copy_from_slice(b"ZTSE\x01\x02");
-    let line = Uuid::new_v4();
-    db.execute(
-        "INSERT INTO phone_lines(id,account_id) VALUES($1,$2)",
-        &[&line, &account],
-    )
-    .await
-    .unwrap();
-    db.execute("INSERT INTO device_line_bindings(account_id,line_id,device_id,generation) VALUES($1,$2,$3,1)",
-        &[&account,&line,&device]).await.unwrap();
-    let sealed_old = Uuid::new_v4();
-    let sealed_recent = Uuid::new_v4();
-    for (id, seq, age) in [(sealed_old, 1_i64, 31), (sealed_recent, 2_i64, 29)] {
-        db.execute("INSERT INTO sealed_inbound_events(id,account_id,device_id,line_id,binding_generation,device_sequence,observed_at,received_at,part_count,envelope,unsigned_digest) VALUES($1,$2,$3,$4,1,$5,now(),now()-$6::int * interval '1 day',1,$7,$8)",
-            &[&id,&account,&device,&line,&seq,&age,&envelope,&vec![9_u8; 32]]).await.unwrap();
-    }
-    db.batch_execute(
-        "ALTER TABLE sealed_inbound_events ENABLE TRIGGER sealed_inbound_active_line_before_insert",
-    )
-    .await
-    .unwrap();
-
-    db.execute("INSERT INTO device_preconditions(device_id,account_id,connection_epoch,deployment_epoch,received_at,selected_sim,sms_permission,airplane_mode) VALUES($1,$2,1,1,now()-interval '25 hours','active','granted','disabled')", &[&device,&account]).await.unwrap();
+    let (
+        account,
+        device,
+        old,
+        recent,
+        recently_terminal,
+        unknown,
+        fenced,
+        replyable,
+        replyable_callback,
+        events,
+        inbound_old,
+        inbound_recent,
+        inbound_unknown,
+        inbound_fenced,
+        inbound_no_webhook,
+        inbound_pending,
+        old_attempt,
+        deliveries,
+        pending_delivery,
+        old_webhook_attempt,
+        sealed_old,
+        sealed_recent,
+    ) = history;
+    let (mut db, driver) = fixture.another_runtime().await;
     let counts = prune(&mut db, RetentionPolicy::default(), 1).await.unwrap();
     assert_eq!(
         counts,
@@ -342,12 +399,16 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
         segment_index: None,
         segment_count: None,
     };
-    assert!(matches!(
-        zrotext_delivery_store::DeliveryStore::new(&mut db)
-            .record_radio_event(late)
-            .await,
-        Err(zrotext_delivery_store::StoreError::StaleFence)
-    ));
+    let late_result = zrotext_delivery_store::DeliveryStore::new(&mut db)
+        .record_radio_event(late)
+        .await;
+    assert!(
+        matches!(
+            late_result,
+            Err(zrotext_delivery_store::StoreError::StaleFence)
+        ),
+        "retired content must reject late evidence at its fence: {late_result:?}"
+    );
     db.execute("INSERT INTO sites(site_id) VALUES('retention-test')", &[])
         .await
         .unwrap();
@@ -372,12 +433,17 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
         epoch: 1,
         deployment_epoch: 1,
     };
-    assert!(matches!(
-        zrotext_delivery_store::DeliveryStore::new(&mut db)
-            .synthetic_payload_for_grant(&grant, &session)
-            .await,
-        Err(zrotext_delivery_store::StoreError::StaleFence)
-    ));
+    let payload_result = zrotext_delivery_store::DeliveryStore::new(&mut db)
+        .synthetic_payload_for_grant(&grant, &session)
+        .await;
+    assert!(
+        matches!(
+            payload_result,
+            Err(zrotext_delivery_store::StoreError::StaleFence)
+        ),
+        "retired content must reject payload replay at its fence: {:?}",
+        payload_result.err()
+    );
     for id in [recent, unknown, fenced, recently_terminal] {
         assert_eq!(
             db.query_one("SELECT recipient_e164 FROM messages WHERE id=$1", &[&id])
@@ -563,11 +629,8 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
         .is_none()
     );
     assert!(!present(&db, "message_events", replyable_callback).await);
-    db.batch_execute(&format!(
-        "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
-    ))
-    .await
-    .unwrap();
+    crate::test_database::Fixture::close_connection(db, driver).await;
+    fixture.finish().await;
 }
 
 /// One failing table must not stop the others from pruning (#654): a

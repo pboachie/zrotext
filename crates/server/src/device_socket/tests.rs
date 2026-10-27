@@ -11,7 +11,7 @@ use p256::ecdsa::{Signature, SigningKey, signature::Signer};
 use p256::elliptic_curve::Generate;
 use rand::rng;
 use sha2::{Digest, Sha256};
-use zrotext_delivery_store::NewMessage;
+use zrotext_delivery_store::{DeliveryStore, NewMessage};
 
 #[test]
 fn enrollment_rejections_and_storage_failures_have_distinct_close_codes() {
@@ -213,6 +213,13 @@ fn stream_schema_examples_match_serde_frames() {
             ClientFrame::SealedLineProof { .. } => "sealed_line_proof",
             ClientFrame::SealedLineInstalled { .. } => "sealed_line_installed",
             ClientFrame::LineActivationV2(_) => "line_activation_v2",
+            ClientFrame::PayloadProfile03(_) => "payload_profile03",
+            ClientFrame::TypedEffect03(_) => {
+                panic!("typed effects use their separate closed decoder")
+            }
+            ClientFrame::ProtectionOrigin(_) => {
+                panic!("early controls use their separate closed decoder")
+            }
         };
         assert_eq!(frame["type"], variant);
     }

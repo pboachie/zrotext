@@ -55,6 +55,15 @@ pub struct HeldDeviceContext03<'held, 'db> {
     checked_ms: u64,
 }
 impl HeldDeviceContext03<'_, '_> {
+    pub(crate) fn selected_identity(&self) -> &Selector {
+        &self.rows.selector
+    }
+    pub(crate) fn lease_deadline_ms(&self) -> u64 {
+        self.rows.lease_until_ms
+    }
+    pub(crate) fn checked_primary_ms(&self) -> u64 {
+        self.checked_ms
+    }
     pub fn canonical_identity(&self) -> &[u8] {
         &self.rows.canonical
     }

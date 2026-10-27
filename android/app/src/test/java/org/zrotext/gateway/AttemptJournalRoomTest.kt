@@ -216,12 +216,12 @@ class AttemptJournalRoomTest {
                 SmsJournalDatabase.MIGRATION_7_8,
                 SmsJournalDatabase.MIGRATION_8_9, SmsJournalDatabase.MIGRATION_9_10,
                 SmsJournalDatabase.MIGRATION_10_11, SmsJournalDatabase.MIGRATION_11_12,
-                SmsJournalDatabase.MIGRATION_12_13, SmsJournalDatabase.MIGRATION_13_14).build()
+                SmsJournalDatabase.MIGRATION_12_13, SmsJournalDatabase.MIGRATION_13_14, SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17, SmsJournalDatabase.MIGRATION_17_18, SmsJournalDatabase.MIGRATION_18_19, SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24, SmsJournalDatabase.MIGRATION_24_25, SmsJournalDatabase.MIGRATION_25_26).build()
         try {
             assertNotNull(migrated.attempts().getAttempt("legacy-attempt"))
             assertEquals(false, migrated.attempts().getAttempt("legacy-attempt")!!.evidenceConflict)
             assertEquals(null, migrated.attempts().getAttempt("legacy-attempt")!!.messageId)
-            assertEquals(14, migrated.openHelper.readableDatabase.version)
+            assertEquals(26, migrated.openHelper.readableDatabase.version)
             val columns = androidx.room.util.TableInfo.read(
                 migrated.openHelper.readableDatabase, "local_line_binding").columns
             val expectedProfileColumns = mapOf(
@@ -290,7 +290,7 @@ class AttemptJournalRoomTest {
             assertEquals("physical", row.getString(0))
             assertTrue(row.isNull(1))
         }
-        // Inspect schema 13 above before upgrading it for the current schema-14 DAO.
+        // Inspect schema 13 above before upgrading it for the current schema-15 DAO.
         SmsJournalDatabase.MIGRATION_13_14.migrate(sql)
         val row = dao.currentLineBinding()!!
         assertEquals(1, row.protocolVersion)

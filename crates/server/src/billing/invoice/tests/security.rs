@@ -2,7 +2,7 @@
 use super::*;
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; uses a unique disposable schema"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; disposable current public database"]
 async fn signed_foreign_account_or_api_context_is_durable_unsupported_without_entitlement_effects()
 {
     let mut case = Case::new().await;
@@ -52,7 +52,7 @@ async fn signed_foreign_account_or_api_context_is_durable_unsupported_without_en
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; uses a unique disposable schema"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; disposable current public database"]
 async fn current_invoice_customer_substitution_rolls_back_without_new_period_authority() {
     let mut case = Case::new().await;
     let mut foreign = case.observation("active", "paid", "subscription_cycle");
@@ -79,7 +79,7 @@ async fn current_invoice_customer_substitution_rolls_back_without_new_period_aut
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; uses a unique disposable schema"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; disposable current public database"]
 async fn invoice_period_foreign_tenant_subscription_is_rejected_by_the_database_boundary() {
     let mut case = Case::new().await;
     let paid = case.observation("active", "paid", "subscription_cycle");

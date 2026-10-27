@@ -785,9 +785,15 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            stream.readable().await.unwrap();
             let mut input = [0u8; 4096];
-            let _ = stream.try_read(&mut input).unwrap();
+            loop {
+                stream.readable().await.unwrap();
+                match stream.try_read(&mut input) {
+                    Ok(_) => break,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                    Err(e) => panic!("fake provider request read failed: {e}"),
+                }
+            }
             let response = format!(
                 "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\n{headers}Connection: close\r\n\r\n{body}",
                 body.len()
@@ -795,8 +801,12 @@ mod tests {
             let mut remaining = response.as_bytes();
             while !remaining.is_empty() {
                 stream.writable().await.unwrap();
-                let written = stream.try_write(remaining).unwrap();
-                remaining = &remaining[written..];
+                match stream.try_write(remaining) {
+                    Ok(0) => panic!("fake provider response write stalled"),
+                    Ok(written) => remaining = &remaining[written..],
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(e) => panic!("fake provider response write failed: {e}"),
+                }
             }
         });
         format!("http://{addr}")

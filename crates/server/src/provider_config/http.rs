@@ -86,7 +86,7 @@ async fn read_owner(
         crate::runtime_db::PooledClient,
         crate::auth::SessionPrincipal,
     ),
-    Response,
+    Box<Response>,
 > {
     http_auth::require_owner_read_headers(headers).map_err(IntoResponse::into_response)?;
     let client = connection(state)
@@ -142,7 +142,7 @@ async fn read_route(
     };
     let (mut client, owner) = match read_owner(&state, &headers).await {
         Ok(value) => value,
-        Err(e) => return e,
+        Err(e) => return *e,
     };
     match read(&mut client, &owner, config).await {
         Ok(value) => Json(value).into_response(),
@@ -165,7 +165,7 @@ async fn list_route(
     };
     let (mut client, owner) = match read_owner(&state, &headers).await {
         Ok(value) => value,
-        Err(e) => return e,
+        Err(e) => return *e,
     };
     match lifecycle::heads(&mut client, &owner, after, false).await {
         Ok(value) => Json(value).into_response(),

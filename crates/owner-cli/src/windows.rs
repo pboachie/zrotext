@@ -31,6 +31,10 @@ mod custody_sign;
 mod line_key_registration;
 #[cfg(all(test, feature = "unlock"))]
 mod native_fixture_path;
+#[cfg(feature = "unlock")]
+mod payload_profile_upgrade;
+#[cfg(feature = "unlock")]
+mod profile03_manifest;
 #[cfg(all(test, feature = "unlock"))]
 mod setup_interop;
 
@@ -53,7 +57,7 @@ fn hex<const N: usize>(input: &[u8]) -> Result<[u8; N]> {
         return Err(());
     }
     let mut result = [0; N];
-    for (out, pair) in result.iter_mut().zip(input.chunks_exact(2)) {
+    for (out, pair) in result.iter_mut().zip(input.as_chunks::<2>().0.iter()) {
         let digit = |b| match b {
             b'0'..=b'9' => Ok(b - b'0'),
             b'a'..=b'f' => Ok(b - b'a' + 10),
@@ -531,6 +535,14 @@ fn run_unlock(
 }
 
 pub(super) fn run(args: &[String]) -> Result<()> {
+    #[cfg(feature = "unlock")]
+    if args.first().map(String::as_str) == Some("payload-profile-upgrade") {
+        return payload_profile_upgrade::run(args, local_store_parent()?);
+    }
+    #[cfg(feature = "unlock")]
+    if args.first().map(String::as_str) == Some("profile03-manifest") {
+        return profile03_manifest::run(args, local_store_parent()?);
+    }
     #[cfg(feature = "unlock")]
     if args.first().map(String::as_str) == Some("contact-reader-sign") {
         return contact_reader_signing::run(args, local_store_parent()?);

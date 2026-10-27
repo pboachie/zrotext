@@ -44,7 +44,7 @@ standard JSON and HTTP libraries.
 Run `original-http-run.py --language java|csharp|ruby --fixture CHECKOUT`, where
 `CHECKOUT` is the clean shared native transport fixture commit
 `2ea14d9c9451bfa9160995ac830dbdfa4160e952`. Java needs a JDK supporting release 17,
-C# needs .NET 8, and Ruby uses 3.3.9. The Python fixture requires cryptography.
+C# needs .NET 8, and Ruby uses 3.3.13. The Python fixture requires cryptography.
 Use `--ruby PATH` to select a portable interpreter.
 
 The same 47 local TLS controls exercise each compiled/interpreted companion:

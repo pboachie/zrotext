@@ -4,22 +4,10 @@ use zrotext_delivery_store::{DeliveryStore, NewMessage, RadioEvent};
 use zrotext_domain::Evidence;
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated schema, synthetic callbacks, no provider/radio calls"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; disposable current database, synthetic callbacks"]
 async fn exact_live_owner_review_is_immutable_and_revoked_cached_session_cannot_replay() {
-    let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL").unwrap();
-    let (mut db, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
-        .await
-        .unwrap();
-    tokio::spawn(async move {
-        connection.await.unwrap();
-    });
-    let schema = format!("usage_review_test_{}", Uuid::new_v4().simple());
-    db.batch_execute(&format!(
-        "CREATE SCHEMA {schema}; SET search_path TO {schema}"
-    ))
-    .await
-    .unwrap();
-    crate::auth::test_schema::apply(&db).await;
+    let current = crate::test_database::Fixture::for_store("ZT_AUTH_TEST_DATABASE_URL").await;
+    let (mut db, driver) = current.another_runtime().await;
     let hasher = TokenHasher::new(crate::test_keys::key(23)).unwrap();
     let password = crate::test_keys::password(4);
     let signup = auth::register(&mut db, &hasher, "usage-review@example.test", &password)
@@ -149,7 +137,15 @@ async fn exact_live_owner_review_is_immutable_and_revoked_cached_session_cannot_
         Err(AuthError::Unauthorized)
     ));
     // Reach the insert with a live owner, then stall the write beyond expiry.
-    db.batch_execute("CREATE SEQUENCE review_insert_reached; CREATE FUNCTION delay_review_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM nextval('review_insert_reached'); PERFORM pg_sleep(6); RETURN NEW; END $$; CREATE TRIGGER delay_review_insert BEFORE INSERT ON billing_usage_adjustment_requests FOR EACH ROW EXECUTE FUNCTION delay_review_insert()").await.unwrap();
+    current.owner.batch_execute("CREATE SEQUENCE public.review_insert_reached; CREATE FUNCTION public.delay_review_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM nextval('review_insert_reached'); PERFORM pg_sleep(6); RETURN NEW; END $$; CREATE TRIGGER delay_review_insert BEFORE INSERT ON billing_usage_adjustment_requests FOR EACH ROW EXECUTE FUNCTION delay_review_insert()").await.unwrap();
+    current
+        .owner
+        .batch_execute(&format!(
+            "GRANT SELECT ON SEQUENCE public.review_insert_reached TO {}",
+            postgres_protocol::escape::escape_identifier(&current.runtime_role),
+        ))
+        .await
+        .unwrap();
     db.execute(
         "UPDATE sessions SET expires_at=clock_timestamp()+interval '5 seconds' WHERE id=$1",
         &[&owner.session_id],
@@ -175,7 +171,7 @@ async fn exact_live_owner_review_is_immutable_and_revoked_cached_session_cannot_
         .get::<_, i64>(0),
         0
     );
-    db.batch_execute("DROP TRIGGER delay_review_insert ON billing_usage_adjustment_requests; DROP FUNCTION delay_review_insert()").await.unwrap();
+    current.owner.batch_execute("DROP TRIGGER delay_review_insert ON billing_usage_adjustment_requests; DROP FUNCTION delay_review_insert()").await.unwrap();
     db.execute(
         "UPDATE sessions SET expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1",
         &[&owner.session_id],
@@ -222,9 +218,6 @@ async fn exact_live_owner_review_is_immutable_and_revoked_cached_session_cannot_
             .await
             .is_err()
     );
-    db.batch_execute(&format!(
-        "SET search_path TO public; DROP SCHEMA {schema} CASCADE"
-    ))
-    .await
-    .unwrap();
+    crate::test_database::Fixture::close_connection(db, driver).await;
+    current.finish().await;
 }

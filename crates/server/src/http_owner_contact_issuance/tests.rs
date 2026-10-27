@@ -512,7 +512,11 @@ async fn actual_router_emits_public_pending_for_unchanged_cli() {
     use tower::ServiceExt;
     let f = Owner::new(true, true).await;
     let input = f.input().await;
-    let records = f.schema.bytes[151..f.schema.bytes.len() - 64].chunks_exact(149);
+    let records = f.schema.bytes[151..f.schema.bytes.len() - 64]
+        .as_chunks::<149>()
+        .0
+        .iter()
+        .map(|chunk| chunk.as_slice());
     let matching = records
         .filter(|r| r[0] == 2 && r[1..33] == f.reader)
         .collect::<Vec<_>>();

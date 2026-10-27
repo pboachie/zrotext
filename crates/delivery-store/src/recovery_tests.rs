@@ -1,40 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
-use tokio_postgres::NoTls;
-
-async fn connect(url: &str) -> Client {
-    let (client, connection) = tokio_postgres::connect(url, NoTls).await.unwrap();
-    tokio::spawn(async move { connection.await.unwrap() });
-    client
-}
-
 struct TestDb {
-    admin: Client,
-    client: Client,
-    schema: String,
+    fixture: crate::test_database::Fixture,
 }
 
 impl TestDb {
     async fn new() -> Self {
-        let root_url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
-            .expect("set ZT_DELIVERY_TEST_DATABASE_URL for PostgreSQL-backed tests");
-        assert!(root_url.starts_with("postgres://") || root_url.starts_with("postgresql://"));
-        let admin = connect(&root_url).await;
-        let schema = format!("recovery_test_{}", Uuid::new_v4().simple());
-        admin
-            .batch_execute(&format!("CREATE SCHEMA {schema}"))
-            .await
-            .unwrap();
-        let separator = if root_url.contains('?') { '&' } else { '?' };
-        let client = connect(&format!(
-            "{root_url}{separator}options=-csearch_path%3D{schema}"
-        ))
-        .await;
-        crate::tests::apply_test_migrations(&client).await;
         Self {
-            admin,
-            client,
-            schema,
+            fixture: crate::test_database::Fixture::for_store().await,
         }
     }
 
@@ -45,21 +18,22 @@ impl TestDb {
         let mut admitted = 0;
         for _ in 0..accounts {
             let account_id = Uuid::new_v4();
-            self.client
+            self.fixture
+                .owner
                 .execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
                 .await
                 .unwrap();
-            self.client.execute(
+            self.fixture.owner.execute(
                 "INSERT INTO usage_quota_policies(account_id,metric,limit_units) VALUES($1,'outbound_message',10000)",
                 &[&account_id],
             ).await.unwrap();
             for _ in 0..devices {
                 let device_id = Uuid::new_v4();
-                self.client.execute(
+                self.fixture.owner.execute(
                     "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'recovery test phone')",
                     &[&device_id, &account_id],
                 ).await.unwrap();
-                let mut store = DeliveryStore::new(&mut self.client);
+                let mut store = DeliveryStore::new(&mut self.fixture.runtime);
                 for _ in 0..MAX_PENDING_PER_DEVICE {
                     let key = Uuid::new_v4().to_string();
                     let outcome = store
@@ -79,7 +53,8 @@ impl TestDb {
                 }
             }
         }
-        self.client
+        self.fixture
+            .owner
             .execute(
                 "UPDATE messages SET expires_at=now()-interval '1 minute'",
                 &[],
@@ -91,7 +66,8 @@ impl TestDb {
 
     async fn refunds(&self) -> (i64, i64) {
         let ledger: i64 = self
-            .client
+            .fixture
+            .owner
             .query_one(
                 "SELECT count(*) FROM usage_ledger WHERE entry_kind='refund'",
                 &[],
@@ -100,7 +76,8 @@ impl TestDb {
             .unwrap()
             .get(0);
         let periods: i64 = self
-            .client
+            .fixture
+            .owner
             .query_one(
                 "SELECT coalesce(sum(refunded_units),0)::bigint FROM usage_periods",
                 &[],
@@ -112,10 +89,7 @@ impl TestDb {
     }
 
     async fn close(self) {
-        self.admin
-            .batch_execute(&format!("DROP SCHEMA {} CASCADE", self.schema))
-            .await
-            .unwrap();
+        self.fixture.finish().await;
     }
 }
 
@@ -127,20 +101,20 @@ async fn one_recovery_tick_expires_more_than_one_batch_and_refunds_exactly_once(
     let admitted = db.expired_backlog(9, 8).await;
     assert_eq!(admitted, 1_152);
 
-    let backlog = DeliveryStore::new(&mut db.client)
+    let backlog = DeliveryStore::new(&mut db.fixture.runtime)
         .recovery_backlog(10_000)
         .await
         .unwrap();
     assert_eq!(backlog.expired_pending, admitted);
     assert!(backlog.oldest_expired_age_seconds.unwrap() >= 59);
     assert_eq!((backlog.silent_attempts, backlog.delivery_timeouts), (0, 0));
-    let capped = DeliveryStore::new(&mut db.client)
+    let capped = DeliveryStore::new(&mut db.fixture.runtime)
         .recovery_backlog(500)
         .await
         .unwrap();
     assert_eq!(capped.expired_pending, 500);
 
-    let first = DeliveryStore::new(&mut db.client)
+    let first = DeliveryStore::new(&mut db.fixture.runtime)
         .recover_bounded(RECOVERY_BATCH, RECOVERY_BATCHES_PER_TICK, || false)
         .await
         .unwrap();
@@ -155,13 +129,13 @@ async fn one_recovery_tick_expires_more_than_one_batch_and_refunds_exactly_once(
     );
     assert_eq!(db.refunds().await, (1_000, 1_000));
 
-    let second = DeliveryStore::new(&mut db.client)
+    let second = DeliveryStore::new(&mut db.fixture.runtime)
         .recover_bounded(RECOVERY_BATCH, RECOVERY_BATCHES_PER_TICK, || false)
         .await
         .unwrap();
     assert_eq!(second.expired, 152);
     assert!(!second.bound_reached);
-    let third = DeliveryStore::new(&mut db.client)
+    let third = DeliveryStore::new(&mut db.fixture.runtime)
         .recover_bounded(RECOVERY_BATCH, RECOVERY_BATCHES_PER_TICK, || false)
         .await
         .unwrap();
@@ -169,7 +143,8 @@ async fn one_recovery_tick_expires_more_than_one_batch_and_refunds_exactly_once(
     assert_eq!(db.refunds().await, (admitted, admitted));
 
     let states = db
-        .client
+        .fixture
+        .owner
         .query_one(
             "SELECT count(*) FILTER (WHERE m.state='expired'), \
              count(*) FILTER (WHERE j.finished_at IS NOT NULL) \
@@ -182,7 +157,7 @@ async fn one_recovery_tick_expires_more_than_one_batch_and_refunds_exactly_once(
         (states.get::<_, i64>(0), states.get::<_, i64>(1)),
         (admitted, admitted)
     );
-    let backlog = DeliveryStore::new(&mut db.client)
+    let backlog = DeliveryStore::new(&mut db.fixture.runtime)
         .recovery_backlog(10_000)
         .await
         .unwrap();
@@ -197,7 +172,7 @@ async fn recovery_stops_early_when_the_process_is_draining() {
     let admitted = db.expired_backlog(1, 8).await;
     assert_eq!(admitted, 128);
     let batches = std::sync::atomic::AtomicUsize::new(0);
-    let pass = DeliveryStore::new(&mut db.client)
+    let pass = DeliveryStore::new(&mut db.fixture.runtime)
         .recover_bounded(10, RECOVERY_BATCHES_PER_TICK, || {
             batches.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 2
         })
@@ -207,7 +182,7 @@ async fn recovery_stops_early_when_the_process_is_draining() {
     assert!(!pass.bound_reached);
     assert_eq!(db.refunds().await, (20, 20));
     assert!(matches!(
-        DeliveryStore::new(&mut db.client)
+        DeliveryStore::new(&mut db.fixture.runtime)
             .recover_bounded(0, 1, || false)
             .await,
         Err(StoreError::InvalidInput)
@@ -223,11 +198,13 @@ async fn recovery_stops_early_when_the_process_is_draining() {
 async fn full_batches_sweep_silent_attempts_and_delivery_timeouts_with_events() {
     let mut db = TestDb::new().await;
     let account_id = Uuid::new_v4();
-    db.client
+    db.fixture
+        .owner
         .execute("INSERT INTO accounts(id) VALUES($1)", &[&account_id])
         .await
         .unwrap();
-    db.client
+    db.fixture
+        .owner
         .execute(
             "INSERT INTO devices(id,account_id,display_name) \
              SELECT gen_random_uuid(),$1,'sweep fixture' FROM generate_series(1,200)",
@@ -253,7 +230,7 @@ async fn full_batches_sweep_silent_attempts_and_delivery_timeouts_with_events() 
             100,
         ),
     ] {
-        db.client
+        db.fixture.owner
             .execute(
                 "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest, \
                  transport_mode,transport_payload,request_digest,state,expires_at,updated_at) \
@@ -273,7 +250,8 @@ async fn full_batches_sweep_silent_attempts_and_delivery_timeouts_with_events() 
             )
             .await
             .unwrap();
-        db.client
+        db.fixture
+            .owner
             .execute(
                 "INSERT INTO message_attempts(id,account_id,message_id,device_id,generation, \
                  session_epoch,deployment_epoch,status,updated_at) \
@@ -283,7 +261,7 @@ async fn full_batches_sweep_silent_attempts_and_delivery_timeouts_with_events() 
             )
             .await
             .unwrap();
-        db.client
+        db.fixture.owner
             .execute(
                 "INSERT INTO dispatch_fences(message_id,account_id,device_id,attempt_id,generation, \
                  session_epoch,deployment_epoch,recipient_digest,grant_expires_at,outcome) \
@@ -302,19 +280,20 @@ async fn full_batches_sweep_silent_attempts_and_delivery_timeouts_with_events() 
             .unwrap();
     }
 
-    let silent = DeliveryStore::new(&mut db.client)
+    let silent = DeliveryStore::new(&mut db.fixture.runtime)
         .reconcile_silent_attempts(RECOVERY_BATCH)
         .await
         .unwrap();
     assert_eq!(silent, 100);
-    let timeouts = DeliveryStore::new(&mut db.client)
+    let timeouts = DeliveryStore::new(&mut db.fixture.runtime)
         .reconcile_delivery_timeouts(RECOVERY_BATCH)
         .await
         .unwrap();
     assert_eq!(timeouts, 100);
 
     let events: i64 = db
-        .client
+        .fixture
+        .owner
         .query_one(
             "SELECT count(*) FROM message_events \
              WHERE evidence_code IN ('grant_timeout','sent_callback_timeout','delivery_timeout')",
@@ -325,7 +304,8 @@ async fn full_batches_sweep_silent_attempts_and_delivery_timeouts_with_events() 
         .get(0);
     assert_eq!(events, 200);
     let digest_matches: i64 = db
-        .client
+        .fixture
+        .owner
         .query_one(
             "SELECT count(*) FROM message_events e \
              WHERE e.event_digest=sha256(uuid_send(e.account_id)||uuid_send(e.message_id)|| \
@@ -338,7 +318,8 @@ async fn full_batches_sweep_silent_attempts_and_delivery_timeouts_with_events() 
         .get(0);
     assert_eq!(digest_matches, 200);
     let states: Vec<(String, i64)> = db
-        .client
+        .fixture
+        .owner
         .query(
             "SELECT state,count(*) FROM messages WHERE account_id=$1 GROUP BY state ORDER BY state",
             &[&account_id],
@@ -356,7 +337,8 @@ async fn full_batches_sweep_silent_attempts_and_delivery_timeouts_with_events() 
         ]
     );
     let unknown_attempts: i64 = db
-        .client
+        .fixture
+        .owner
         .query_one(
             "SELECT count(*) FROM message_attempts WHERE account_id=$1 AND status='unknown'",
             &[&account_id],
@@ -367,14 +349,14 @@ async fn full_batches_sweep_silent_attempts_and_delivery_timeouts_with_events() 
     assert_eq!(unknown_attempts, 100);
 
     assert_eq!(
-        DeliveryStore::new(&mut db.client)
+        DeliveryStore::new(&mut db.fixture.runtime)
             .reconcile_silent_attempts(RECOVERY_BATCH)
             .await
             .unwrap(),
         0
     );
     assert_eq!(
-        DeliveryStore::new(&mut db.client)
+        DeliveryStore::new(&mut db.fixture.runtime)
             .reconcile_delivery_timeouts(RECOVERY_BATCH)
             .await
             .unwrap(),
