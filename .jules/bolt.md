@@ -1,3 +1,7 @@
+## 2025-02-18 - Bounding Regex Memory Allocations
+**Learning:** In the custom JSON/text parsing loops inside `web/owner/account.js` and `web/owner/workflow-exceptions.js`, using a unbounded string slice (`text.slice(at)`) inside a `Regex.exec` over a long text can result in O(N^2) memory allocations. The browser creates an enormous sub-string on every iteration when matching numeric formats from a potentially huge dataset before it fails the max token length check. By bounding the slice length to the maximum token size (e.g. `text.slice(at, at + 129)`), execution time dropped significantly without altering parsing logic. Sticky regex (`/y`) is functionally better but requires instantiating/recreating the regex or managing global state carefully for concurrent parsers.
+**Action:** Always bound string slicing operations inside loop bounds, or use `indexOf` / sticky regex when extracting tokens from highly repetitive or large payloads.
+
 ## 2024-05-14 - Fast String Parsing
 **Learning:** In Javascript, parsing string fields manually by reading character by character inside a `while` loop (using `text[at++]`) can be significantly slower than utilizing built-in functions like `indexOf`. When searching for a specific character like a quote (`"`), `text.indexOf('"', at)` allows the engine to use optimized native methods to find the index quickly, especially on larger inputs, providing measurable performance improvements for tokenizers/parsers.
 
