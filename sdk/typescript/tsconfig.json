@@ -8,7 +8,8 @@
     "allowJs": true,
     "skipLibCheck": true,
     "declaration": true,
-    "outDir": "dist"
+    "outDir": "dist",
+    "rootDir": "src"
   },
   "include": ["src/**/*.ts", "src/contact-origin.js", "src/contact-idna16*.js"]
 }
