@@ -206,6 +206,11 @@ async fn unmodified_writers_hold_real_fences_in_both_contention_orders_and_allow
         .await
         .unwrap_err();
     assert_eq!(error.code(), Some(&SqlState::LOCK_NOT_AVAILABLE));
+    // An extended-protocol error can reach the caller before the backend has
+    // processed Sync and rolled back the implicit transaction. A subsequent
+    // same-connection round trip fences that rollback before the other session
+    // checks that the tuple lock was released.
+    f.db.simple_query("SELECT 1").await.unwrap();
     transition
         .query(
             "SELECT id FROM public.devices WHERE id=$1 FOR UPDATE NOWAIT",
