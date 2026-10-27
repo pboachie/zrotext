@@ -412,6 +412,7 @@ fn snapshot_fields(s: &CreationSource) -> Result<(), Error> {
             .as_chunks::<149>()
             .0
             .iter()
+            .map(|chunk| chunk.as_slice())
             .filter(|r| r[0] == role && r[1..33] == wanted.key_id_b64.0)
             .collect::<Vec<_>>();
         if records.len() != 1 {

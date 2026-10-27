@@ -19,11 +19,12 @@ internal interface ConversationRadioDriver {
 }
 internal class ConversationRadioPlatform internal constructor(
     private val binding:LocalLineBinding, private val driver:ConversationRadioDriver,
-    private val suppression:ConversationExistingSuppressionTokens, private val enabled:Boolean=false
+    private val suppression:ConversationExistingSuppressionTokens, private val enabled:Boolean=false,
+    private val healthCurrent: () -> Unit = InboundProtectionHealth::requireNotRevoked
 ) {
     constructor(context:Context,binding:LocalLineBinding,enabled:Boolean=false):this(
         binding,AndroidDriver(checkNotNull(context.applicationContext),binding),
-        ConversationExistingSuppressionTokens(),enabled)
+        ConversationExistingSuppressionTokens(context),enabled)
     constructor(context:Context,binding:LocalLineBinding,suppression:ConversationExistingSuppressionTokens,
                 enabled:Boolean=false):this(binding,AndroidDriver(checkNotNull(context.applicationContext),binding),suppression,enabled)
     private val installedProfile = binding.installedProfile()
@@ -36,11 +37,14 @@ internal class ConversationRadioPlatform internal constructor(
             binding.continuityKind == "esim" && installedProfile?.isCurrent() == true &&
                 binding.installedProfile() === installedProfile
     }
-    private fun selected() {check(enabled && liveProfile());driver.requireSelected()}
+    private fun selected() {healthCurrent(); check(enabled && liveProfile());driver.requireSelected(); healthCurrent()}
     private class AndroidDriver(private val application:Context,private val binding:LocalLineBinding):ConversationRadioDriver {
         private val installedSelectionV2 = binding.installedSelectionV2()
         private val installedProfile = binding.installedProfile()
+        private val healthEpoch = InboundProtectionHealth.snapshot()
+        private var health: InboundProtectionEpochs.Lease? = null
         override fun requireSelected() {
+            health = InboundProtection.lease(application, healthEpoch)
             check(SmsAttemptAdapter.hasSelectedSim(application,binding.subscriptionId))
             check(SimCardContinuity.matches(binding.activatedSim(),SimCardContinuity.observe(application)))
         }
@@ -78,6 +82,7 @@ internal class ConversationRadioPlatform internal constructor(
             preparedAttempt=null;preparedParts=null
             val selectedRadio=checkNotNull(radio);val sentCallbacks=checkNotNull(sent);val deliveredCallbacks=checkNotNull(delivered)
             radio=null;sent=null;delivered=null
+            checkNotNull(health).requireCurrent() // No provider or storage call after this.
             if(parts.size==1)selectedRadio.sendTextMessage(peer,null,parts.single(),sentCallbacks.single(),deliveredCallbacks.single())
             else selectedRadio.sendMultipartTextMessage(peer,null,parts,sentCallbacks,deliveredCallbacks)
         }
@@ -87,7 +92,7 @@ internal class ConversationRadioPlatform internal constructor(
         submitJournaled(context, prepared, eventId, dao) { requireCurrent(context) }
 
     /** The ordinary sealed stream uses the same ACK, selected-card, suppression and one-use CAS path. */
-    internal fun submitJournaled(context:JournaledRadioContext, prepared:Draft02OutboundPreparation.Prepared,
+    internal fun submitJournaled(context:JournaledRadioScope, prepared:Draft02OutboundPreparation.Prepared,
                eventId:String, dao:SmsAttemptDao, requireCurrent:()->Long):ConversationSubmission {
         if(!enabled)return ConversationSubmission.UNKNOWN
         var started=false
@@ -97,12 +102,8 @@ internal class ConversationRadioPlatform internal constructor(
             val now=requireCurrent()
             check(now>0 && now>=lastNow && now<context.deadlineMs)
             lastNow=now
-            val grant=context.grant
-            check(context.deadlineMs<=grant.expiresAtMs && grant.expiresAtMs<=context.originalDeadlineMs &&
-                grant.attemptId.toString()==context.attempt && grant.messageId.toString()==context.message &&
-                grant.accountId.toString()==context.accountId && grant.deviceId.toString()==context.deviceId &&
-                grant.lineId.toString()==binding.lineId && grant.bindingGeneration==binding.generation &&
-                context.local.binding==binding && context.peer.matches(Regex("\\+[1-9][0-9]{1,14}")))
+            context.requireGrantBinding(binding)
+            check(context.peer.matches(Regex("\\+[1-9][0-9]{1,14}")))
             selected()
             suppression.requireAvailable()
             // Selected-card and Keystore providers may block. Time is sampled after them.
@@ -126,7 +127,7 @@ internal class ConversationRadioPlatform internal constructor(
             prepared.consume { chars ->
                 fresh()
                 val parts=driver.divide(String(chars))
-                check(parts.size in 1..context.grant.segmentCount && parts.size==prepared.segmentCount)
+                check(parts.size in 1..context.segmentCeiling && parts.size==prepared.segmentCount)
                 driver.prepare(context.attempt,parts)
                 val now=fresh() // Manager/division/callback providers can wait.
                 check(dao.consumeRadioStart(context.attempt,context.message,binding.subscriptionId,parts.size,now)==1)
@@ -145,6 +146,7 @@ internal class ConversationRadioPlatform internal constructor(
                     val token=suppression.sender(context.peer)
                     check(!dao.isRecipientSuppressed(token))
                     fresh() // The durable CAS and suppression lookup may wait.
+                    healthCurrent()
                     invoked=true // A throw after invocation can represent a partial carrier action.
                     driver.send(context.peer,context.attempt,parts)
                 }
@@ -157,6 +159,45 @@ internal class ConversationRadioPlatform internal constructor(
             }
             ConversationSubmission.UNKNOWN
         } finally {runCatching {driver.close()}}
+    }
+
+    /** Distinct03 path: an actual typed writer/ACK factory supplies the final one-use
+     * entry. No AlphaRadioEvent, legacy state update or consumeRadioStart is consulted. */
+    internal fun submitTyped(context: Profile03RadioContext, prepared: Draft02OutboundPreparation.Prepared,
+        requireCurrent: () -> Long, isSuppressed: (String) -> Boolean,
+        reserveEntry: () -> TypedPlatformStart): ConversationSubmission {
+        if (!enabled) return ConversationSubmission.UNKNOWN
+        var lastNow = 0L
+        fun fresh() {
+            val before = requireCurrent()
+            check(before > 0 && before >= lastNow && before < context.deadlineMs)
+            context.requireGrantBinding(binding)
+            check(context.peer.matches(Regex("\\+[1-9][0-9]{1,14}")))
+            selected(); suppression.requireAvailable()
+            val completed = requireCurrent() // Framework, provider and suppression may wait.
+            check(completed >= before && completed >= lastNow && completed < context.deadlineMs && liveProfile())
+            lastNow = completed
+        }
+        return try {
+            fresh()
+            prepared.consume { chars ->
+                fresh()
+                val parts = driver.divide(String(chars))
+                check(parts.size in 1..context.segmentCeiling && parts.size == prepared.segmentCount)
+                driver.prepare(context.attempt, parts)
+                fresh()
+                val entry = reserveEntry() // SAME writer competes with permanent no-entry closure.
+                synchronized(LocalSuppressionGate.lock) {
+                    val token = suppression.sender(context.peer)
+                    check(!isSuppressed(token))
+                    fresh(); healthCurrent()
+                    entry.consume() // RAM only; after this the cached driver makes its one call.
+                    driver.send(context.peer, context.attempt, parts)
+                }
+            }
+            ConversationSubmission.SUBMITTED
+        } catch (_: Exception) { ConversationSubmission.UNKNOWN }
+        finally { runCatching { driver.close() } }
     }
     override fun toString()="ConversationRadioPlatform(redacted)"
 }

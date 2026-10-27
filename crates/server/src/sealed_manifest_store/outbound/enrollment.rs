@@ -22,6 +22,7 @@ impl CurrentAuthority<'_, '_> {
             .as_chunks::<149>()
             .0
             .iter()
+            .map(|chunk| chunk.as_slice())
             .find(|k| k[0] == 5 && k[1..33] == r.signer)
             .ok_or("enrollment signer")?;
         if added[33..98] != r.public_point
@@ -49,14 +50,14 @@ impl CurrentAuthority<'_, '_> {
             .as_chunks::<149>()
             .0
             .iter()
-            .map(|k| k.as_slice())
+            .map(|chunk| chunk.as_slice())
             .filter(|k| *k != added)
             .collect();
         let original: Vec<&[u8]> = self.bytes[151..self.bytes.len() - 64]
             .as_chunks::<149>()
             .0
             .iter()
-            .map(|k| k.as_slice())
+            .map(|chunk| chunk.as_slice())
             .collect();
         if remaining != original {
             return Err("enrollment changed existing authority".into());

@@ -8,16 +8,20 @@ use axum::{
     routing::get,
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::Read,
     path::{Component, Path},
     sync::Arc,
 };
-const NAMES: [&str; 3] = [
+const NAMES: [&str; 7] = [
     "draft02-manifest.js",
     "draft02-trust-store.js",
     "contact-reader-statement.js",
+    "contact-origin.js",
+    "contact-idna16.js",
+    "contact-idna16-table0.js",
+    "contact-idna16-table1.js",
 ];
 const MAX_MODULE: u64 = 128 * 1024;
 const PAGE: &str = include_str!("../../../web/owner/account-root-trust.html");
@@ -68,16 +72,27 @@ fn safe_path(path: &Path, directory: bool) -> Result<(), &'static str> {
 /// Closed graph inspection, not JS authentication. Trust the maintained build
 /// and application-owned public package, not arbitrary operator JS as authority.
 fn module_graph(name: &str, source: &str) -> Result<(), &'static str> {
-    let required = match name {
-        "draft02-manifest.js" => "verifiedAccountArchiveStatementRecords02",
-        "draft02-trust-store.js" => "Draft02TrustStore",
-        "contact-reader-statement.js" => "verifyContactReaderStatement01",
+    let (required, dependencies): (&str, &[&str]) = match name {
+        "draft02-manifest.js" => ("verifiedAccountArchiveStatementRecords02", &[]),
+        "draft02-trust-store.js" => ("Draft02TrustStore", &["./draft02-manifest.js"]),
+        "contact-reader-statement.js" => (
+            "verifyContactReaderStatement01",
+            &["./contact-origin.js", "./draft02-manifest.js"],
+        ),
+        "contact-origin.js" => ("canonicalContactOrigin01", &["./contact-idna16.js"]),
+        "contact-idna16.js" => (
+            "contactDomainASCII16",
+            &["./contact-idna16-table0.js", "./contact-idna16-table1.js"],
+        ),
+        "contact-idna16-table0.js" => ("contactIdna16Table0", &[]),
+        "contact-idna16-table1.js" => ("contactIdna16Table1", &[]),
         _ => return Err("Account trust module refused"),
     };
     if !source.contains(required) {
         return Err("Account trust module stale");
     }
     let mut imports = 0;
+    let mut seen = BTreeSet::new();
     let mut import_tokens = 0;
     let mut declaration = String::new();
     let mut importing = false;
@@ -123,7 +138,12 @@ fn module_graph(name: &str, source: &str) -> Result<(), &'static str> {
                     .rsplit_once("from ")
                     .ok_or("Account trust graph refused")?
                     .1;
-                if from != "\"./draft02-manifest.js\";" && from != "'./draft02-manifest.js';" {
+                let Some(dependency) = dependencies.iter().find(|target| {
+                    from == format!("\"{target}\";") || from == format!("'{target}';")
+                }) else {
+                    return Err("Account trust graph refused");
+                };
+                if !seen.insert(*dependency) {
                     return Err("Account trust graph refused");
                 }
                 imports += 1;
@@ -132,7 +152,7 @@ fn module_graph(name: &str, source: &str) -> Result<(), &'static str> {
             }
         }
     }
-    if importing || import_tokens != imports || imports != usize::from(name != NAMES[0]) {
+    if importing || import_tokens != imports || imports != dependencies.len() {
         return Err("Account trust graph refused");
     }
     Ok(())

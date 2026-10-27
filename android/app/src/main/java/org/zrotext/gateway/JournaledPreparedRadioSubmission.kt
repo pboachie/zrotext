@@ -9,7 +9,7 @@ internal class JournaledPreparedRadioSubmission(
     private val platform: (LocalLineBinding) -> ConversationRadioPlatform,
     private val enabled: Boolean = false,
 ) {
-    fun submit(context: JournaledRadioContext, prepared: Draft02OutboundPreparation.Prepared,
+    fun submit(context: JournaledRadioScope, prepared: Draft02OutboundPreparation.Prepared,
                requireCurrent: () -> Long): ConversationSubmission {
         if (!enabled) return ConversationSubmission.UNKNOWN
         val eventId = UUID.randomUUID().toString()
@@ -19,15 +19,22 @@ internal class JournaledPreparedRadioSubmission(
         fun now() = requireCurrent().also { check(it > 0 && it < context.deadlineMs) }
         return try {
             val before = now()
-            dao.reserveAlpha(context.attempt, context.message, context.local.binding.subscriptionId,
-                prepared.segmentCount, eventId, before,
-                identity = EvidenceIdentity(context.accountId, context.deviceId, context.session.originHash))
+            val identity = EvidenceIdentity(context.accountId, context.deviceId, context.session.originHash)
+            when (context) {
+                is JournaledRadioContext -> dao.reserveAlpha(context.attempt, context.message, context.binding.subscriptionId,
+                    prepared.segmentCount, eventId, before, identity = identity)
+                is Profile03RadioContext -> dao.reserveProfile03Radio(context.attempt, context.message,
+                    context.binding.subscriptionId, prepared.segmentCount, eventId, before, identity,
+                    context.current.installation) { binding ->
+                        check(binding == context.binding); context.requireGrantBinding(checkNotNull(binding)); now()
+                    }
+            }
             reserved = true
             val event = checkNotNull(dao.getAlphaEvent(eventId))
             val permitted = wire.submitIntent(phone, event)
             val after = now()
             if (!dao.acknowledgeAlphaIntent(eventId, permitted, after)) ConversationSubmission.UNKNOWN
-            else platform(context.local.binding).submitJournaled(context, prepared, eventId, dao, requireCurrent)
+            else platform(context.binding).submitJournaled(context, prepared, eventId, dao, requireCurrent)
         } catch (_: Exception) {
             if (reserved) runCatching { dao.setState(context.attempt, AttemptState.UNKNOWN, requireCurrent()) }
             ConversationSubmission.UNKNOWN

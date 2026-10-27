@@ -1,0 +1,1450 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zrotext.com/protocol/v1/profile03-manifest-transport.schema.json",
+  "title": "Explicit profile03 manifest transport candidates",
+  "description": "Additive unmounted transport. Shapes do not prove cryptography, accepted lineage, authentication, custody or current permission. Runtime also enforces canonical encoding, signed-storage integer ranges, page64KiB raw/192KiB total, exact scopes and signatures.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/receipt"
+    },
+    {
+      "$ref": "#/$defs/status_request"
+    },
+    {
+      "$ref": "#/$defs/history_request"
+    },
+    {
+      "$ref": "#/$defs/history"
+    },
+    {
+      "$ref": "#/$defs/current_request"
+    },
+    {
+      "$ref": "#/$defs/owner_selection"
+    },
+    {
+      "$ref": "#/$defs/device_selection"
+    },
+    {
+      "$ref": "#/$defs/device_current_request"
+    },
+    {
+      "$ref": "#/$defs/device_current"
+    },
+    {
+      "$ref": "#/$defs/device_history_request"
+    },
+    {
+      "$ref": "#/$defs/device_history"
+    },
+    {
+      "$ref": "#/$defs/device_installed"
+    },
+    {
+      "$ref": "#/$defs/device_installed_ack"
+    },
+    {
+      "$ref": "#/$defs/owner_original"
+    },
+    {
+      "$ref": "#/$defs/device_original_request"
+    },
+    {
+      "$ref": "#/$defs/device_original"
+    }
+  ],
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root_pin",
+        "prior_manifest02",
+        "prior_accepted_ms",
+        "accepted_manifest03",
+        "accepted_ms",
+        "bundle",
+        "device_signing_point",
+        "owner_approval_point",
+        "registration_evidence",
+        "activation_evidence"
+      ],
+      "properties": {
+        "root_pin": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 126,
+          "maxLength": 126
+        },
+        "prior_manifest02": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 486,
+          "maxLength": 13002
+        },
+        "prior_accepted_ms": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "accepted_manifest03": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 488,
+          "maxLength": 13004
+        },
+        "accepted_ms": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "bundle": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 838,
+          "maxLength": 838
+        },
+        "device_signing_point": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 87,
+          "maxLength": 87
+        },
+        "owner_approval_point": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 87,
+          "maxLength": 87
+        },
+        "registration_evidence": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 2,
+          "maxLength": 131072
+        },
+        "activation_evidence": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 2,
+          "maxLength": 131072
+        }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "opening_id",
+        "statement",
+        "signature",
+        "successor_manifest03",
+        "accepted_ms"
+      ],
+      "properties": {
+        "opening_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "statement": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 684,
+          "maxLength": 684
+        },
+        "signature": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 86,
+          "maxLength": 86
+        },
+        "successor_manifest03": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 488,
+          "maxLength": 13004
+        },
+        "accepted_ms": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        }
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "opening_id",
+        "line_id",
+        "binding_id",
+        "election_digest",
+        "statement",
+        "signature",
+        "successor_manifest03",
+        "accepted_ms",
+        "predecessor_version",
+        "predecessor_digest",
+        "successor_version",
+        "successor_digest",
+        "operation",
+        "predecessor_ancestry_sha256",
+        "ancestry_sha256"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "opening_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "line_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "binding_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "election_digest": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "statement": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 684,
+          "maxLength": 684
+        },
+        "signature": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 86,
+          "maxLength": 86
+        },
+        "successor_manifest03": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 488,
+          "maxLength": 13004
+        },
+        "accepted_ms": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "predecessor_version": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "predecessor_digest": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "successor_version": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "successor_digest": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "operation": {
+          "enum": [
+            "enroll",
+            "renew",
+            "replace"
+          ]
+        },
+        "predecessor_ancestry_sha256": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "ancestry_sha256": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        }
+      }
+    },
+    "status_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "opening_id",
+        "statement_sha256",
+        "successor_sha256",
+        "signature_sha256"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "opening_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "statement_sha256": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "successor_sha256": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "signature_sha256": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        }
+      }
+    },
+    "history_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "line_id",
+        "after_version",
+        "after_digest",
+        "after_ancestry_sha256",
+        "tip_version",
+        "tip_digest",
+        "tip_ancestry_sha256"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "line_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "after_version": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "after_digest": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "after_ancestry_sha256": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "tip_version": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,18}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tip_digest": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "minLength": 43,
+              "maxLength": 43
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tip_ancestry_sha256": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "minLength": 43,
+              "maxLength": 43
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "tip_version": {
+                  "type": "null"
+                },
+                "tip_digest": {
+                  "type": "null"
+                },
+                "tip_ancestry_sha256": {
+                  "type": "null"
+                }
+              }
+            },
+            {
+              "properties": {
+                "tip_version": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]{0,18}$"
+                },
+                "tip_digest": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]+$",
+                  "minLength": 43,
+                  "maxLength": 43
+                },
+                "tip_ancestry_sha256": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]+$",
+                  "minLength": 43,
+                  "maxLength": 43
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "history": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "kind",
+        "account_id",
+        "device_id",
+        "line_id",
+        "binding_id",
+        "binding_generation",
+        "selection_epoch",
+        "election_digest",
+        "election_bundle_sha256",
+        "root_fingerprint",
+        "after_version",
+        "after_digest",
+        "after_ancestry_sha256",
+        "tip_version",
+        "tip_digest",
+        "tip_ancestry_sha256",
+        "tip_accepted_ms",
+        "compared_ms",
+        "entries",
+        "next_version",
+        "next_digest",
+        "next_ancestry_sha256",
+        "complete",
+        "evidence"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "kind": {
+          "const": "manifest_ancestry03"
+        },
+        "account_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "device_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "line_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "binding_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "binding_generation": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "selection_epoch": {
+          "const": "1"
+        },
+        "election_digest": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "election_bundle_sha256": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "root_fingerprint": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "after_version": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "after_digest": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "after_ancestry_sha256": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "tip_version": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "tip_digest": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "tip_ancestry_sha256": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "tip_accepted_ms": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "compared_ms": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "entries": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/entry"
+          }
+        },
+        "next_version": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "next_digest": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "next_ancestry_sha256": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        }
+      }
+    },
+    "current_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "line_id"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "line_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        }
+      }
+    },
+    "owner_selection": {
+      "type": "object",
+      "unevaluatedProperties": false,
+      "allOf": [
+        {
+          "$ref": "#/$defs/selection_common"
+        },
+        {
+          "required": [
+            "kind",
+            "user_id",
+            "owner_session_id",
+            "owner_session_digest",
+            "permission_expires_ms"
+          ],
+          "properties": {
+            "kind": {
+              "const": "owner_manifest_selection03"
+            },
+            "user_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "not": {
+                "const": "00000000-0000-0000-0000-000000000000"
+              }
+            },
+            "owner_session_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "not": {
+                "const": "00000000-0000-0000-0000-000000000000"
+              }
+            },
+            "owner_session_digest": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "minLength": 43,
+              "maxLength": 43
+            },
+            "permission_expires_ms": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,18}$"
+            }
+          }
+        }
+      ]
+    },
+    "device_selection": {
+      "type": "object",
+      "unevaluatedProperties": false,
+      "allOf": [
+        {
+          "$ref": "#/$defs/selection_common"
+        },
+        {
+          "required": [
+            "kind",
+            "selection_expires_ms"
+          ],
+          "properties": {
+            "kind": {
+              "const": "device_manifest_selection03"
+            },
+            "selection_expires_ms": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,18}$"
+            }
+          }
+        }
+      ]
+    },
+    "device_current_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "type",
+        "connection_epoch",
+        "challenge",
+        "line_id"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "payload_profile_manifest_current03_request"
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "challenge": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "line_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        }
+      }
+    },
+    "device_current": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "type",
+        "connection_epoch",
+        "challenge",
+        "current"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "payload_profile_manifest_current03"
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "challenge": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "current": {
+          "$ref": "#/$defs/device_selection"
+        }
+      }
+    },
+    "device_history_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "line_id",
+        "after_version",
+        "after_digest",
+        "after_ancestry_sha256",
+        "tip_version",
+        "tip_digest",
+        "tip_ancestry_sha256",
+        "type",
+        "connection_epoch",
+        "challenge"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "line_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "after_version": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "after_digest": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "after_ancestry_sha256": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "tip_version": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,18}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tip_digest": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "minLength": 43,
+              "maxLength": 43
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tip_ancestry_sha256": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "minLength": 43,
+              "maxLength": 43
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "const": "payload_profile_manifest03_request"
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "challenge": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "tip_version": {
+                  "type": "null"
+                },
+                "tip_digest": {
+                  "type": "null"
+                },
+                "tip_ancestry_sha256": {
+                  "type": "null"
+                }
+              }
+            },
+            {
+              "properties": {
+                "tip_version": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]{0,18}$"
+                },
+                "tip_digest": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]+$",
+                  "minLength": 43,
+                  "maxLength": 43
+                },
+                "tip_ancestry_sha256": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]+$",
+                  "minLength": 43,
+                  "maxLength": 43
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "device_history": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "type",
+        "connection_epoch",
+        "challenge",
+        "history"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "payload_profile_manifest03"
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "challenge": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "history": {
+          "$ref": "#/$defs/history"
+        }
+      }
+    },
+    "device_installed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "type",
+        "connection_epoch",
+        "challenge",
+        "line_id",
+        "tip_version",
+        "tip_digest",
+        "tip_ancestry_sha256",
+        "election_digest"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "payload_profile_manifest03_installed"
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "challenge": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "line_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "tip_version": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "tip_digest": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "tip_ancestry_sha256": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "election_digest": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        }
+      }
+    },
+    "device_installed_ack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "type",
+        "connection_epoch",
+        "challenge",
+        "line_id",
+        "tip_version",
+        "tip_digest",
+        "tip_ancestry_sha256",
+        "election_digest",
+        "compared_ms"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "payload_profile_manifest03_installed_ack"
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "challenge": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "line_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "tip_version": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "tip_digest": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "tip_ancestry_sha256": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "election_digest": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "compared_ms": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        }
+      }
+    },
+    "selection_common": {
+      "type": "object",
+      "required": [
+        "v",
+        "envelope_profile",
+        "manifest_profile",
+        "account_id",
+        "device_id",
+        "line_id",
+        "selection_epoch",
+        "origin_digest",
+        "device_session_digest",
+        "site_id",
+        "instance_id",
+        "connection_epoch",
+        "deployment_epoch",
+        "old_binding_id",
+        "old_binding_generation",
+        "old_binding_proof_digest",
+        "binding_id",
+        "binding_generation",
+        "reader_key_id",
+        "device_signing_key_id",
+        "approval_key_id",
+        "root_fingerprint",
+        "trust_generation",
+        "manifest_version",
+        "manifest_digest",
+        "election_digest",
+        "election_bundle_sha256",
+        "compared_ms",
+        "physical_selection",
+        "current_manifest03",
+        "manifest_ancestry_sha256",
+        "evidence"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "envelope_profile": {
+          "const": 3
+        },
+        "manifest_profile": {
+          "const": 3
+        },
+        "account_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "device_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "line_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "selection_epoch": {
+          "const": "1"
+        },
+        "origin_digest": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "device_session_digest": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "site_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "instance_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "connection_epoch": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "deployment_epoch": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "old_binding_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "old_binding_generation": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "old_binding_proof_digest": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "binding_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "binding_generation": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "reader_key_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "device_signing_key_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "approval_key_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "root_fingerprint": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "trust_generation": {
+          "const": "1"
+        },
+        "manifest_version": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "manifest_digest": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "election_digest": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "election_bundle_sha256": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "compared_ms": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "physical_selection": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "original_v2"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "refresh_id",
+                "bundle",
+                "accepted_ms",
+                "installed_ms"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "owner_refresh03"
+                },
+                "refresh_id": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                  "not": {
+                    "const": "00000000-0000-0000-0000-000000000000"
+                  }
+                },
+                "bundle": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]+$",
+                  "minLength": 994,
+                  "maxLength": 994
+                },
+                "accepted_ms": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]{0,18}$"
+                },
+                "installed_ms": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]{0,18}$"
+                }
+              }
+            }
+          ]
+        },
+        "current_manifest03": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 488,
+          "maxLength": 13004
+        },
+        "manifest_ancestry_sha256": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        }
+      }
+    },
+    "owner_original": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "kind",
+        "line_id",
+        "binding_id",
+        "evidence"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "kind": {
+          "const": "manifest_original03"
+        },
+        "line_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "binding_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        }
+      }
+    },
+    "device_original_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "type",
+        "connection_epoch",
+        "challenge",
+        "line_id"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "payload_profile_manifest_original03_request"
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "challenge": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "line_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        }
+      }
+    },
+    "device_original": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "type",
+        "connection_epoch",
+        "challenge",
+        "line_id",
+        "binding_id",
+        "evidence"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "payload_profile_manifest_original03"
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "challenge": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "line_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "binding_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        }
+      }
+    }
+  }
+}

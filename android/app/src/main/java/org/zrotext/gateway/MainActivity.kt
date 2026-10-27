@@ -141,6 +141,7 @@ class MainActivity : ComponentActivity() {
     private var summaryCredential by mutableStateOf("")
     private var summaryView by mutableStateOf(GatewaySummaryState.View(GatewaySummaryState.Phase.UNAVAILABLE, null))
     private var summaryStatus by mutableStateOf("Message counts are unavailable on this phone. An authorized summary reader is not connected.")
+    private var deliveryUpdateStatus by mutableStateOf("Saved delivery updates can be synced through this phone's authenticated connection.")
     private val summaryState = GatewaySummaryState()
     private val summaryClient = GatewaySummaryClient()
     private val summaryWorker = Executors.newSingleThreadExecutor()
@@ -157,6 +158,11 @@ class MainActivity : ComponentActivity() {
     internal var conversationHandleFactory: ((Uri, (ConversationPresentationPort) -> Unit) -> ConversationSetupEntrySession.Handle)? = null
     internal var conversationReplyInstaller: ((ByteArray, ByteArray, (Boolean) -> Unit) -> Unit)? = null
     private val conversationWorker = Executors.newSingleThreadExecutor()
+    private val protectionWorker = Executors.newSingleThreadExecutor()
+    private val protectionForeground = ConversationInterval03Foreground()
+    private var protectionVisible = false
+    private var protectionBusy by mutableStateOf(false)
+    private var protectionStatus by mutableStateOf("Finish protection before enabling SMS receiving")
     private var conversationEntryOpen by mutableStateOf(false)
     private var conversationSetupFile by mutableStateOf<Uri?>(null)
     private var conversationMessageReference by mutableStateOf("")
@@ -181,6 +187,12 @@ class MainActivity : ComponentActivity() {
         private set
     private var conversationReplyChoiceGeneration by mutableStateOf(0L)
     private var conversationEnrollmentOpen by mutableStateOf(false)
+    private var samePhoneReviewOpen by mutableStateOf(false)
+    private var samePhoneReviewBusy by mutableStateOf(false)
+    private var samePhoneReviewStatus by mutableStateOf("")
+    private var samePhoneDisplayed by mutableStateOf<SamePhoneSelectionReview.Review?>(null)
+    private var samePhoneReviewToken: AtomicBoolean? = null
+    private val samePhoneReview = AtomicReference<SamePhoneSelectionReview?>(null)
     private var ownerCustodyOpen by mutableStateOf(false)
     private var reviewRootCustodyOpen by mutableStateOf(false)
     private var conversationEnrollmentBusy by mutableStateOf(false)
@@ -329,6 +341,7 @@ class MainActivity : ComponentActivity() {
                 GatewayCompanion(initialPage = GatewayPage.entries.firstOrNull {
                     it.name == intent.getStringExtra("gateway_screen")
                 } ?: GatewayPage.HOME, onPageChanged = { page ->
+                    if (page != GatewayPage.SETUP) protectionForeground.update(false)
                     if (page != GatewayPage.TOOLS) cancelControlledTestReview()
                     summaryPageChanged(page)
                     bindingSetupVisible = page == GatewayPage.SETUP
@@ -349,6 +362,13 @@ class MainActivity : ComponentActivity() {
                             power = rememberGatewayPower(),
                             summary = summaryView,
                             summaryStatus = summaryStatus,
+                            deliveryUpdateStatus = deliveryUpdateStatus,
+                            onSyncDeliveryUpdates = {
+                                deliveryUpdateStatus = "Syncing saved delivery updates…"
+                                TypedHistory03Runtime.syncSavedReports(applicationContext) { status ->
+                                    runOnUiThread { deliveryUpdateStatus = status }
+                                }
+                            },
                             onSetup = { navigate(GatewayPage.SETUP) },
                             onConnection = { navigate(GatewayPage.CONNECTION) },
                             recovery = setupRecovery,
@@ -374,6 +394,31 @@ class MainActivity : ComponentActivity() {
                             initialStep = GatewaySetupStep.entries.firstOrNull {
                                 it.name == intent.getStringExtra("gateway_setup_step")
                             } ?: GatewaySetupStep.OVERVIEW,
+                            protectionContent = {
+                                DisposableEffect(Unit) {
+                                    protectionVisible = true
+                                    protectionForeground.update(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+                                    onDispose { protectionVisible = false; protectionForeground.update(false) }
+                                }
+                                GatewayStatusText("Phone protection", protectionStatus)
+                                GatewayButton(onClick = {
+                                    if (!bindingCurrent || SystemClock.elapsedRealtime() - bindingCheckedAt !in 0..30_000L) {
+                                        checkSavedPairing()
+                                        protectionStatus = "Check saved pairing, then start the approved connection"
+                                    } else startHeartbeat(rebootResume = false, protectionOnly = true)
+                                }, enabled = !protectionBusy, modifier = Modifier.fillMaxWidth()) { Text("Connect for protection setup") }
+                                GatewayButton(onClick = { continueProtection(false) }, enabled = !protectionBusy,
+                                    modifier = Modifier.fillMaxWidth()) { Text("Set up or check saved protection") }
+                                TextButton(onClick = { continueProtection(true) }, enabled = !protectionBusy,
+                                    modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Recover original setup proof") }
+                                if (protectionBusy) TextButton(onClick = {
+                                    protectionForeground.update(false)
+                                    protectionForeground.update(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+                                    protectionStatus = "Setup paused. Any operation already entered keeps its original result; no next operation is authorized."
+                                }, modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Pause setup") }
+                                Text("Recovery keeps the original pairing, keys and attempts. An unknown key-generation result or older setup without its original proof needs operator help; it is never reset automatically.",
+                                    style = MaterialTheme.typography.bodySmall)
+                            },
                             accessContent = {
                                 GatewayButton(onClick = { permissionDisclosure = GatewayPermissionPurpose.SIM }) { Text("Choose SIM permissions") }
                                 GatewayButton(onClick = { permissionDisclosure = GatewayPermissionPurpose.SEND }) { Text("Review SMS sending access") }
@@ -547,6 +592,19 @@ class MainActivity : ComponentActivity() {
                         Text("Connection status does not confirm message delivery.", style = MaterialTheme.typography.bodySmall)
                     }
                     if (page == GatewayPage.CONNECTION) {
+                        GatewaySectionTitle("Hosted encrypted messaging")
+                        GatewayStatusText("Messaging", Profile03MessagingStatus.value)
+                        ConversationInterval03Content(lifecycle)
+                        Text("Use your paired owner workspace to compare the account root, enroll this phone's reader and approve its selected SIM. Each signed message still requires current server, phone and line approval.")
+                        GatewayButton(onClick = { startHeartbeat(rebootResume = false, profile03 = true) }) {
+                            Text("Connect for encrypted messaging")
+                        }
+                        OutlinedButton(onClick = { runCatching { Profile03ManifestMount.checkSetup() } },
+                            modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Check and resume messaging setup") }
+                        OutlinedButton(onClick = { startSamePhoneReview() },
+                            modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Review this phone's SIM again") }
+                        SamePhoneReviewContent()
+                        Text("Android 13 or later is required. Missing or changed setup pauses messaging and keeps your existing pairing and attempt history. Reboot resume remains heartbeat-only.", style = MaterialTheme.typography.bodySmall)
                         GatewaySectionTitle("Conversation content")
                         Text("Review a selected conversation from your paired browser. Opening this screen does not approve SMS content transfer.")
                         GatewayButton(onClick = {
@@ -707,6 +765,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        protectionForeground.update(protectionVisible)
         completeSelectionForeground = true
         summaryResumed = true
         bindingForeground = true
@@ -718,6 +777,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
+        protectionForeground.update(false)
+        closeSamePhoneReview()
         cancelControlledTestReview()
         bindingForeground = false
         bindingEpoch++
@@ -736,6 +797,11 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        protectionForeground.close()
+        // Do not interrupt an entered provider: its exact return must remain appendable as
+        // history. The withdrawn foreground decision forbids every next operation/pin.
+        protectionWorker.shutdown()
+        closeSamePhoneReview()
         completeSelectionForeground = false
         completeSelectionCoordinator?.close()
         completeSelectionCoordinator = null
@@ -752,11 +818,93 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        closeSamePhoneReview()
         completeSelectionForeground = false
         completeSelectionCoordinator?.stop()
         closeSealedLineReview()
         revokeConversationForeground()
         super.onStop()
+    }
+
+    private fun startSamePhoneReview() {
+        closeSamePhoneReview()
+        val token = AtomicBoolean(true)
+        samePhoneReviewToken = token
+        samePhoneReviewOpen = true; samePhoneReviewBusy = true
+        samePhoneReviewStatus = "Reading this phone's complete SIM selection."
+        JournalRuntime.io.execute {
+            val outcome = runCatching {
+                check(token.get())
+                val controller = SamePhoneSelectionReviewAndroid.open(applicationContext, SmsJournalDatabase.get(applicationContext), token)
+                if (!samePhoneReview.compareAndSet(null, controller)) { controller.close(); error("Review already open") }
+                if (!token.get()) {
+                    if (samePhoneReview.compareAndSet(controller, null)) controller.close()
+                    error("Review cancelled")
+                }
+                checkNotNull(controller.prepare())
+            }
+            runOnUiThread {
+                if (token.get() && samePhoneReviewToken === token && samePhoneReviewOpen) {
+                    samePhoneReviewBusy = false
+                    samePhoneDisplayed = outcome.getOrNull()
+                    samePhoneReviewStatus = if (outcome.isSuccess) "Compare the complete SIM selection below. Continue in the owner workspace to approve it."
+                        else "Review paused. Connect for encrypted messaging and check the existing enrolled phone, reader and selected SIM. Saved setup history is retained."
+                }
+            }
+        }
+    }
+    private fun confirmSamePhoneReview() {
+        val token = samePhoneReviewToken ?: return
+        val displayed = samePhoneDisplayed ?: return
+        val controller = samePhoneReview.get() ?: return
+        if (!token.get() || samePhoneReviewBusy) return
+        samePhoneReviewBusy = true; samePhoneDisplayed = null
+        JournalRuntime.io.execute {
+            val outcome = runCatching {
+                check(token.get() && controller.confirm(displayed))
+                SelectionRefresh03Mount.submit(checkNotNull(controller.takePending()))
+                check(token.get())
+            }
+            runOnUiThread {
+                if (token.get() && samePhoneReviewToken === token && samePhoneReviewOpen) {
+                    samePhoneReviewBusy = false
+                    samePhoneReviewStatus = if (outcome.isSuccess) "Phone review confirmed. Keep this app open and approve the selection in your owner workspace using its password, authenticator and original messaging approval key."
+                        else "Approval paused. Check the owner workspace and reconnect before a new explicit SIM review. The original pairing, setup and attempt history are saved."
+                }
+            }
+        }
+    }
+    private fun closeSamePhoneReview() {
+        samePhoneReviewToken?.set(false); samePhoneReviewToken = null
+        samePhoneReview.getAndSet(null)?.close()
+        samePhoneDisplayed = null; samePhoneReviewBusy = false; samePhoneReviewOpen = false
+    }
+    @Composable private fun SamePhoneReviewContent() {
+        if (!samePhoneReviewOpen) return
+        Dialog(onDismissRequest = { closeSamePhoneReview() }) {
+            Surface {
+                Column(Modifier.safeDrawingPadding().verticalScroll(rememberScrollState()).padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    GatewaySectionTitle("Review selected SIM")
+                    Text("This pauses sending while you review. Approval keeps this phone's existing pairing, keys and message history. It does not send an SMS.")
+                    val shown = samePhoneDisplayed
+                    if (shown != null) {
+                        GatewayStatusText("Account", shown.account.toString())
+                        GatewayStatusText("Phone", shown.device.toString())
+                        GatewayStatusText("Line", shown.line.toString())
+                        GatewayStatusText("Selected subscription", shown.selectedSubscription.toString())
+                        GatewayStatusText("SIM type", if (shown.newObservationKind == LineActivationV2Kind.EMBEDDED) "eSIM" else "Physical SIM")
+                        GatewayStatusText("Complete active SIM count", shown.completeSimCount.toString())
+                        Button(onClick = { confirmSamePhoneReview() }, enabled = !samePhoneReviewBusy,
+                            modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Confirm this SIM for owner review") }
+                    }
+                    Text(samePhoneReviewStatus)
+                    GatewayStatusText("Messaging", Profile03MessagingStatus.value)
+                    OutlinedButton(onClick = { closeSamePhoneReview() },
+                        modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Close review") }
+                }
+            }
+        }
     }
 
     private fun revokeConversationForeground() {
@@ -865,6 +1013,15 @@ class MainActivity : ComponentActivity() {
                                         conversationExportPicker.launch("zrotext-phone-public-keys.bin")
                                     }.onFailure { conversationEnrollmentStatus = "Public export expired or pairing/line/key changed. Enroll and review its current public values again." }
                                 }
+                            }, {
+                                val chain = conversationInitialChain
+                                runConversationEnrollment({ _ ->
+                                    val token = checkNotNull(conversationEnrollmentToken)
+                                    val copies = ConversationEnrollmentSession.decodeChain(chain)
+                                    try { ConversationAndroidEnrollment.importInitialProfile03Manifests(applicationContext,
+                                        SmsJournalDatabase.get(applicationContext), token, copies) }
+                                    finally { copies.forEach { it.fill(0) } }
+                                }) { version -> conversationEnrollmentStatus = "Initial signed chain accepted at version $version. Continue the same-root messaging setup in your owner workspace." }
                             })
                     }
                 }
@@ -1560,8 +1717,13 @@ class MainActivity : ComponentActivity() {
             pairingStatus = "Pairing input refused or another operation is active. Check the current server and browser ticket."
         else pairingStatus = "Claiming and proving key; compare in the browser before approval"
     }
-    private fun startHeartbeat(rebootResume: Boolean) {
-        if (selectedSim == null) {
+    private fun startHeartbeat(rebootResume: Boolean, profile03: Boolean = false, protectionOnly: Boolean = false) {
+        check(!protectionOnly || !profile03 && !rebootResume)
+        if (profile03 && Build.VERSION.SDK_INT < 33) {
+            AuthenticatedGatewayStatus.value = "Encrypted messaging requires Android 13 or later"
+            return
+        }
+        if (selectedSim == null && !protectionOnly) {
             AuthenticatedGatewayStatus.value = "Select a SIM first"
             return
         }
@@ -1571,6 +1733,7 @@ class MainActivity : ComponentActivity() {
             .putExtra(AuthenticatedGatewayService.EXTRA_URL, deviceStreamEndpoint)
             .putExtra(AuthenticatedGatewayService.EXTRA_DEVICE_ID, approvedDeviceId.trim())
             .putExtra(AuthenticatedGatewayService.EXTRA_REBOOT_RESUME, rebootResume)
+            .putExtra(AuthenticatedGatewayService.EXTRA_PROFILE03, profile03)
         ContextCompat.startForegroundService(this, intent)
     }
 
@@ -1655,6 +1818,48 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun askPermissions(purpose: GatewayPermissionPurpose) {
+        if (purpose == GatewayPermissionPurpose.RECEIVE) {
+            if (protectionBusy) return
+            val decision = runCatching { protectionForeground.decision() }.getOrNull() ?: return
+            protectionBusy = true
+            protectionWorker.execute {
+                val verifiedEpoch = runCatching {
+                    val epoch = InboundProtectionHealth.snapshot()
+                    ProtectionOriginInstalled.key(applicationContext) {
+                        check(decision.isCurrent()); InboundProtectionHealth.checked(epoch)
+                    }
+                    epoch
+                }.getOrNull()
+                runOnUiThread {
+                    protectionBusy = false
+                    if (!decision.isCurrent() || isDestroyed) return@runOnUiThread
+                    if (verifiedEpoch != null && InboundProtectionHealth.current(verifiedEpoch)) launchPermissions(purpose)
+                    else protectionStatus = "Finish original phone protection first; SMS receiving access was not requested"
+                }
+            }
+            return
+        }
+        launchPermissions(purpose)
+    }
+
+    private fun continueProtection(recoverProof: Boolean) {
+        if (protectionBusy) return
+        val decision = runCatching { protectionForeground.decision() }.getOrNull() ?: return
+        protectionBusy = true
+        protectionStatus = "Checking the original setup on this approved connection…"
+        protectionWorker.execute {
+            val result = runCatching { ProtectionOriginRuntime(applicationContext).continueSetup(decision, recoverProof) }
+            runOnUiThread {
+                protectionBusy = false
+                if (!decision.isCurrent() || isDestroyed) return@runOnUiThread
+                protectionStatus = if (result.isSuccess) "Phone protection verified. You can now review SMS receiving access."
+                    else (result.exceptionOrNull() as? ProtectionOriginRuntime.NeedsRecovery)?.message
+                        ?: "Protection needs recovery. Keep this setup and its keys; reconnect and check the original status."
+            }
+        }
+    }
+
+    private fun launchPermissions(purpose: GatewayPermissionPurpose) {
         val requested = purpose.permissions(Build.VERSION.SDK_INT).filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }

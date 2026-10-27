@@ -13,7 +13,6 @@ use axum::{
 };
 use serde_json::{Value, json};
 use std::{collections::HashMap, sync::Mutex, time::SystemTime};
-use tokio_postgres::Client;
 
 pub struct Fake {
     pub inner: Mutex<ProviderState>,
@@ -166,9 +165,7 @@ async fn respond(State(fake): State<Arc<Fake>>, request: Request) -> axum::respo
     Json(value).into_response()
 }
 pub struct Fixture {
-    pub admin: Client,
-    pub role: String,
-    pub schema: String,
+    pub database: crate::test_database::Fixture,
     pub app_url: String,
     pub auth: AuthHttpState,
     pub owner: auth::SessionPrincipal,
@@ -178,61 +175,43 @@ pub struct Fixture {
     pub server: tokio::task::JoinHandle<()>,
     pub namespace: Uuid,
 }
-pub async fn connect(url: &str) -> Client {
-    let (db, connection) = zrotext_postgres_connection::connect(url).await.unwrap();
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
-    db
-}
 impl Fixture {
     pub async fn new(mode: Mode) -> Self {
-        let url = std::env::var("ZT_AUTH_TEST_DATABASE_URL").unwrap();
-        let mut admin = connect(&url).await;
-        let suffix = Uuid::new_v4().simple().to_string();
-        let schema = format!("hosted_runtime_{suffix}");
-        let role = format!("hosted_app_{suffix}");
-        admin
-            .batch_execute(&format!(
-                "CREATE SCHEMA {schema}; SET search_path TO {schema}"
-            ))
-            .await
-            .unwrap();
-        crate::auth::test_schema::apply(&admin).await;
+        // Hosted startup intentionally reads public and requires the current
+        // native transaction identity. A prefix107 search_path fixture cannot
+        // exercise that contract or the stock ordinary-runtime ACLs.
+        let mut database = crate::test_database::Fixture::new("ZT_AUTH_TEST_DATABASE_URL").await;
+        database.verify().await;
         let hasher = Arc::new(auth::TokenHasher::new(crate::test_keys::key(1)).unwrap());
         let password = crate::test_keys::password(2);
-        let signup = auth::register(&mut admin, &hasher, "hosted@example.test", &password)
+        let signup = auth::register(
+            &mut database.owner,
+            &hasher,
+            "hosted@example.test",
+            &password,
+        )
+        .await
+        .unwrap();
+        auth::verify_email(&mut database.owner, &hasher, &signup.verification_token)
             .await
             .unwrap();
-        auth::verify_email(&mut admin, &hasher, &signup.verification_token)
+        let login = auth::login(&database.owner, &hasher, "hosted@example.test", &password)
             .await
             .unwrap();
-        let login = auth::login(&admin, &hasher, "hosted@example.test", &password)
+        let owner = auth::authenticate_session(&database.owner, &hasher, &login.token)
             .await
             .unwrap();
-        let owner = auth::authenticate_session(&admin, &hasher, &login.token)
-            .await
-            .unwrap();
-        let app_password = Uuid::new_v4().to_string();
-        let verifier = postgres_protocol::password::scram_sha_256(app_password.as_bytes());
-        let verifier = postgres_protocol::escape::escape_literal(&verifier);
-        admin.batch_execute(&format!("CREATE ROLE {role} LOGIN PASSWORD {verifier}; GRANT USAGE ON SCHEMA {schema} TO {role}; GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA {schema} TO {role}; REVOKE ALL ON hosted_runtime_secrets,hosted_runtime_sessions,hosted_billing_resolutions FROM {role}; GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA {schema} TO {role}; GRANT EXECUTE ON FUNCTION hosted_runtime_role_safe(),hosted_runtime_challenge(uuid,bigint),hosted_runtime_bind(uuid,bigint,bytea),hosted_runtime_verified(uuid,bigint) TO {role}")).await.unwrap();
         let namespace = Uuid::from_bytes([1; 16]);
-        admin.batch_execute(&format!("REVOKE ALL ON payload_profile_account_anchors FROM {role}; GRANT SELECT,UPDATE(account_id) ON payload_profile_account_anchors TO {role}; GRANT EXECUTE ON FUNCTION payload_profile_account_fence_key(uuid) TO {role}")).await.unwrap();
-        admin.execute("INSERT INTO hosted_billing_namespaces(namespace_id,mode,provider_account,policy_revision,enabled,old_binary_fenced) VALUES($1,$2,'acct_fixture',1,true,true)",&[&namespace,&mode_name(mode)]).await.unwrap();
-        admin
+        database.owner.execute("INSERT INTO public.hosted_billing_namespaces(namespace_id,mode,provider_account,policy_revision,enabled,old_binary_fenced) VALUES($1,$2,'acct_fixture',1,true,true)",&[&namespace,&mode_name(mode)]).await.unwrap();
+        database
+            .owner
             .execute(
-                "INSERT INTO hosted_runtime_secrets VALUES($1,$2)",
+                "INSERT INTO public.hosted_runtime_secrets VALUES($1,$2)",
                 &[&namespace, &&[7u8; 32][..]],
             )
             .await
             .unwrap();
-        let mut app = reqwest::Url::parse(&url).unwrap();
-        app.set_username(&role).unwrap();
-        app.set_password(Some(&app_password)).unwrap();
-        app.query_pairs_mut()
-            .append_pair("options", &format!("-csearch_path={schema}"));
-        let app_url = app.to_string();
+        let app_url = database.runtime_url.clone();
         let auth = AuthHttpState::new(
             app_url.clone(),
             hasher,
@@ -250,9 +229,7 @@ impl Fixture {
             axum::serve(listener, app).await.unwrap();
         });
         Self {
-            admin,
-            role,
-            schema,
+            database,
             app_url,
             auth,
             owner,
@@ -291,7 +268,8 @@ impl Fixture {
             .unwrap()
     }
     pub async fn due(&self) {
-        self.admin
+        self.database
+            .owner
             .execute(
                 "UPDATE hosted_billing_customers SET next_attempt_at=0,lease_until=0",
                 &[],
@@ -300,7 +278,8 @@ impl Fixture {
             .unwrap();
     }
     pub async fn now(&self) -> i64 {
-        self.admin
+        self.database
+            .owner
             .query_one(
                 "SELECT floor(extract(epoch FROM clock_timestamp()))::bigint",
                 &[],
@@ -311,12 +290,7 @@ impl Fixture {
     }
     pub async fn cleanup(self) {
         self.server.abort();
-        self.admin
-            .batch_execute(&format!(
-                "DROP SCHEMA {} CASCADE; DROP ROLE {}",
-                self.schema, self.role
-            ))
-            .await
-            .unwrap();
+        let _ = self.server.await;
+        self.database.finish().await;
     }
 }

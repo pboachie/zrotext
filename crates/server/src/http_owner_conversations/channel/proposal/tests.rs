@@ -308,6 +308,7 @@ async fn proposal_rejects_root_signed_successor_without_selected_live_reader_or_
                 .as_chunks::<149>()
                 .0
                 .iter()
+                .map(|chunk| chunk.as_slice())
                 .position(|record| record[0] == role)
                 .unwrap()
                 * 149;
@@ -384,6 +385,7 @@ async fn proposal_rejects_current_reader_rotation_and_real_origin_expiry() {
                     .as_chunks::<149>()
                     .0
                     .iter()
+                    .map(|chunk| chunk.as_slice())
                     .position(|r| r[0] == 2)
                     .unwrap()
                     * 149;

@@ -326,6 +326,18 @@ internal object CallbackEvidence {
 
 @Dao
 abstract class SmsAttemptDao {
+    @Query("SELECT EXISTS(SELECT 1 FROM typed_submit03 WHERE attemptId = :attempt)")
+    protected abstract fun isTypedSubmit03(attempt: String): Boolean
+
+    @Query("SELECT EXISTS(SELECT 1 FROM profile03_elections WHERE (state IN ('reserved','signed','installed') OR deviceSignatureB64url IS NOT NULL OR acceptedEvidenceSha256 IS NOT NULL) AND (:account IS NULL OR accountId = :account))")
+    protected abstract fun hasProfile03EffectFence(account: String?): Boolean
+
+    @Query("SELECT * FROM profile03_elections WHERE challengeId = :challenge")
+    protected abstract fun profile03Election(challenge: String): Profile03ElectionRecord?
+
+    @Query("SELECT * FROM sealed_preparations WHERE accountId = :account AND messageId = :message AND attemptId = :attempt")
+    protected abstract fun profile03Preparation(account: String, message: String, attempt: String): SealedPreparationRecord?
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     protected abstract fun insertLocalWithdrawal(entry: LocalInboundWithdrawal)
 
@@ -552,7 +564,7 @@ abstract class SmsAttemptDao {
     @Query("SELECT * FROM alpha_radio_events WHERE eventId = :eventId")
     abstract fun getAlphaEvent(eventId: String): AlphaRadioEvent?
 
-    @Query("SELECT e.* FROM alpha_radio_events e WHERE e.acknowledgedAtMs IS NULL AND e.quarantinedAtMs IS NULL AND e.accountId = :accountId AND e.deviceId = :deviceId AND e.originHash = :originHash AND (e.evidence != 'durable_submit_intent' OR (instr(:excludedEvents, ',' || e.eventId || ',') = 0 AND NOT EXISTS (SELECT 1 FROM sealed_preparations p WHERE p.accountId = e.accountId AND p.messageId = e.messageId AND p.attemptId = e.attemptId))) ORDER BY e.rowid LIMIT 1")
+    @Query("SELECT e.* FROM alpha_radio_events e WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = e.attemptId) AND e.acknowledgedAtMs IS NULL AND e.quarantinedAtMs IS NULL AND e.accountId = :accountId AND e.deviceId = :deviceId AND e.originHash = :originHash AND (e.evidence != 'durable_submit_intent' OR (instr(:excludedEvents, ',' || e.eventId || ',') = 0 AND NOT EXISTS (SELECT 1 FROM sealed_preparations p WHERE p.accountId = e.accountId AND p.messageId = e.messageId AND p.attemptId = e.attemptId))) ORDER BY e.rowid LIMIT 1")
     protected abstract fun nextAlphaEventExcluding(accountId: String, deviceId: String,
                                                    originHash: String, excludedEvents: String): AlphaRadioEvent?
 
@@ -576,16 +588,16 @@ abstract class SmsAttemptDao {
     @Query("UPDATE alpha_radio_events SET quarantinedAtMs = :now, quarantineReason = :reason WHERE eventId = :eventId AND acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL")
     abstract fun quarantineAlphaEvent(eventId: String, reason: String, now: Long): Int
 
-    @Query("SELECT e.* FROM alpha_radio_events e JOIN sms_attempts a ON a.attemptId = e.attemptId WHERE e.evidence = 'durable_submit_intent' AND e.acknowledgedAtMs IS NULL AND e.quarantinedAtMs IS NULL AND a.state IN ('reserved','not_submitted') AND instr(:excludedEvents, ',' || e.eventId || ',') = 0 ORDER BY e.rowid")
+    @Query("SELECT e.* FROM alpha_radio_events e JOIN sms_attempts a ON a.attemptId = e.attemptId WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = e.attemptId) AND e.evidence = 'durable_submit_intent' AND e.acknowledgedAtMs IS NULL AND e.quarantinedAtMs IS NULL AND a.state IN ('reserved','not_submitted') AND instr(:excludedEvents, ',' || e.eventId || ',') = 0 ORDER BY e.rowid")
     protected abstract fun orphanedAlphaIntents(excludedEvents: String): List<AlphaRadioEvent>
 
-    @Query("UPDATE alpha_radio_events SET acknowledgedAtMs = :now WHERE eventId = :eventId AND acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL")
+    @Query("UPDATE alpha_radio_events SET acknowledgedAtMs = :now WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = alpha_radio_events.attemptId) AND eventId = :eventId AND acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL")
     abstract fun acknowledgeAlphaEvent(eventId: String, now: Long): Int
 
     @Query("SELECT * FROM sms_attempts WHERE attemptId = :attemptId")
     abstract fun getAttempt(attemptId: String): SmsAttempt?
 
-    @Query("SELECT a.* FROM sms_attempts a WHERE a.messageId IS NOT NULL AND a.deviceId = :deviceId AND a.originHash = :originHash AND NOT EXISTS (SELECT 1 FROM sealed_preparations p WHERE p.attemptId = a.attemptId) ORDER BY a.createdAtMs DESC, a.rowid DESC LIMIT 1")
+    @Query("SELECT a.* FROM sms_attempts a WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = a.attemptId) AND a.messageId IS NOT NULL AND a.deviceId = :deviceId AND a.originHash = :originHash AND NOT EXISTS (SELECT 1 FROM sealed_preparations p WHERE p.attemptId = a.attemptId) ORDER BY a.createdAtMs DESC, a.rowid DESC LIMIT 1")
     abstract fun latestControlledTest(deviceId: String, originHash: String): SmsAttempt?
 
     @Query("SELECT count(*) FROM sms_attempts WHERE attemptId != :excluded AND (evidenceConflict = 1 OR state IN ('reserved','radio_started','submitting','unknown','partial_failure'))")
@@ -600,17 +612,17 @@ abstract class SmsAttemptDao {
     @Query("SELECT * FROM sms_segments WHERE attemptId = :attemptId AND segmentIndex = :index")
     abstract fun getSegment(attemptId: String, index: Int): SmsSegment?
 
-    @Query("UPDATE sms_attempts SET state = :state, updatedAtMs = :now WHERE attemptId = :attemptId")
+    @Query("UPDATE sms_attempts SET state = :state, updatedAtMs = :now WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = sms_attempts.attemptId) AND attemptId = :attemptId")
     abstract fun setState(attemptId: String, state: String, now: Long)
 
-    @Query("UPDATE sms_attempts SET state = 'radio_started', updatedAtMs = :now WHERE attemptId = :attemptId AND messageId = :messageId AND subscriptionId = :subscriptionId AND segmentCount = :segmentCount AND state = 'submitting'")
+    @Query("UPDATE sms_attempts SET state = 'radio_started', updatedAtMs = :now WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = sms_attempts.attemptId) AND attemptId = :attemptId AND messageId = :messageId AND subscriptionId = :subscriptionId AND segmentCount = :segmentCount AND state = 'submitting'")
     abstract fun consumeRadioStart(attemptId: String, messageId: String, subscriptionId: Int,
                                    segmentCount: Int, now: Long): Int
 
-    @Query("UPDATE sms_attempts SET state = 'not_submitted', updatedAtMs = :now WHERE attemptId = :attemptId AND state = 'submitting' AND messageId IS NOT NULL")
+    @Query("UPDATE sms_attempts SET state = 'not_submitted', updatedAtMs = :now WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = sms_attempts.attemptId) AND attemptId = :attemptId AND state = 'submitting' AND messageId IS NOT NULL")
     protected abstract fun markAcknowledgedNoRadioState(attemptId: String, now: Long): Int
 
-    @Query("UPDATE sms_attempts SET state = 'not_submitted', updatedAtMs = :now WHERE attemptId = :attemptId AND state = 'radio_started' AND messageId IS NOT NULL")
+    @Query("UPDATE sms_attempts SET state = 'not_submitted', updatedAtMs = :now WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = sms_attempts.attemptId) AND attemptId = :attemptId AND state = 'radio_started' AND messageId IS NOT NULL")
     protected abstract fun markPreflightNoRadioState(attemptId: String, now: Long): Int
 
     @Query("SELECT EXISTS(SELECT 1 FROM alpha_radio_events WHERE attemptId = :attemptId AND evidence = 'proven_no_submit')")
@@ -665,7 +677,7 @@ abstract class SmsAttemptDao {
         }
     }
 
-    @Query("UPDATE sms_attempts SET state = 'unknown', evidenceConflict = 1, updatedAtMs = :now WHERE attemptId = :attemptId AND evidenceConflict = 0")
+    @Query("UPDATE sms_attempts SET state = 'unknown', evidenceConflict = 1, updatedAtMs = :now WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = sms_attempts.attemptId) AND attemptId = :attemptId AND evidenceConflict = 0")
     abstract fun markCallbackConflict(attemptId: String, now: Long): Int
 
     /** Preserve the first conflict in the same transaction as the local unknown state. */
@@ -679,22 +691,22 @@ abstract class SmsAttemptDao {
             originHash = attempt.originHash))
     }
 
-    @Query("UPDATE sms_segments SET sentResultCode = :result WHERE attemptId = :attemptId AND segmentIndex = :index AND sentResultCode IS NULL")
+    @Query("UPDATE sms_segments SET sentResultCode = :result WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = sms_segments.attemptId) AND attemptId = :attemptId AND segmentIndex = :index AND sentResultCode IS NULL")
     abstract fun recordSent(attemptId: String, index: Int, result: Int): Int
 
-    @Query("UPDATE sms_segments SET deliveryResultCode = :result, deliveryStatus = :status WHERE attemptId = :attemptId AND segmentIndex = :index AND (deliveryStatus IS NULL OR (deliveryStatus = 2 AND :status != 2))")
+    @Query("UPDATE sms_segments SET deliveryResultCode = :result, deliveryStatus = :status WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = sms_segments.attemptId) AND attemptId = :attemptId AND segmentIndex = :index AND (deliveryStatus IS NULL OR (deliveryStatus = 2 AND :status != 2))")
     abstract fun recordDelivery(attemptId: String, index: Int, result: Int, status: Int): Int
 
-    @Query("UPDATE sms_attempts SET state = 'unknown', updatedAtMs = :now WHERE state IN ('submitting','radio_started')")
+    @Query("UPDATE sms_attempts SET state = 'unknown', updatedAtMs = :now WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = sms_attempts.attemptId) AND state IN ('submitting','radio_started')")
     abstract fun markInterrupted(now: Long)
 
-    @Query("UPDATE sms_attempts SET state = 'not_submitted', updatedAtMs = :now WHERE state = 'reserved'")
+    @Query("UPDATE sms_attempts SET state = 'not_submitted', updatedAtMs = :now WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = sms_attempts.attemptId) AND state = 'reserved'")
     abstract fun markUnsentReservations(now: Long)
 
-    @Query("UPDATE sms_attempts SET state = 'unknown', updatedAtMs = :now WHERE attemptId = :attemptId AND state IN ('submitting','radio_started')")
+    @Query("UPDATE sms_attempts SET state = 'unknown', updatedAtMs = :now WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = sms_attempts.attemptId) AND attemptId = :attemptId AND state IN ('submitting','radio_started')")
     abstract fun markStalledSubmission(attemptId: String, now: Long)
 
-    @Query("UPDATE sms_attempts SET state = 'delivery_unknown', updatedAtMs = :now WHERE state = 'submitted' AND updatedAtMs < :cutoff")
+    @Query("UPDATE sms_attempts SET state = 'delivery_unknown', updatedAtMs = :now WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = sms_attempts.attemptId) AND state = 'submitted' AND updatedAtMs < :cutoff")
     abstract fun markTimedOutDeliveries(cutoff: Long, now: Long)
 
     /** Every prune statement is capped so one tick does bounded work on the journal thread. */
@@ -706,7 +718,7 @@ abstract class SmsAttemptDao {
     protected abstract fun pruneOldInboundEvents(cutoff: Long, limit: Int): Int
 
     /** Terminal attempts whose every alpha event and inbound upload already settled. */
-    @Query("DELETE FROM sms_attempts WHERE rowid IN (SELECT rowid FROM sms_attempts WHERE state IN ('submitted','delivered','delivery_failed','delivery_unknown','failed','partial_failure','not_submitted') AND updatedAtMs < :cutoff AND attemptId NOT IN (SELECT attemptId FROM alpha_radio_events WHERE acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL) AND attemptId NOT IN (SELECT e.attemptId FROM inbound_events e JOIN inbound_uploads u ON u.eventId = e.eventId WHERE u.acknowledgedAtMs IS NULL AND u.quarantinedAtMs IS NULL) LIMIT :limit)")
+    @Query("DELETE FROM sms_attempts WHERE rowid IN (SELECT rowid FROM sms_attempts WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = sms_attempts.attemptId) AND state IN ('submitted','delivered','delivery_failed','delivery_unknown','failed','partial_failure','not_submitted') AND updatedAtMs < :cutoff AND attemptId NOT IN (SELECT attemptId FROM alpha_radio_events WHERE acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL) AND attemptId NOT IN (SELECT e.attemptId FROM inbound_events e JOIN inbound_uploads u ON u.eventId = e.eventId WHERE u.acknowledgedAtMs IS NULL AND u.quarantinedAtMs IS NULL) LIMIT :limit)")
     protected abstract fun pruneTerminalAttempts(cutoff: Long, limit: Int): Int
 
     /** The suppression row keeps enforcing the STOP; only the settled upload record goes. */
@@ -735,6 +747,8 @@ abstract class SmsAttemptDao {
 
     @Transaction
     open fun reserve(attemptId: String, subscriptionId: Int, segmentCount: Int, now: Long) {
+        check(!isTypedSubmit03(attemptId)) { "Typed attempt history cannot enter the legacy driver" }
+        check(!hasProfile03EffectFence(null)) { "Unbound submission is unavailable during or after election03" }
         require(segmentCount in 1..6)
         insertAttempt(SmsAttempt(attemptId, subscriptionId, segmentCount, AttemptState.SUBMITTING, now, now))
         insertSegments((0 until segmentCount).map { SmsSegment(attemptId, it) })
@@ -747,6 +761,32 @@ abstract class SmsAttemptDao {
         segmentCount: Int, intentEventId: String, now: Long,
         approvedSenderToken: String? = null, identity: EvidenceIdentity
     ) {
+        check(!hasProfile03EffectFence(identity.accountId)) { "Legacy submission is unavailable during or after election03" }
+        reserveAlphaChecked(attemptId, messageId, subscriptionId, segmentCount, intentEventId, now, approvedSenderToken, identity)
+    }
+
+    /** Only the existing installed03 selection + prepared one-use row may reserve a03 radio intent.
+     * These and the selected base line are read under the SAME writer acquisition as the attempt.
+     */
+    @Transaction
+    open fun reserveProfile03Radio(attemptId: String, messageId: String, subscriptionId: Int,
+        segmentCount: Int, intentEventId: String, now: Long, identity: EvidenceIdentity,
+        installation: Profile03ElectionRecord, current: (LocalLineBinding?) -> Unit) {
+        installation.requireShape()
+        require(installation.state == "installed" && installation.accountId == identity.accountId &&
+            installation.deviceId == identity.deviceId && installation.originHash == identity.originHash)
+        current(currentLineBinding())
+        check(profile03Election(installation.challengeId) == installation)
+        val preparation = checkNotNull(profile03Preparation(identity.accountId, messageId, attemptId))
+        check(preparation.state == "prepared" && preparation.segmentCount == segmentCount)
+        reserveAlphaChecked(attemptId, messageId, subscriptionId, segmentCount, intentEventId, now, null, identity)
+        check(profile03Election(installation.challengeId) == installation)
+        current(currentLineBinding())
+    }
+
+    private fun reserveAlphaChecked(attemptId: String, messageId: String, subscriptionId: Int,
+        segmentCount: Int, intentEventId: String, now: Long, approvedSenderToken: String?, identity: EvidenceIdentity) {
+        check(!isTypedSubmit03(attemptId)) { "Typed attempt history cannot enter the legacy driver" }
         require(segmentCount in 1..6)
         require(listOf(attemptId, messageId, intentEventId).all {
             runCatching { UUID.fromString(it).toString() == it }.getOrDefault(false)
@@ -770,6 +810,7 @@ abstract class SmsAttemptDao {
     @Transaction
     open fun acknowledgeAlphaIntent(eventId: String, permitted: Boolean, now: Long): Boolean {
         val event = getAlphaEvent(eventId) ?: return false
+        if (isTypedSubmit03(event.attemptId)) return false
         if (event.evidence != "durable_submit_intent" || event.acknowledgedAtMs != null ||
             event.quarantinedAtMs != null) return false
         val attempt = getAttempt(event.attemptId) ?: return false
@@ -787,6 +828,9 @@ abstract class SmsAttemptDao {
 
     @Transaction
     open fun recordCallback(attemptId: String, index: Int, delivery: Boolean, result: Int, deliveryStatus: Int?, now: Long) {
+        // The receiver routes these to the separate durable typed journal first. Defensive
+        // callers cannot reinterpret them as legacy evidence, even after process loss.
+        if (isTypedSubmit03(attemptId)) return
         val attempt = getAttempt(attemptId) ?: return
         if (index !in 0 until attempt.segmentCount) return
         val segment = getSegment(attemptId, index) ?: run {
@@ -844,11 +888,28 @@ private const val PRUNE_BATCH = 500
     InboundWindow::class, InboundEvent::class, InboundUpload::class,
     LocalRecipientSuppression::class, LocalLineBinding::class,
     LocalInboundWithdrawal::class, LocalWithdrawalSequence::class, SealedPreparationRecord::class,
-    LineActivationV2Record::class], version = 14, exportSchema = false)
+    LineActivationV2Record::class, Profile03ElectionRecord::class, SelectionRefresh03Record::class,
+    Profile03UnacceptedClosureRecord::class, SelectionRefresh03ClosureRecord::class,
+    Capture03Route::class, Capture03Counter::class, Capture03Record::class, Capture03Mode::class, InboundProtectionRecord::class,
+    ProtectionSetupCommand::class, ProtectionSetupProvider::class,
+    ProtectionOriginAttempt::class, ProtectionOriginInstallation::class,
+    TypedSubmit03Record::class, TypedCallback03Record::class,
+    TypedHistory03Source::class, TypedHistory03Request::class, TypedSubmit03Request::class,
+    TypedOutcome03Report::class, TypedOutcome03Upload::class, TypedNoSubmit03Lineage::class,
+    TypedNoSubmit03Proof::class, TypedNoSubmit03Io::class], version = 26, exportSchema = false)
 abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun attempts(): SmsAttemptDao
     abstract fun sealedPreparations(): SealedPreparationDao
     abstract fun lineActivationsV2(): LineActivationV2Dao
+    abstract fun profile03Elections(): Profile03ElectionDao
+    abstract fun selectionRefreshes03(): SelectionRefresh03Dao
+    abstract fun captures03(): Capture03Dao
+    abstract fun protectionSetup(): ProtectionSetupDao
+    abstract fun protectionOrigins(): ProtectionOriginDao
+    internal abstract fun typedSubmits03(): TypedSubmit03Dao
+    internal abstract fun typedHistory03(): TypedHistory03Dao
+    internal abstract fun typedOutcomes03(): TypedOutcome03Dao
+    internal abstract fun typedNoSubmits03(): TypedNoSubmit03Dao
 
     companion object {
         @Volatile private var instance: SmsJournalDatabase? = null
@@ -858,13 +919,139 @@ abstract class SmsJournalDatabase : RoomDatabase() {
                 context.applicationContext, SmsJournalDatabase::class.java, "sms_attempts.db"
             ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
                 MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
-                MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14)
+                MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26)
                 .build().also { instance = it }
         }
 
         internal val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE sms_attempts ADD COLUMN evidenceConflict INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        internal val MIGRATION_22_23 = object : Migration(22, 23) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // NULL origin/order preserves unsupported old provenance; no backfill/zero.
+                db.execSQL("ALTER TABLE typed_submit03 ADD COLUMN originalOriginSha256 TEXT")
+                db.execSQL("ALTER TABLE typed_submit03 ADD COLUMN lastCallbackOrdinal INTEGER")
+                db.execSQL("ALTER TABLE typed_submit03 ADD COLUMN closingId TEXT")
+                db.execSQL("ALTER TABLE typed_submit03 ADD COLUMN closingFrom INTEGER")
+                db.execSQL("ALTER TABLE typed_callback03 ADD COLUMN arrivalOrdinal INTEGER")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_typed_callback03_attemptId_arrivalOrdinal ON typed_callback03(attemptId, arrivalOrdinal)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS typed_history03_sources (slot TEXT NOT NULL, eventId TEXT NOT NULL, attemptId TEXT NOT NULL, commandSha256 TEXT NOT NULL, evidence INTEGER NOT NULL, segmentIndex INTEGER NOT NULL, sourceOrdinal INTEGER NOT NULL, rawEventIds TEXT NOT NULL, derivation TEXT NOT NULL, basisPhase TEXT NOT NULL, assertionB64url TEXT, assertionSha256 TEXT, assertionClockRequestId TEXT, PRIMARY KEY(slot))")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_typed_history03_sources_eventId ON typed_history03_sources(eventId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_typed_history03_sources_attemptId ON typed_history03_sources(attemptId)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS typed_history03_clocks (requestId TEXT NOT NULL, attemptId TEXT NOT NULL, messageId TEXT NOT NULL, commandSha256 TEXT NOT NULL, subjectId TEXT NOT NULL, subjectKind TEXT NOT NULL, accountId TEXT NOT NULL, deviceId TEXT NOT NULL, originSha256 TEXT NOT NULL, originalEnrolledPoint TEXT NOT NULL, connectionEpoch INTEGER NOT NULL, lineVersion INTEGER NOT NULL, requestB64url TEXT NOT NULL, entered INTEGER NOT NULL, replyB64url TEXT, PRIMARY KEY(requestId))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_typed_history03_clocks_attemptId ON typed_history03_clocks(attemptId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_typed_history03_clocks_subjectId ON typed_history03_clocks(subjectId)")
+            }
+        }
+
+        internal val MIGRATION_23_24 = object : Migration(23, 24) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // No old row receives a ticket: the positive producer also requires a NEW
+                // typed classification and genuine original live context before insertion.
+                db.execSQL("CREATE TABLE IF NOT EXISTS typed_submit03_requests (attemptId TEXT NOT NULL, eventId TEXT NOT NULL, commandSha256 TEXT NOT NULL, connectionEpoch INTEGER NOT NULL, requestB64url TEXT NOT NULL, PRIMARY KEY(attemptId))")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_typed_submit03_requests_eventId ON typed_submit03_requests(eventId)")
+            }
+        }
+
+        internal val MIGRATION_25_26 = object : Migration(25, 26) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // No backfill/adoption: old finalized closures remain UNKNOWN, even with
+                // empty new tables. Only a genuinely NEW finishClosing creates eligibility.
+                db.execSQL("ALTER TABLE typed_submit03 ADD COLUMN closureProofState TEXT")
+                db.execSQL("CREATE TABLE IF NOT EXISTS typed_no_submit03_lineages (closureId TEXT NOT NULL, attemptId TEXT NOT NULL, closureSha256 TEXT NOT NULL, originalCommandSha256 TEXT NOT NULL, rootRequestId TEXT NOT NULL, currentRequestId TEXT NOT NULL, proofCount INTEGER NOT NULL, ioCount INTEGER NOT NULL, PRIMARY KEY(closureId))")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_typed_no_submit03_lineages_attemptId ON typed_no_submit03_lineages(attemptId)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS typed_no_submit03_proofs (requestId TEXT NOT NULL, attemptId TEXT NOT NULL, closureId TEXT NOT NULL, closureSha256 TEXT NOT NULL, commandSha256 TEXT NOT NULL, previousRequestId TEXT, previousChallengeId TEXT, previousCoreSha256 TEXT, previousExpiresMs INTEGER, coreB64url TEXT, nonceB64url TEXT, signatureState TEXT NOT NULL, signatureB64url TEXT, signatureClockId TEXT, signatureStatusId TEXT, acceptedMs INTEGER, PRIMARY KEY(requestId))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_typed_no_submit03_proofs_closureId ON typed_no_submit03_proofs(closureId)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_typed_no_submit03_proofs_previousRequestId ON typed_no_submit03_proofs(previousRequestId)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS typed_no_submit03_io (requestId TEXT NOT NULL, proofRequestId TEXT NOT NULL, closureId TEXT NOT NULL, kind TEXT NOT NULL, connectionEpoch INTEGER NOT NULL, requestB64url TEXT NOT NULL, replyB64url TEXT, PRIMARY KEY(requestId))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_typed_no_submit03_io_proofRequestId ON typed_no_submit03_io(proofRequestId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_typed_no_submit03_io_closureId ON typed_no_submit03_io(closureId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_typed_no_submit03_io_proofRequestId_kind_replyB64url ON typed_no_submit03_io(proofRequestId,kind,replyB64url)")
+            }
+        }
+
+        internal val MIGRATION_24_25 = object : Migration(24, 25) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // No backfill: an old assertion without an original first-I/O classification
+                // needs explicit exact sync. Empty new tables grant no automatic upload.
+                db.execSQL("CREATE TABLE IF NOT EXISTS typed_outcome03_reports (eventId TEXT NOT NULL, attemptId TEXT NOT NULL, sourceSlot TEXT NOT NULL, assertionSha256 TEXT NOT NULL, automaticFirst INTEGER NOT NULL, PRIMARY KEY(eventId))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_typed_outcome03_reports_attemptId ON typed_outcome03_reports(attemptId)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS typed_outcome03_uploads (requestId TEXT NOT NULL, eventId TEXT NOT NULL, attemptId TEXT NOT NULL, sourceSlot TEXT NOT NULL, submitCommandSha256 TEXT NOT NULL, assertionB64url TEXT NOT NULL, assertionSha256 TEXT NOT NULL, originSha256 TEXT NOT NULL, originalEnrolledPoint TEXT NOT NULL, connectionEpoch INTEGER NOT NULL, requestB64url TEXT NOT NULL, ackB64url TEXT, PRIMARY KEY(requestId))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_typed_outcome03_uploads_eventId_ackB64url ON typed_outcome03_uploads(eventId, ackB64url)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_typed_outcome03_uploads_attemptId ON typed_outcome03_uploads(attemptId)")
+            }
+        }
+
+        internal val MIGRATION_21_22 = object : Migration(21, 22) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Empty retained metadata creates neither an ACK nor an invocation capability.
+                db.execSQL("CREATE TABLE IF NOT EXISTS typed_submit03 (attemptId TEXT NOT NULL, eventId TEXT NOT NULL, accountId TEXT NOT NULL, deviceId TEXT NOT NULL, messageId TEXT NOT NULL, commandB64url TEXT NOT NULL, commandSha256 TEXT NOT NULL, originalEnrolledPoint TEXT NOT NULL, originalEnrolledKeyId TEXT NOT NULL, phase TEXT NOT NULL, ackSha256 TEXT, entryReservedMs INTEGER, closureB64url TEXT, closureSha256 TEXT, conflict INTEGER NOT NULL, PRIMARY KEY(attemptId))")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_typed_submit03_eventId ON typed_submit03(eventId)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_typed_submit03_accountId_messageId ON typed_submit03(accountId, messageId)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS typed_callback03 (eventId TEXT NOT NULL, attemptId TEXT NOT NULL, segmentIndex INTEGER NOT NULL, delivery INTEGER NOT NULL, resultCode INTEGER NOT NULL, deliveryStatus INTEGER NOT NULL, observedMs INTEGER NOT NULL, PRIMARY KEY(eventId))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_typed_callback03_attemptId ON typed_callback03(attemptId)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_typed_callback03_attemptId_segmentIndex_delivery_resultCode_deliveryStatus ON typed_callback03(attemptId, segmentIndex, delivery, resultCode, deliveryStatus)")
+            }
+        }
+
+        internal val MIGRATION_20_21 = object : Migration(20, 21) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Empty proof/installation history grants no ready pin or signature retry.
+                db.execSQL("CREATE TABLE IF NOT EXISTS protection_origin_attempts (proofRequestId TEXT NOT NULL, commandId TEXT NOT NULL, associationB64url TEXT NOT NULL, aesProbeB64url TEXT NOT NULL, createdMs INTEGER NOT NULL, previousProofRequestId TEXT, previousAttemptId TEXT, previousCoreSha256 TEXT, previousBundleSha256 TEXT, requestEpoch INTEGER, requestB64url TEXT, attemptId TEXT, coreB64url TEXT, nonceB64url TEXT, deviceEnteredMs INTEGER, deviceSignatureB64url TEXT, canaryEnteredMs INTEGER, canarySignatureB64url TEXT, bundleB64url TEXT, proofSubmitted INTEGER NOT NULL, acceptedMs INTEGER, closedMs INTEGER, supersededByProofRequestId TEXT, absentEpoch INTEGER, absentStatusB64url TEXT, absentPreviousProofRequestId TEXT, PRIMARY KEY(proofRequestId))")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_protection_origin_attempts_attemptId ON protection_origin_attempts(attemptId)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS protection_origin_installed (slot INTEGER NOT NULL, commandId TEXT NOT NULL, proofRequestId TEXT NOT NULL, associationB64url TEXT NOT NULL, aesProbeB64url TEXT NOT NULL, bundleB64url TEXT NOT NULL, receiptB64url TEXT NOT NULL, enrolledPointB64url TEXT NOT NULL, expectedTag TEXT NOT NULL, installedMs INTEGER NOT NULL, PRIMARY KEY(slot))")
+            }
+        }
+
+        internal val MIGRATION_19_20 = object : Migration(19, 20) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Empty command/provider tables create no key, pin, origin or allocator authority.
+                db.execSQL("CREATE TABLE IF NOT EXISTS protection_setup_command (slot INTEGER NOT NULL, setupId TEXT NOT NULL, openingId TEXT NOT NULL, commandId TEXT NOT NULL, accountId TEXT NOT NULL, deviceId TEXT NOT NULL, originSha256 TEXT NOT NULL, enrolledSigningKeyId TEXT NOT NULL, requestedMs INTEGER NOT NULL, openingSubmitted INTEGER NOT NULL, openingCandidateB64url TEXT, openingCandidateSha256 TEXT, PRIMARY KEY(slot))")
+                db.execSQL("CREATE TABLE IF NOT EXISTS protection_setup_providers (kind TEXT NOT NULL, commandId TEXT NOT NULL, operationId TEXT NOT NULL, enteredMs INTEGER NOT NULL, evidenceB64url TEXT, evidenceSha256 TEXT, PRIMARY KEY(kind))")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_protection_setup_providers_operationId ON protection_setup_providers(operationId)")
+            }
+        }
+
+        internal val MIGRATION_18_19 = object : Migration(18, 19) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // No allocator/ready-protection row or first-ever inference is created by migration.
+                db.execSQL("CREATE TABLE IF NOT EXISTS inbound_protection_state (slot INTEGER NOT NULL, expectedTag TEXT, originId TEXT, blocked INTEGER NOT NULL, reason TEXT, debtMask INTEGER NOT NULL, firstObservedMs INTEGER NOT NULL, PRIMARY KEY(slot))")
+                db.execSQL("CREATE TABLE IF NOT EXISTS capture03_routes (token TEXT NOT NULL, route TEXT NOT NULL, provenanceSha256 TEXT, captureId TEXT, recordedMs INTEGER NOT NULL, PRIMARY KEY(token))")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_capture03_routes_captureId ON capture03_routes(captureId)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS capture03_counters (accountId TEXT NOT NULL, deviceId TEXT NOT NULL, bootstrapId TEXT NOT NULL, openingId TEXT NOT NULL, associationSha256 TEXT NOT NULL, receiptSha256 TEXT NOT NULL, canaryKeyId TEXT NOT NULL, enrolledSigningKeyId TEXT NOT NULL, lastSequence INTEGER NOT NULL, protectedOrigin BLOB NOT NULL, nonce BLOB NOT NULL, PRIMARY KEY(accountId, deviceId))")
+                db.execSQL("CREATE TABLE IF NOT EXISTS capture03_records (captureId TEXT NOT NULL, routeToken TEXT NOT NULL, accountId TEXT NOT NULL, deviceId TEXT NOT NULL, lineId TEXT NOT NULL, intervalId TEXT NOT NULL, requestId TEXT NOT NULL, statementSha256 TEXT NOT NULL, firstLowerMs INTEGER NOT NULL, firstUpperMs INTEGER NOT NULL, firstElapsedMs INTEGER NOT NULL, phase TEXT NOT NULL, sequence INTEGER, permissionExpiresMs INTEGER, unsignedEnvelopeSha256 TEXT, envelopeSha256 TEXT, envelopeSignatureSha256 TEXT, intentSha256 TEXT, intentSignatureSha256 TEXT, packetSha256 TEXT, receiptSha256 TEXT, unknown INTEGER NOT NULL, redactedMs INTEGER, protectedPayload BLOB, nonce BLOB, PRIMARY KEY(captureId))")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_capture03_records_routeToken ON capture03_records(routeToken)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_capture03_records_accountId_deviceId_sequence ON capture03_records(accountId, deviceId, sequence)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS capture03_modes (electionId TEXT NOT NULL, accountId TEXT NOT NULL, deviceId TEXT NOT NULL, lineId TEXT NOT NULL, bindingId TEXT NOT NULL, originalIdentity TEXT NOT NULL, evidenceSha256 TEXT NOT NULL, protectedEvidence BLOB NOT NULL, nonce BLOB NOT NULL, PRIMARY KEY(electionId))")
+            }
+        }
+
+        internal val MIGRATION_17_18 = object : Migration(17, 18) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS selection_refresh03_closures (openingId TEXT NOT NULL, refreshId TEXT NOT NULL, coreB64url TEXT NOT NULL, closedUnacceptedMs INTEGER NOT NULL, supersededByRefreshId TEXT NOT NULL, PRIMARY KEY(refreshId))")
+            }
+        }
+
+        internal val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS profile03_unaccepted_closures (openingId TEXT NOT NULL, challengeId TEXT NOT NULL, newBindingId TEXT NOT NULL, coreB64url TEXT NOT NULL, closedUnacceptedMs INTEGER NOT NULL, supersededByChallengeId TEXT NOT NULL, PRIMARY KEY(challengeId))")
+            }
+        }
+
+        internal val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS selection_refresh03 (refreshId TEXT NOT NULL, accountId TEXT NOT NULL, deviceId TEXT NOT NULL, lineId TEXT NOT NULL, bindingId TEXT NOT NULL, bindingGeneration INTEGER NOT NULL, originalActivationId TEXT NOT NULL, originalGeneration INTEGER NOT NULL, electionChallengeId TEXT NOT NULL, electionIdentitySha256 TEXT NOT NULL, deviceSessionSha256 TEXT NOT NULL, connectionEpoch INTEGER NOT NULL, deploymentEpoch INTEGER NOT NULL, originHash TEXT NOT NULL, selectedSubscription INTEGER NOT NULL, consentId TEXT NOT NULL, consentConfirmedMs INTEGER NOT NULL, consentExpiresMs INTEGER NOT NULL, coreB64url TEXT NOT NULL, observationB64url TEXT NOT NULL, state TEXT NOT NULL, deviceSignatureB64url TEXT, ownerSignatureB64url TEXT, bundleSha256 TEXT, acceptedMs INTEGER, installedSignatureB64url TEXT, installedMs INTEGER, PRIMARY KEY(refreshId))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_selection_refresh03_bindingId_deviceSessionSha256 ON selection_refresh03(bindingId, deviceSessionSha256)")
+            }
+        }
+
+        internal val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS profile03_elections (challengeId TEXT NOT NULL, accountId TEXT NOT NULL, deviceId TEXT NOT NULL, lineId TEXT NOT NULL, oldBindingId TEXT NOT NULL, newBindingId TEXT NOT NULL, oldGeneration INTEGER NOT NULL, newGeneration INTEGER NOT NULL, rootFingerprint TEXT NOT NULL, readerKeyId TEXT NOT NULL, originHash TEXT NOT NULL, connectionEpoch INTEGER NOT NULL, deploymentEpoch INTEGER NOT NULL, coreB64url TEXT NOT NULL, state TEXT NOT NULL, deviceSignatureB64url TEXT, acceptedEvidenceSha256 TEXT, PRIMARY KEY(challengeId))")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_profile03_elections_newBindingId ON profile03_elections(newBindingId)")
             }
         }
 

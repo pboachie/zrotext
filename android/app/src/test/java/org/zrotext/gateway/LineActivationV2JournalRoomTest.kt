@@ -91,11 +91,12 @@ class LineActivationV2JournalRoomTest {
                 old.execSQL("DROP TABLE local_line_binding")
                 old.execSQL("ALTER TABLE binding_v13 RENAME TO local_line_binding")
                 old.execSQL("DROP TABLE line_activation_v2")
+                LegacyTypedJournalFixture.removeEmptyFutureTables(old)
                 old.version = 13
             }
             Room.databaseBuilder(context, SmsJournalDatabase::class.java, name).allowMainThreadQueries()
-                .addMigrations(SmsJournalDatabase.MIGRATION_13_14).build().useJournal { migrated ->
-                    assertEquals(14, migrated.openHelper.readableDatabase.version)
+                .addMigrations(SmsJournalDatabase.MIGRATION_13_14, SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17, SmsJournalDatabase.MIGRATION_17_18, SmsJournalDatabase.MIGRATION_18_19, SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24, SmsJournalDatabase.MIGRATION_24_25, SmsJournalDatabase.MIGRATION_25_26).build().useJournal { migrated ->
+                    assertEquals(26, migrated.openHelper.readableDatabase.version)
                     assertEquals(legacy, migrated.attempts().currentLineBinding())
                     assertTrue(checkNotNull(migrated.attempts().currentLineBinding()).liveContinuity())
                     assertNull(migrated.lineActivationsV2().find("sms", UUID(0, 8).toString()))

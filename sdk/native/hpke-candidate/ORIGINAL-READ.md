@@ -9,7 +9,7 @@ Go `OriginalCurrentClient.ReadSoftware` and Rust
 `OriginalCurrentClient::read_software` explicitly accept an exportable recipient
 scalar. Windows `ReadHardware` / `read_hardware` require the qualified protected
 recipient; they cannot export it or fall back to a software key. Existing runtime
-requirements remain Go 1.26.9 and Rust 1.97.1.
+requirements remain Go 1.26.10 and Rust 1.99.1.
 
 Supply the independently enrolled root/fingerprint, selected grant scope,
 existing `OriginalReplyCheckpoint`, HTTPS transport, role3 credential and trusted

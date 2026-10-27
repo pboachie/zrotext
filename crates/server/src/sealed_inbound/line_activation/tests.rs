@@ -225,6 +225,7 @@ fn sms_transcript_matches_published_fixed_vector() {
         .as_chunks::<2>()
         .0
         .iter()
+        .map(|chunk| chunk.as_slice())
         .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
         .collect();
     let nonce: [u8; 32] = nonce_vec.try_into().unwrap();

@@ -470,6 +470,7 @@ fn signed_authority_builds_context_for_both_kinds_and_verifies_exact_envelopes()
             .as_chunks::<2>()
             .0
             .iter()
+            .map(|chunk| chunk.as_slice())
             .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
             .collect();
         envelope[4] = 2;

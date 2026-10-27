@@ -16,17 +16,42 @@ default. No package volume or container mount is added; an operator enabling thi
 candidate must separately supply a package path visible inside that runtime.
 
 Build the maintained TypeScript SDK, then run
-`node scripts/package_account_root_trust_browser.mjs <external-empty-directory>`.
-The output contains only `sdk/draft02-manifest.js`, `sdk/draft02-trust-store.js`
-and `sdk/contact-reader-statement.js`. The latter two import only the manifest
-module. Files are strict UTF-8, bounded to 128 KiB each, and fixed by name.
+`node scripts/package_account_root_trust_browser.mjs <private-empty-temp-directory>`.
+The directory must already exist, be outside the checkout, and be a direct child
+of the canonical system temporary directory, not that directory itself. Create
+it with `mkdtemp` under the resolved system temporary directory. Nested paths,
+normalized escapes, links and nonempty outputs refuse before artifact writes.
+An OS-provided alias in the configured system-temp prefix is resolved separately,
+so `mkdtemp` using that prefix also works; the caller's output leaf is never
+resolved to accept a link.
+On POSIX the output must belong to the effective user with no group/other
+permissions; ancestors must belong to that user or root and must not allow
+group/other writes unless protected by the sticky bit.
+
+The packager writes into its own newly created private temporary directory, then
+rechecks the output and removes only its empty placeholder with nonrecursive
+`rmdir` before renaming the complete package into place. Publication never
+replaces a populated directory. Failure cleans only this invocation's staging
+directory; a failed rename after placeholder removal may leave no output.
+The caller must keep the build and temporary hierarchy under trusted local
+control. Portable path-based filesystem operations do not provide isolation
+from a malicious same-user or privileged process. On Windows, the operator must
+also ensure that temporary-directory ACLs exclude untrusted writers; POSIX
+ownership and mode checks are not an ACL audit.
+
+The output contains exactly seven modules: `sdk/draft02-manifest.js`,
+`sdk/draft02-trust-store.js`, `sdk/contact-reader-statement.js`,
+`sdk/contact-origin.js`, `sdk/contact-idna16.js`,
+`sdk/contact-idna16-table0.js` and `sdk/contact-idna16-table1.js`.
+Their imports are fixed to this maintained graph, including the versioned IDNA
+tables. Files are strict UTF-8, bounded to 128 KiB each, and fixed by name.
 Links, reparse ancestors, missing/extra files and unsupported imports are refused.
 Packaging fetches nothing, performs no build and never mounts the output.
 The trusted maintained build and application JS are the code trust boundary;
 graph inspection is not authentication of arbitrary operator-supplied JS.
 
 The opt-in serves `/owner/account/root-trust`, `/owner/account/root-trust.js`
-and the three files under `/v1/owner/account-root-trust-sdk/sdk/`.
+and the seven files under `/v1/owner/account-root-trust-sdk/sdk/`.
 Responses carry no-store, nosniff, restrictive same-origin CSP and no-referrer.
 Only GET/HEAD serve assets; POST refuses, and any query string refuses with an
 empty 400 response. Unknown paths remain 404.
@@ -228,5 +253,5 @@ independent restore frontier, configured authenticated issuer or custody gates
 leave the ordinary flow unavailable. Rendered tests use synthetic Cookie/issuer
 transport with genuine SDK signatures and IndexedDB; they do not prove actual
 server DTO-to-offline-parser execution, owner MFA, private custody or end-to-end
-runtime admission. The three-module package and server/auth/schema/export/erase
+runtime admission. The fixed public package and server/auth/schema/export/erase
 contracts are unchanged by this page cut.

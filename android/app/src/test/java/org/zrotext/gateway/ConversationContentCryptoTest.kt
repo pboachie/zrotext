@@ -23,6 +23,20 @@ import javax.crypto.spec.SecretKeySpec
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class ConversationContentCryptoTest {
+    @Test fun first03SetupWithdrawalDuringOldEnvelopeSigningRejectsItsReturnedProof() {
+        val f = Fixture(accountTag = 71); val crypto = f.crypto()
+        f.onSign = { Capture03LegacyFence.withdraw(f.scope.accountId, f.scope.deviceId, f.scope.lineId) }
+        assertThrows(IllegalStateException::class.java) { crypto.sealCapture(f.capture("synthetic old capture"), 1) }
+        assertEquals(1, f.signCalls)
+        assertThrows(IllegalStateException::class.java) { f.crypto().sealCapture(f.capture("synthetic retry"), 2) }
+        assertEquals(1, f.signCalls)
+    }
+    @Test fun first03SetupWithdrawalDuringOldRecipientWaitRefusesPlaintextAndClearsCek() {
+        val f = Fixture(accountTag = 72); val crypto = f.crypto(); val evidence = f.evidence("synthetic prior reply")
+        f.onOpen = { Capture03LegacyFence.withdraw(f.scope.accountId, f.scope.deviceId, f.scope.lineId) }
+        assertThrows(IllegalStateException::class.java) { crypto.verify(evidence) }
+        assertEquals(1, f.openCalls); assertTrue(f.lastCek!!.all { it == 0.toByte() })
+    }
     @Test fun inboundCaptureNeedsNoReplySignerAndExplicitPreservedSuccessorEnablesReply() {
         val f=Fixture(false); val crypto=f.crypto()
         f.authority.requireDeviceReader(f.account,f.device,f.line,f.recipientId,f.now)
@@ -223,8 +237,8 @@ class ConversationContentCryptoTest {
         assertEquals(0,f.signCalls)
     }
 
-    private class Fixture(includeReply: Boolean = true, selectedReader: Boolean = false):ConversationContentKeyOperations {
-        val account=ByteArray(16){1};val device=ByteArray(16){2};val line=ByteArray(16){3};val message=ByteArray(16){4}
+    private class Fixture(includeReply: Boolean = true, selectedReader: Boolean = false, accountTag: Byte = 1):ConversationContentKeyOperations {
+        val account=ByteArray(16){accountTag};val device=ByteArray(16){2};val line=ByteArray(16){3};val message=ByteArray(16){4}
         val root=pair();val recipient=pair();val archive=pair();val integration=pair();val phone=pair();val browser=pair()
         val archiveId=id(archive,2);val recipientId=id(recipient,1)
         val now=1_893_456_001_000L

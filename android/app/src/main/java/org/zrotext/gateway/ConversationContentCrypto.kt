@@ -64,6 +64,7 @@ internal class ConversationContentCrypto internal constructor(private val keys: 
             latestNow = value.trustedNowMs
         }
         checkNotNull(value)
+        Capture03LegacyFence.requireLegacy(value.scope)
         check(value.authority.generation == value.scope.trustGeneration)
         check(value.authority.version >= value.scope.activationVersion)
         return value

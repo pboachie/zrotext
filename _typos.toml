@@ -5,9 +5,19 @@
 extend-exclude = ["android/app/src/main/cpp/wolfssl"]
 
 [default.extend-words]
+certifi = "certifi" # Python CA bundle package name.
 BA = "BA" # Backup Active in the two-location design.
 fo = "fo" # Windows whoami /fo output-format switch.
 delet = "delet" # PostgreSQL 63-byte truncation of the migration-096 trigger name.
 
 [default.extend-identifiers]
 WRONLY = "WRONLY" # Ruby File::WRONLY write-only open flag.
+
+# Preserve fixed cryptographic bytes in these two public vectors. Type globs match
+# basenames; all other names, prose and short values retain normal spelling checks.
+[type.signed-protocol-vectors]
+extend-glob = ["conversation-effects03-v1.json", "device-protection-origin-v1.json"]
+extend-ignore-re = [
+    '"(?:aes_probe|association|attempt_nonce|bundle|canary_point|canary_signature|closure_commitment|closure_record|command|commitment|core|core_sha256|device_signature|enrolled_key_id|enrolled_point|hmac_probe|journal_aes_probe|nonce|opening_nonce|origin_digest|signature|submit|submit_commitment|withdrawal_aes_probe)"[ \t]*:[ \t]*"[A-Za-z0-9_-]{43,}"',
+    '(?m:^[ \t]*"[A-Za-z0-9_-]{43,}"[ \t]*,?[ \t]*\r?$)',
+]

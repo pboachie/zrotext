@@ -70,6 +70,7 @@ impl Case {
             .as_chunks::<149>()
             .0
             .iter()
+            .map(|chunk| chunk.as_slice())
             .map(|v| v.to_vec())
             .collect();
         leaves.sort_by(|a, b| a[..33].cmp(&b[..33]));

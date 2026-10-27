@@ -298,7 +298,7 @@ def origin_archive(stage, feed, input_directory):
     builder = runpy.run_path(str(HERE / 'contact-origin/build.py'))
     manifest = json.loads((source / 'manifest.json').read_text(encoding='utf-8'))
     library = 'zrotext_contact_origin.dll' if os.name == 'nt' else 'libzrotext_contact_origin.dylib' if sys.platform == 'darwin' else 'libzrotext_contact_origin.so'
-    required = {library, 'LICENSE', 'ADA-LICENSE-MIT', 'source/contact_origin.cpp', 'source/BUILDING.md', *('source/' + name for name in builder['FILES'])}
+    required = {library, 'LICENSE', 'ADA-LICENSE-MIT', 'source/BUILDING.md', *('source/' + name for name in builder['LOCAL_FILES']), *('source/' + name for name in builder['FILES'])}
     if manifest['ada_revision'] != builder['REVISION'] or manifest['ada_version'] != '3.3.0' or manifest['library'] != library or set(manifest['sha256']) != required:
         raise ValueError('Unexpected origin inventory or source revision')
     if {p.relative_to(source).as_posix() for p in source.rglob('*') if p.is_file()} != required | {'manifest.json'}:
@@ -311,7 +311,7 @@ def origin_archive(stage, feed, input_directory):
             raise ValueError('Origin dependency source mismatch')
     if (source / 'source/BUILDING.md').read_text(encoding='utf-8') != builder['BUILDING']:
         raise ValueError('Origin build recipe changed')
-    for actual, expected in ((source / 'source/contact_origin.cpp', HERE / 'contact-origin/contact_origin.cpp'),
+    for actual, expected in (*((source / 'source' / name, HERE / 'contact-origin' / name) for name in builder['LOCAL_FILES']),
                              (source / 'LICENSE', ROOT / 'LICENSE'), (source / 'ADA-LICENSE-MIT', source / 'source/LICENSE-MIT')):
         if actual.read_bytes().replace(b'\r\n', b'\n') != expected.read_bytes().replace(b'\r\n', b'\n'):
             raise ValueError('Origin wrapper or license mismatch')

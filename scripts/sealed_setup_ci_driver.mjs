@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Explicit compiled fixtures, never a product launcher or Node root signer.
 import assert from 'node:assert/strict';
-import {CleanupFailure,terminateOwnedTree,runOwnedProcess,ownedProcessFailureObservation,ownedProcessFailureStdout,ownedProcessFailureCleanup} from '../sdk/typescript/test/owned-process-fixture.mjs';
+import {CleanupFailure,terminateOwnedTree,runOwnedProcess,ownedProcessFailureObservation,ownedProcessFailureStdout,ownedProcessFailureCleanup,ownedProcessFailureGradleSignals} from '../sdk/typescript/test/owned-process-fixture.mjs';
+import {setupStep,markSetupFailure,setupFailureObservation} from '../sdk/typescript/test/setup-failure-fixture.mjs';
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {createReadStream} from 'node:fs';
@@ -60,12 +61,12 @@ async function compiled(options,kind){
 }
 async function tlsInput(){let size=0,parts=[];for await(const chunk of process.stdin){size+=chunk.length;assert.ok(size<=16384);parts.push(chunk);}const value=JSON.parse(Buffer.concat(parts));assert.deepEqual(Object.keys(value).sort(),['cert','key']);assert.ok(typeof value.key==='string'&&typeof value.cert==='string');return value;}
 async function reservePort(){const address=(await lookup('localhost',{family:4})).address;assert.ok(address.startsWith('127.'));const socket=net.createServer();await new Promise((resolve,reject)=>{socket.once('error',reject);socket.listen(0,address,resolve);});const port=socket.address().port;await new Promise(resolve=>socket.close(resolve));return port;}
-async function deadline(promise,milliseconds){let timer;try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Fixture deadline exceeded')),milliseconds);})]);}finally{clearTimeout(timer);}}
+async function deadline(promise,milliseconds,substage){let timer;try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(markSetupFailure(Error('Fixture deadline exceeded'),substage)),milliseconds);})]);}finally{clearTimeout(timer);}}
 export async function joinOwnedAcceptance(acceptance,{timeoutMs=240000,joinMs=90000,cancel}={}){
   // Attach settlement observers before the deadline; the losing acceptance must
   // remain owned until its native callbacks and cleanup settle.
   const settled=Promise.resolve(acceptance).then(value=>({value}),error=>({error}));
-  try{return await deadline(acceptance,timeoutMs);}catch(first){
+  try{return await deadline(acceptance,timeoutMs,'acceptance-deadline');}catch(first){
     try{await deadline(Promise.resolve().then(cancel),10000);}catch{throw new CleanupFailure('Acceptance cancellation receipt missing');}
     let result;try{result=await deadline(settled,joinMs);}catch{throw new CleanupFailure('Acceptance cleanup join unresolved');}
     if(result.error instanceof CleanupFailure)throw result.error;
@@ -84,11 +85,25 @@ export function consumerProcessFailureDiagnostic(stage,error){
     return observation===null?null:'SETUP_CONSUMER_PROCESS_FAILURE '+JSON.stringify({stage,observation,owned_cleanup:ownedProcessFailureCleanup(error)});
   }catch{return null;}
 }
+export function setupConsumerFailureDiagnostic(stage,error){
+  try{
+    if(stage!=='compiled-browser-native-consumption'&&stage!=='phone-consumer-admission')return null;
+    const observation=setupFailureObservation(error);
+    return observation===null?null:'SETUP_CONSUMER_FAILURE_DETAIL '+JSON.stringify(observation);
+  }catch{return null;}
+}
 export function phoneConsumerBuildFailureDiagnostic(stage,error){
   try{
     if(stage!=='phone-consumer-build')return null;
     const observation=ownedProcessFailureObservation(error);
     return observation===null?null:'PHONE_CONSUMER_BUILD_FAILURE '+JSON.stringify(observation);
+  }catch{return null;}
+}
+export function phoneConsumerBuildSignalsDiagnostic(stage,error){
+  try{
+    if(stage!=='phone-consumer-build')return null;
+    const observed=ownedProcessFailureGradleSignals(error);
+    return observed===null?null:'PHONE_CONSUMER_BUILD_SIGNALS '+JSON.stringify({observed});
   }catch{return null;}
 }
 const phoneBuildMarkers=new Map([
@@ -137,25 +152,25 @@ export async function main(args=process.argv.slice(2)){
     stage='browser-package';assets=await createBrowserPackage();await capture(process.execPath,[path.join(repo,'scripts/package_conversation_browser.mjs'),'--owned-setup-fixture'],{timeoutMs:30000});
     // Cold Windows builds include all four native custody ABIs before Kotlin.
     // Bound compilation separately from the unchanged acceptance/cleanup deadlines.
-    stage='phone-consumer-build';await runOwnedProcess('cmd.exe',['/d','/c','gradlew.bat',':app:compileDebugUnitTestKotlin','--no-daemon','--max-workers=1'],{cwd:path.join(repo,'android'),timeoutMs:2400000,maximum:MAX_OUTPUT});
+    stage='phone-consumer-build';await runOwnedProcess('cmd.exe',['/d','/c','gradlew.bat',':app:compileDebugUnitTestKotlin','--no-daemon','--max-workers=1'],{cwd:path.join(repo,'android'),timeoutMs:2400000,maximum:MAX_OUTPUT,gradleFailureSignals:true});
     const origin=`https://owner.example.test:${await reservePort()}`;stage='server-readiness';let resolveReady,rejectReady;const readiness=new Promise((resolve,reject)=>{resolveReady=resolve;rejectReady=reject;});
     server=spawn(serverExecutable,['--exact',SERVER_TEST,'--ignored','--nocapture','--test-threads=1'],{cwd:repo,windowsHide:true,shell:false,detached:process.platform!=='win32',stdio:['ignore','pipe','pipe'],env:{...process.env,ZT_OWNER_SETUP_FIXTURE_ORIGIN:origin,ZT_OWNER_SETUP_BROWSER_ASSETS:assets}});
     exited=new Promise(resolve=>server.once('close',code=>{serverExit=code;if(!ready)rejectReady(Error('Fixture exited before readiness'));resolve(code);}));server.once('error',()=>rejectReady(Error('Fixture launch failed')));
     const stopServer=()=>{termination??=terminateOwnedTree(server,exited).catch(()=>{unsafeCleanup=true;});return termination;};
     let size=0;const collect=(chunk,stdout)=>{size+=chunk.length;if(size>1048576){void stopServer();rejectReady(Error('Fixture diagnostics exceeded bound'));return;}output+=chunk.toString('utf8');if(stdout)try{const value=parser.feed(chunk);if(value){ready=value;resolveReady(value);}}catch{void stopServer();rejectReady(Error('Fixture readiness refused'));}};
     server.stdout.on('data',chunk=>collect(chunk,true));server.stderr.on('data',chunk=>collect(chunk,false));ready=await deadline(readiness,60000);assert.equal(ready.origin,origin);
-    stage='compiled-browser-native-consumption';const require=createRequire(import.meta.url);const {chromium}=require(require.resolve('playwright',{paths:[options.tools]}));browser=await chromium.launch({headless:true,args:[`--host-resolver-rules=MAP owner.example.test ${(await lookup('localhost',{family:4})).address}`,'--no-proxy-server']});
-    const acceptance=runCompiledSetupAcceptance({browser,ready,nativeExecutable,tls,consumePublishedRoot:async fixture=>{
+    stage='compiled-browser-native-consumption';browser=await setupStep('browser-launch',async()=>{const require=createRequire(import.meta.url);const {chromium}=require(require.resolve('playwright',{paths:[options.tools]}));return chromium.launch({headless:true,args:[`--host-resolver-rules=MAP owner.example.test ${(await lookup('localhost',{family:4})).address}`,'--no-proxy-server']});});
+    const acceptance=setupStep('browser-acceptance',()=>runCompiledSetupAcceptance({browser,ready,nativeExecutable,tls,consumePublishedRoot:async fixture=>setupStep('phone-root-admission',async()=>{
       stage='phone-consumer-admission';
       assert.ok(Buffer.byteLength(JSON.stringify(fixture))<=2048);
       const result=await runOwnedProcess('cmd.exe',['/d','/c','gradlew.bat',':app:testDebugUnitTest','--tests','org.zrotext.gateway.PublishedRootProvisioningTest','-PcomposedRootFixture=true','--rerun','--no-daemon','--max-workers=1'],{cwd:path.join(repo,'android'),env:{...process.env,ZT_COMPOSED_ROOT_FIXTURE:JSON.stringify(fixture)},timeoutMs:360000,maximum:MAX_OUTPUT});
       assertPhoneConsumerOutput(result);stage='compiled-browser-native-consumption';
-    }});const result=await joinOwnedAcceptance(acceptance,{cancel:async()=>{await Promise.all([browser.close(),stopServer()]);browser=null;}});await browser.close();browser=null;
+    })}));const result=await joinOwnedAcceptance(acceptance,{cancel:async()=>{await Promise.all([browser.close(),stopServer()]);browser=null;}});await setupStep('browser-close',()=>browser.close());browser=null;
     stage='server-terminal';assert.equal(await deadline(exited,20000),0);assert.ok(serverPassed(output),'Compiled fixture assertions must pass');assert.deepEqual(new ReadyParser().feed(Buffer.from(output)),ready);
     assert.equal(await executableDigest(serverExecutable),serverSha256,'Server executable changed');assert.equal(await executableDigest(nativeExecutable),nativeSha256,'Native executable changed');
     console.log(JSON.stringify({stage:'PASS-COMPILED-SETUP-FIXTURE',result,driverSource,serverSourceLabel:options['server-source']||driverSource,nativeSourceLabel:options['native-source']||driverSource,serverSourceMode:options['server-executable']?'caller-supplied-source-label':'cargo-json-current-source',nativeSourceMode:options['native-executable']?'caller-supplied-source-label':'cargo-json-current-source',serverSha256,nativeSha256,physicalDevice:false,carrierSms:false}));return 0;
   }catch(error){if(error instanceof CleanupFailure)unsafeCleanup=true;
-    try{for(const diagnostic of [consumerProcessFailureDiagnostic(stage,error),phoneConsumerBuildFailureDiagnostic(stage,error),phoneConsumerBuildProgressDiagnostic(stage,error),phoneConsumerBuildSettlementDiagnostic(stage,error)])if(diagnostic!==null)console.error(diagnostic);}catch{}
+    try{for(const diagnostic of [consumerProcessFailureDiagnostic(stage,error),setupConsumerFailureDiagnostic(stage,error),phoneConsumerBuildFailureDiagnostic(stage,error),phoneConsumerBuildSignalsDiagnostic(stage,error),phoneConsumerBuildProgressDiagnostic(stage,error),phoneConsumerBuildSettlementDiagnostic(stage,error)])if(diagnostic!==null)console.error(diagnostic);}catch{}
     console.error(`Sealed setup fixture failed at ${stage}; private readiness and signing material withheld.`);return unsafeCleanup?2:1;}
   finally{await browser?.close().catch(()=>{});if(ready&&serverExit===undefined)await fixtureControl(ready)('finish').catch(()=>{});if(server&&serverExit===undefined){try{await deadline(exited,15000);}catch{try{await terminateOwnedTree(server,exited);}catch{unsafeCleanup=true;}}}await termination;if(unsafeCleanup){process.exitCode=2;throw new CleanupFailure('Owned processes not confirmed stopped; staging retained');}if(assets){assert.ok(path.dirname(assets)===path.join(repo,'target')&&path.basename(assets)==='sealed-setup-browser-fixture');await rm(assets,{recursive:true,force:true});}}
 }

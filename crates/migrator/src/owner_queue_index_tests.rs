@@ -177,7 +177,24 @@ async fn owner_queue_probes_read_partial_indexes_without_filtering_history() {
     let (name, admin, config) = disposable_database().await;
     let mut client = connect(&config).await;
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
-    apply(&mut client, &directory, false).await.unwrap();
+    let migrations = read_migrations(&directory).unwrap();
+    let native_identity_position = migrations
+        .iter()
+        .position(|migration| migration.version == 116)
+        .unwrap();
+    // This is a retained-history query-plan fixture, not a bulk admission
+    // benchmark. Seed through115 with its writer guards intact, then genuinely
+    // migrate that history to the current schema. From116, each message's
+    // admission and deferred checks independently verify the full writer graph.
+    assert_eq!(
+        apply_locked(&mut client, &migrations[..native_identity_position], false)
+            .await
+            .unwrap()
+            .last()
+            .unwrap()
+            .version,
+        115
+    );
     client
         .batch_execute(
             r#"
@@ -202,11 +219,24 @@ async fn owner_queue_probes_read_partial_indexes_without_filtering_history() {
             '+15551234567',decode(repeat('11',32),'hex'),'synthetic_alpha',
             decode('01','hex'),decode(repeat('22',32),'hex'),'submitted',now()
             FROM generate_series(1,1200) g;
-        ANALYZE messages;
     "#,
         )
         .await
         .unwrap();
+    assert_eq!(
+        apply(&mut client, &directory, false)
+            .await
+            .unwrap()
+            .last()
+            .unwrap()
+            .version,
+        119
+    );
+    assert!(client.query_one("SELECT count(*)=119 AND min(version)=1 AND max(version)=119 FROM public.schema_migrations", &[]).await.unwrap().get::<_, bool>(0));
+    assert!(client.query_one("SELECT migration_version=119 AND graph_sha256=public.payload_profile_writer_graph() FROM public.payload_profile_writer_catalog WHERE singleton", &[]).await.unwrap().get::<_, bool>(0));
+    assert!(client.query_one("SELECT count(*)=32400 AND count(*) FILTER(WHERE state='delivered')=30000 AND count(*) FILTER(WHERE state='queued')=1200 AND count(*) FILTER(WHERE state='submitted')=1200 FROM public.messages", &[]).await.unwrap().get::<_, bool>(0));
+    verify_owner_queue_indexes(&client).await.unwrap();
+    client.batch_execute("ANALYZE messages").await.unwrap();
     // These are the exact queue probes from OWNER_DEVICE_STATUS_QUERY. The
     // partial predicates prove the state filter, so no supported PostgreSQL
     // release may filter the delivered history at probe time.

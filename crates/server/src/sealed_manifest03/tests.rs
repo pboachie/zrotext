@@ -20,6 +20,7 @@ pub(crate) fn hex(value: &Value) -> Vec<u8> {
         .as_chunks::<2>()
         .0
         .iter()
+        .map(|chunk| chunk.as_slice())
         .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
         .collect()
 }
@@ -196,6 +197,107 @@ fn exact_public_cross_profile_vectors_verify_in_rust() {
 }
 
 #[test]
+fn election_selects_both_registered_signers_independently_of_conversation_roles() {
+    let f = Fixture::new();
+    let old = f.manifest(2, 1, 0, [0; 32]);
+    let context = f.context(&old);
+    let manifest02 = sealed_manifest::verify(&f.pin, &old, &context.trust, NOW).unwrap();
+    let (_, _, manifest03) = f.pair();
+    let enrolled = SigningKey::generate_from_rng(&mut rand::rng());
+    let point: [u8; 65] = enrolled
+        .verifying_key()
+        .to_sec1_point(false)
+        .as_bytes()
+        .try_into()
+        .unwrap();
+    let original_approval = SigningKey::generate_from_rng(&mut rand::rng());
+    let owner: [u8; 65] = original_approval
+        .verifying_key()
+        .to_sec1_point(false)
+        .as_bytes()
+        .try_into()
+        .unwrap();
+    assert_ne!(
+        point.as_slice(),
+        f.keys[3].verifying_key().to_sec1_point(false).as_bytes()
+    );
+    let a = manifest02
+        .profile_election_keys(&f.device, &f.line, &point, &owner, NOW)
+        .unwrap();
+    let b = manifest03
+        .profile_election_keys(&f.device, &f.line, &point, &owner, NOW)
+        .unwrap();
+    assert_eq!(a.device_signer_id, sealed_manifest::key_id(4, &point));
+    assert_eq!(b.device_signer_id, a.device_signer_id);
+    assert_eq!(b.reader_id, a.reader_id);
+    assert_eq!(b.approval_id, a.approval_id);
+    assert_eq!(b.approval_id, sealed_manifest::key_id(4, &owner));
+    // Signing key IDs identify algorithm0101 plus point, not manifest role.
+    assert_eq!(b.approval_id, sealed_manifest::key_id(5, &owner));
+    for (device, line, signer, approval, now) in [
+        ([9; 16], f.line, point, owner, NOW),
+        (f.device, [9; 16], point, owner, NOW),
+        (f.device, f.line, [0; 65], owner, NOW),
+        (f.device, f.line, point, [0; 65], NOW),
+        (f.device, f.line, point, point, NOW),
+        (f.device, f.line, point, owner, NOW + 100_000),
+    ] {
+        assert!(
+            manifest02
+                .profile_election_keys(&device, &line, &signer, &approval, now)
+                .is_err()
+        );
+        assert!(
+            manifest03
+                .profile_election_keys(&device, &line, &signer, &approval, now)
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn signed_manifests_without_outbound_role_still_select_election_but_cannot_send() {
+    let mut f = Fixture::new();
+    f.records.retain(|r| r[0] != 5);
+    let old = f.manifest(2, 1, 0, [0; 32]);
+    let old02 = sealed_manifest::verify(&f.pin, &old, &f.context(&old).trust, NOW).unwrap();
+    let (_, _, new03) = f.pair();
+    let device = SigningKey::generate_from_rng(&mut rand::rng());
+    let owner = SigningKey::generate_from_rng(&mut rand::rng());
+    let point = |key: &SigningKey| -> [u8; 65] {
+        key.verifying_key()
+            .to_sec1_point(false)
+            .as_bytes()
+            .try_into()
+            .unwrap()
+    };
+    let selection = old02
+        .profile_election_keys(&f.device, &f.line, &point(&device), &point(&owner), NOW)
+        .unwrap();
+    let next = new03
+        .profile_election_keys(&f.device, &f.line, &point(&device), &point(&owner), NOW)
+        .unwrap();
+    assert_eq!(selection.reader_id, next.reader_id);
+    let archive =
+        sealed_manifest::key_id(2, f.keys[1].verifying_key().to_sec1_point(false).as_bytes());
+    assert!(
+        new03
+            .authorize(
+                &Authorization03 {
+                    kind: 1,
+                    account: &f.account,
+                    device: &f.device,
+                    line: &f.line,
+                    signer_id: &sealed_manifest::key_id(5, &point(&owner)),
+                    readers: &[(1, next.reader_id), (2, archive)]
+                },
+                NOW
+            )
+            .is_err()
+    );
+}
+
+#[test]
 fn actual_anchor_checkpoint_and_original_comparison_are_not_invented() {
     let f = Fixture::new();
     let old = f.manifest(2, 17, 0, [7; 32]);
@@ -217,6 +319,37 @@ fn actual_anchor_checkpoint_and_original_comparison_are_not_invented() {
     let end = bad.len() - 1;
     bad[end] ^= 1;
     assert!(verify_checkpoint02(&f.pin, &bad, &f.context(&old), NOW).is_err());
+}
+
+#[test]
+fn outbound_authorization_deadline_includes_signer_lifetime() {
+    let mut f = Fixture::new();
+    let signer = f.records.iter_mut().find(|r| r[0] == 5).unwrap();
+    signer[140..148].copy_from_slice(&(NOW + 250).to_be_bytes());
+    let (_, _, manifest) = f.pair();
+    let readers: Vec<_> = f
+        .records
+        .iter()
+        .filter(|r| r[0] <= 3)
+        .map(|r| (r[0], r[1..33].try_into().unwrap()))
+        .collect();
+    let signer = f.records.iter().find(|r| r[0] == 5).unwrap()[1..33]
+        .try_into()
+        .unwrap();
+    let (_, _, deadline) = manifest
+        .authorize(
+            &Authorization03 {
+                kind: 1,
+                account: &f.account,
+                device: &f.device,
+                line: &f.line,
+                signer_id: &signer,
+                readers: &readers,
+            },
+            NOW,
+        )
+        .unwrap();
+    assert_eq!(deadline, NOW + 250);
 }
 
 #[test]

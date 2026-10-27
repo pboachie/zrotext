@@ -58,7 +58,14 @@ fn bytes<const N: usize>(value: &serde_json::Value) -> Result<[u8; N], Conversat
         return Err(reject());
     }
     let mut out = [0; N];
-    for (i, pair) in text.as_bytes().as_chunks::<2>().0.iter().enumerate() {
+    for (i, pair) in text
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|chunk| chunk.as_slice())
+        .enumerate()
+    {
         out[i] = u8::from_str_radix(std::str::from_utf8(pair).map_err(|_| reject())?, 16)
             .map_err(|_| reject())?;
     }
@@ -89,6 +96,7 @@ fn role(c: &Current, kind: u8, s: &Selection, now: i64) -> Result<[u8; 32], Conv
         .as_chunks::<149>()
         .0
         .iter()
+        .map(|chunk| chunk.as_slice())
         .filter(|r| {
             r[0] == kind
                 && r[148] == 1

@@ -17,8 +17,11 @@ internal class SealedExecutionInputs(context: Context, val db: SmsJournalDatabas
 ) {
     class Scope(val authority: Draft02ManifestAuthority, val request: Draft02ManifestAuthority.Request)
     private val application = checkNotNull(context.applicationContext)
-    val suppression = ConversationExistingSuppressionTokens()
-    fun current() = runCatching { ownerCurrent() }.getOrDefault(false)
+    init { InboundProtection.restoreNegative(application) }
+    private val protectionEpoch = InboundProtectionHealth.snapshot()
+    val suppression = ConversationExistingSuppressionTokens(application)
+    fun current() = InboundProtectionHealth.current(protectionEpoch) && runCatching { ownerCurrent() }.getOrDefault(false) &&
+        InboundProtectionHealth.current(protectionEpoch)
     fun cards() = SimCardContinuity.observe(application)
     private fun selected() = application.getSharedPreferences("gateway_selection", Context.MODE_PRIVATE)
         .getInt("subscription_id", android.telephony.SubscriptionManager.INVALID_SUBSCRIPTION_ID)

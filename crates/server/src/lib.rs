@@ -7,6 +7,14 @@ pub mod billing;
 pub mod contact_content_contract;
 pub mod contact_reader_issuer;
 pub mod contact_reader_statement;
+pub mod conversation_effect03;
+pub mod conversation_grant03;
+pub mod conversation_profile03_effect_storage;
+pub mod conversation_profile03_grant_storage;
+pub mod conversation_profile03_storage;
+pub mod conversation_reviewed_send03_storage;
+pub mod device_protection;
+pub mod device_protection_storage;
 pub mod device_socket;
 pub mod encrypted_schedule;
 pub mod enrollment;
@@ -29,6 +37,7 @@ pub mod http_owner_events;
 pub mod http_owner_export;
 pub mod http_owner_messages;
 pub mod http_owner_review;
+pub mod http_payload_profile03;
 pub mod http_review_access;
 pub mod http_sealed;
 pub mod http_webhooks;
@@ -39,11 +48,20 @@ pub mod owner_ui;
 #[cfg(test)]
 mod parent_account_mirror_tests;
 pub(crate) mod payload_profile_anchor;
+pub mod payload_profile_elections;
+pub mod payload_profile_manifests;
+pub mod payload_profile_selections;
+pub mod payload_profile_v2_receipts;
+pub mod payload_profile_writer;
 pub mod provider_config;
 pub mod provider_sms;
 pub mod readiness;
 pub mod retention;
+pub mod reviewed_intent03;
 pub use zrotext_root_material::root_backup;
+pub mod conversation_interval03;
+pub mod hosted_runtime_identity;
+pub(crate) mod manifest_install03;
 pub mod runtime_db;
 pub mod sealed_body;
 pub mod sealed_connector_registry;
@@ -58,6 +76,7 @@ pub mod sealed_outbound;
 pub mod sealed_payload_election03;
 pub mod sealed_root_ceremony;
 pub mod sealed_root_custody;
+pub mod selection_refresh03;
 pub use zrotext_root_material::sealed_root_enrollment;
 pub mod managed_ai;
 pub mod original_reply;
@@ -207,3 +226,9 @@ mod sealed_root_roles_tests;
 
 pub mod managed_reader_policy;
 pub mod workflow_templates;
+
+#[cfg(test)]
+mod test_migration_inventory;
+
+#[cfg(test)]
+pub(crate) mod test_database;

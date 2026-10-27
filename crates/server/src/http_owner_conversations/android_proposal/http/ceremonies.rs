@@ -30,7 +30,12 @@ pub(super) async fn configured_at(
     let now = c.now().await as u64;
     let (_, _, _, mut unsigned) = framed(&c, now.checked_sub(issued_age_ms).unwrap());
     unsigned[45..53].copy_from_slice(&(now + remaining_ms).to_be_bytes());
-    for record in unsigned[151..].as_chunks_mut::<149>().0.iter_mut() {
+    for record in unsigned[151..]
+        .as_chunks_mut::<149>()
+        .0
+        .iter_mut()
+        .map(|chunk| chunk.as_mut_slice())
+    {
         record[140..148].copy_from_slice(&(now + remaining_ms).to_be_bytes());
     }
     let before = signed(&c, &unsigned);
@@ -91,6 +96,7 @@ fn roles(before: &[u8], kind: u8) -> Vec<u8> {
         .as_chunks::<149>()
         .0
         .iter()
+        .map(|chunk| chunk.as_slice())
         .find(|record| record[0] == kind)
         .unwrap()[1..33]
         .to_vec()

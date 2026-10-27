@@ -16,8 +16,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Stage hash-verified pip for offline interpreter setup
+        run: python -I scripts/bootstrap_python_pip.py --fetch-only --wheel-dir "${{ runner.temp }}/python-pip-bootstrap"
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        env:
+          PIP_CONFIG_FILE: ${{ runner.os == 'Windows' && 'nul' || '/dev/null' }}
+          PIP_NO_INDEX: '1'
+          PIP_FIND_LINKS: ${{ runner.temp }}/python-pip-bootstrap/pip-26.2.2-py3-none-any.whl
+          PIP_DISABLE_PIP_VERSION_CHECK: '1'
+        with:
+          python-version: '3.12.15'
+          check-latest: true
+      - name: Qualify pip before network package operations
+        run: python -I scripts/bootstrap_python_pip.py
       - name: Validate synthetic opening wire contracts
         run: |
           python3 -m venv /tmp/zrotext-opening-capacity-venv
+          /tmp/zrotext-opening-capacity-venv/bin/python -I scripts/bootstrap_python_pip.py
           /tmp/zrotext-opening-capacity-venv/bin/pip install --disable-pip-version-check jsonschema==4.25.1
           /tmp/zrotext-opening-capacity-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_owner_opening_capacity_schema.py'

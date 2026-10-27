@@ -16,6 +16,9 @@ use {
 #[path = "conversation_activation.rs"]
 pub mod activation;
 
+#[path = "payload_profile_upgrade.rs"]
+pub mod payload_profile_upgrade;
+
 pub const MAX_PROPOSAL: usize = 20_480;
 const HEADER: usize = 151;
 const RECORD: usize = 149;

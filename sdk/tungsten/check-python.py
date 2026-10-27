@@ -36,10 +36,11 @@ def main():
         consumer = stage / "consumer"
         venv.EnvBuilder(with_pip=True).create(consumer)
         python = consumer / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        run(python, "-I", ROOT / "scripts/bootstrap_python_pip.py", cwd=stage)
         wheels = stage / "wheels"
-        run(python, "-m", "pip", "wheel", "--wheel-dir", wheels,
+        run(python, "-m", "pip", "--disable-pip-version-check", "wheel", "--wheel-dir", wheels,
             source / "runtimes/python", config / "generated/python", cwd=stage)
-        run(python, "-m", "pip", "install", "--no-index", "--find-links", wheels,
+        run(python, "-m", "pip", "--disable-pip-version-check", "install", "--no-index", "--find-links", wheels,
             "zrotext-sdk", cwd=stage)
         run(python, "-I", "-c",
             "import importlib,pkgutil,zrotext_sdk; "

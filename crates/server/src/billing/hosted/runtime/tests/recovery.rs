@@ -29,7 +29,7 @@ async fn pending(f: &Fixture) -> Arc<Runtime> {
     f.runtime(Mode::Live).await
 }
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; explicit same-operation recovery refusals"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; explicit same-operation recovery refusals"]
 async fn checkout_recovery_refuses_unstarted_known_terminal_unbound_expired_changed_and_risky_operations_without_provider_mutations()
  {
     let mut f = Fixture::new(Mode::Live).await;
@@ -45,7 +45,8 @@ async fn checkout_recovery_refuses_unstarted_known_terminal_unbound_expired_chan
     assert!(f.fake.inner.lock().unwrap().operations.is_empty());
     let r = pending(&f).await;
     let row = f
-        .admin
+        .database
+        .owner
         .query_one(
             "SELECT checkout_started_at,checkout_request_digest FROM hosted_billing_customers",
             &[],
@@ -64,7 +65,8 @@ async fn checkout_recovery_refuses_unstarted_known_terminal_unbound_expired_chan
         .filter(|(method, path)| method == "POST" && path == "/v1/customers")
         .count();
     for state in ["none", "open", "complete", "expired"] {
-        f.admin
+        f.database
+            .owner
             .execute(
                 "UPDATE hosted_billing_customers SET checkout_state=$1",
                 &[&state],
@@ -80,14 +82,16 @@ async fn checkout_recovery_refuses_unstarted_known_terminal_unbound_expired_chan
             StatusCode::CONFLICT
         );
     }
-    f.admin
+    f.database
+        .owner
         .execute(
             "UPDATE hosted_billing_customers SET checkout_state='pending'",
             &[],
         )
         .await
         .unwrap();
-    f.admin
+    f.database
+        .owner
         .execute(
             "UPDATE hosted_billing_customers SET checkout_id='cs_fixture'",
             &[],
@@ -102,13 +106,18 @@ async fn checkout_recovery_refuses_unstarted_known_terminal_unbound_expired_chan
             .status(),
         StatusCode::CONFLICT
     );
-    f.admin
+    f.database
+        .owner
         .execute("UPDATE hosted_billing_customers SET checkout_id=NULL", &[])
         .await
         .unwrap();
 
-    for when in [started - 23 * 60 * 60 - 5, started + 60] {
-        f.admin
+    for offset in [-23 * 60 * 60 - 5, 60] {
+        // The preceding native requests may take longer than a minute. Bind
+        // this case to the database's current time, not the original checkout.
+        let when = f.now().await + offset;
+        f.database
+            .owner
             .execute(
                 "UPDATE hosted_billing_customers SET checkout_started_at=$1",
                 &[&when],
@@ -125,7 +134,7 @@ async fn checkout_recovery_refuses_unstarted_known_terminal_unbound_expired_chan
             StatusCode::CONFLICT
         );
     }
-    f.admin.execute("UPDATE hosted_billing_customers SET checkout_started_at=$1,checkout_request_digest=NULL",&[&started]).await.unwrap();
+    f.database.owner.execute("UPDATE hosted_billing_customers SET checkout_started_at=$1,checkout_request_digest=NULL",&[&started]).await.unwrap();
     assert_eq!(read(&f, &r).await["checkout"]["state"], "pending");
     assert_eq!(
         r.router()
@@ -135,7 +144,8 @@ async fn checkout_recovery_refuses_unstarted_known_terminal_unbound_expired_chan
             .status(),
         StatusCode::CONFLICT
     );
-    f.admin
+    f.database
+        .owner
         .execute(
             "UPDATE hosted_billing_customers SET checkout_request_digest=$1",
             &[&&[0u8; 32][..]],
@@ -151,7 +161,8 @@ async fn checkout_recovery_refuses_unstarted_known_terminal_unbound_expired_chan
             .status(),
         StatusCode::CONFLICT
     );
-    f.admin
+    f.database
+        .owner
         .execute(
             "UPDATE hosted_billing_customers SET checkout_request_digest=$1,payment_hold=true",
             &[&digest],
@@ -167,7 +178,8 @@ async fn checkout_recovery_refuses_unstarted_known_terminal_unbound_expired_chan
             .status(),
         StatusCode::CONFLICT
     );
-    f.admin
+    f.database
+        .owner
         .execute(
             "UPDATE hosted_billing_customers SET payment_hold=false,review_required=true",
             &[],
@@ -182,14 +194,17 @@ async fn checkout_recovery_refuses_unstarted_known_terminal_unbound_expired_chan
             .status(),
         StatusCode::CONFLICT
     );
-    f.admin
+    f.database
+        .owner
         .execute(
             "UPDATE hosted_billing_customers SET review_required=false",
             &[],
         )
         .await
         .unwrap();
-    f.admin
+    crate::runtime_db::settle_fixture_resets(&f.app_url).await;
+    f.database
+        .owner
         .execute(
             "UPDATE hosted_billing_namespaces SET review_required=true",
             &[],
@@ -205,7 +220,9 @@ async fn checkout_recovery_refuses_unstarted_known_terminal_unbound_expired_chan
             .status(),
         StatusCode::CONFLICT
     );
-    f.admin
+    crate::runtime_db::settle_fixture_resets(&f.app_url).await;
+    f.database
+        .owner
         .execute(
             "UPDATE hosted_billing_namespaces SET review_required=false",
             &[],
@@ -226,19 +243,28 @@ async fn checkout_recovery_refuses_unstarted_known_terminal_unbound_expired_chan
     );
     let password = crate::test_keys::password(4);
     let signup = crate::auth::register(
-        &mut f.admin,
+        &mut f.database.owner,
         &f.auth.hasher,
         "other@example.test",
         &password,
     )
     .await
     .unwrap();
-    crate::auth::verify_email(&mut f.admin, &f.auth.hasher, &signup.verification_token)
-        .await
-        .unwrap();
-    let other = crate::auth::login(&f.admin, &f.auth.hasher, "other@example.test", &password)
-        .await
-        .unwrap();
+    crate::auth::verify_email(
+        &mut f.database.owner,
+        &f.auth.hasher,
+        &signup.verification_token,
+    )
+    .await
+    .unwrap();
+    let other = crate::auth::login(
+        &f.database.owner,
+        &f.auth.hasher,
+        "other@example.test",
+        &password,
+    )
+    .await
+    .unwrap();
     let mut request = f.request("/checkout/recover", "POST");
     request.headers_mut().insert(
         "cookie",
@@ -256,7 +282,8 @@ async fn checkout_recovery_refuses_unstarted_known_terminal_unbound_expired_chan
         r.router().oneshot(request).await.unwrap().status(),
         StatusCode::CONFLICT
     );
-    f.admin
+    f.database
+        .owner
         .execute("UPDATE sessions SET revoked_at=clock_timestamp()", &[])
         .await
         .unwrap();
@@ -283,7 +310,7 @@ async fn checkout_recovery_refuses_unstarted_known_terminal_unbound_expired_chan
     f.cleanup().await;
 }
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; same operation recovered already closed"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; same operation recovered already closed"]
 async fn checkout_recovery_after_restart_returns_closed_observation_without_new_operation_or_redirect()
  {
     let f = Fixture::new(Mode::Live).await;
@@ -320,7 +347,7 @@ async fn checkout_recovery_after_restart_returns_closed_observation_without_new_
     f.cleanup().await;
 }
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; changed runtime terms cannot rewrite pending intent"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; changed runtime terms cannot rewrite pending intent"]
 async fn pending_checkout_recovery_refuses_changed_runtime_terms_without_replaying_provider_operation()
  {
     let f = Fixture::new(Mode::Live).await;

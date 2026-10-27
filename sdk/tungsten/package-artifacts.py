@@ -18,6 +18,8 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "sdk/tungsten"
+PIP_BOOTSTRAP = ROOT / "scripts/bootstrap_python_pip.py"
+PIP_WHEEL = "pip-26.2.2-py3-none-any.whl"
 
 
 def load(name, path):
@@ -86,11 +88,14 @@ def python_package(stage, feed):
     venv.EnvBuilder(with_pip=True).create(build)
     python = build / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     requirements = CONFIG / "python-package-requirements.txt"
-    run(python, "-m", "pip", "download", "--only-binary=:all:", "--dest", feed,
+    # Retain the verified bootstrap wheel before the offline consumer phase.
+    bootstrap_wheels = stage / "pip-bootstrap"
+    run(python, "-I", PIP_BOOTSTRAP, "--wheel-dir", bootstrap_wheels, cwd=stage)
+    run(python, "-m", "pip", "--disable-pip-version-check", "download", "--only-binary=:all:", "--dest", feed,
         "-r", requirements, cwd=stage)
-    run(python, "-m", "pip", "install", "--no-index", "--find-links", feed,
+    run(python, "-m", "pip", "--disable-pip-version-check", "install", "--no-index", "--find-links", feed,
         "-r", requirements, cwd=stage)
-    run(python, "-m", "pip", "wheel", "--no-build-isolation", "--no-deps",
+    run(python, "-m", "pip", "--disable-pip-version-check", "wheel", "--no-build-isolation", "--no-deps",
         "--wheel-dir", feed, runtime, sdk, cwd=stage)
     for name, project in (("tungsten_runtime", runtime), ("zrotext_sdk", sdk)):
         wheel = next(feed.glob(name + "-*.whl"))
@@ -102,9 +107,10 @@ def python_package(stage, feed):
     consumer = stage / "consumer"
     venv.EnvBuilder(with_pip=True).create(consumer)
     python = consumer / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    run(python, "-m", "pip", "install", "--no-index", "--find-links", feed,
+    run(python, "-I", PIP_BOOTSTRAP, "--wheel", bootstrap_wheels / PIP_WHEEL, cwd=stage)
+    run(python, "-m", "pip", "--disable-pip-version-check", "install", "--no-index", "--find-links", feed,
         "--constraint", requirements, "zrotext-sdk==0.1.0", cwd=stage)
-    run(python, "-m", "pip", "check", cwd=stage)
+    run(python, "-m", "pip", "--disable-pip-version-check", "check", cwd=stage)
     run(python, "-I", "-c", "import importlib,pkgutil,zrotext_sdk,tungsten_runtime; "
         "[importlib.import_module(m.name) for m in pkgutil.walk_packages("
         "zrotext_sdk.__path__,zrotext_sdk.__name__+'.')]; print('Installed SDK modules loaded')", cwd=stage)

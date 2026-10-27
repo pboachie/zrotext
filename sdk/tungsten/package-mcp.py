@@ -55,7 +55,8 @@ def main():
         for name in UNITS:
             shutil.copyfile(ROOT / "sdk/typescript/src" / (name + ".ts"), build / "src" / (name + ".ts"))
         run(npm, "ci", "--ignore-scripts", "--no-audit", "--no-fund", cwd=build, env=env)
-        run(npm, "run", "build", cwd=build, env=env)
+        # This closed subset has no contact modules or generated IDNA assets.
+        run(node, build / "node_modules/typescript/bin/tsc", "-p", "tsconfig.json", cwd=build, env=env)
         package = stage / "package"
         package.mkdir()
         files = {}

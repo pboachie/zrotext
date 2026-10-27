@@ -101,13 +101,20 @@ pub(super) async fn blockers(tx: &Transaction<'_>, account: Uuid) -> Result<Vec<
         "SELECT EXISTS(SELECT FROM pg_catalog.pg_inherits i JOIN pg_catalog.pg_class c ON c.oid=i.inhparent WHERE c.relnamespace=$1 AND c.relname=ANY($2::text[]))",
         &[&namespace, &TABLES],
     ).await.map_err(|_| ())?.get(0);
+    // Current native entry already pins both helpers and canonicalizes public.
+    // The stock runtime may execute role_safe, whose SECURITY DEFINER body
+    // includes schema_ready plus role/ownership/ACL checks; schema_ready itself
+    // is deliberately internal. Nonpublic historical SQL fixtures retain their
+    // original inventory check, never a fallback around the HTTP native gate.
+    let readiness = if name == "public" {
+        "hosted_runtime_role_safe"
+    } else {
+        "hosted_runtime_schema_ready"
+    };
     if !linked
         || inherited
         || !tx
-            .query_one(
-                &format!("SELECT {quoted}.hosted_runtime_schema_ready() IS TRUE"),
-                &[],
-            )
+            .query_one(&format!("SELECT {quoted}.{readiness}() IS TRUE"), &[])
             .await
             .map_err(|_| ())?
             .get::<_, bool>(0)

@@ -44,7 +44,7 @@ abstract class GatewayAccessibilityChecks {
             "SETUP/PAIRING" -> listOf("Device pairing")
             "SETUP/COMPARE" -> listOf("Compare phone details")
             "SETUP/CONNECT" -> listOf("Connect this phone")
-            "CONNECTION" -> listOf("Conversation content", "Authenticated device heartbeat", "Message summary reader")
+            "CONNECTION" -> listOf("Hosted encrypted messaging", "Conversation content", "Authenticated device heartbeat", "Message summary reader")
             "TOOLS" -> listOf("Owner custody", "Advanced pilots", "Gateway connection test", "Controlled SMS test") +
                 debugOnly("Controlled MMS spike")
             else -> error("Unknown test screen")
@@ -64,11 +64,12 @@ abstract class GatewayAccessibilityChecks {
             "HOME" -> listOf("Device status")
             "ACTIVITY" -> listOf("Connection")
             "SETUP" -> listOf("Pairing in this session")
-            "SETUP/ACCESS", "SETUP/SIM" -> emptyList()
+            "SETUP/ACCESS" -> listOf("Phone protection")
+            "SETUP/SIM" -> emptyList()
             "SETUP/PAIRING" -> listOf("Pairing status")
             "SETUP/COMPARE" -> listOf("Pairing status")
             "SETUP/CONNECT" -> listOf("Authenticated connection status")
-            "CONNECTION" -> listOf("Authenticated connection status")
+            "CONNECTION" -> listOf("Messaging", "Authenticated connection status")
             "TOOLS" -> listOf("Pilot status", "Connection status") + debugOnly("MMS spike status")
             else -> error("Unknown test screen")
         }

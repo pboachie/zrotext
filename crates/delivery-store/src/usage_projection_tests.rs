@@ -31,9 +31,9 @@ impl TestDb {
             .batch_execute(&format!("SET search_path TO {schema}"))
             .await
             .unwrap();
-        // The shared reviewed fixture applies every numbered migration in
-        // order, including the metering tables this projection reads.
-        tests::apply_test_migrations(&client).await;
+        // Retain the legacy107 isolated prefix, including the metering tables
+        // this projection reads. Real public114 coverage is separate.
+        tests::apply_legacy_isolated_test_migrations(&client).await;
         Self {
             admin,
             client,
@@ -282,18 +282,18 @@ async fn unix_ms(client: &Client, value: &str) -> i64 {
 #[tokio::test]
 #[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn usage_history_exposes_ledger_semantics_across_periods() {
-    let mut db = TestDb::new().await;
-    let account_id = account(&db.client).await;
-    let device_id = device_for(&db.client, account_id).await;
-    let january = unix_ms(&db.client, "2026-01-31 23:59:59+00").await;
-    let february = unix_ms(&db.client, "2026-02-01 00:00:00+00").await;
+    let mut db = crate::test_database::Fixture::for_store().await;
+    let account_id = account(&db.owner).await;
+    let device_id = device_for(&db.owner, account_id).await;
+    let january = unix_ms(&db.owner, "2026-01-31 23:59:59+00").await;
+    let february = unix_ms(&db.owner, "2026-02-01 00:00:00+00").await;
     let expiry = now_ms() + 3_600_000;
     let one = Uuid::new_v4();
     let two = Uuid::new_v4();
 
-    policy(&db.client, account_id, 1).await;
+    policy(&db.owner, account_id, 1).await;
     {
-        let mut store = DeliveryStore::new(&mut db.client);
+        let mut store = DeliveryStore::new(&mut db.runtime);
         assert!(
             store
                 .accept_metered_at(
@@ -328,9 +328,9 @@ async fn usage_history_exposes_ledger_semantics_across_periods() {
         ));
     }
     // A raised policy reprojects only the period created afterwards.
-    policy(&db.client, account_id, 3).await;
+    policy(&db.owner, account_id, 3).await;
     {
-        let mut store = DeliveryStore::new(&mut db.client);
+        let mut store = DeliveryStore::new(&mut db.runtime);
         assert!(
             store
                 .accept_metered_at(
@@ -350,7 +350,7 @@ async fn usage_history_exposes_ledger_semantics_across_periods() {
         ));
     }
 
-    let page = usage_history(&db.client, account_id, None, USAGE_PAGE_MAX)
+    let page = usage_history(&db.runtime, account_id, None, USAGE_PAGE_MAX)
         .await
         .unwrap();
     assert_eq!(page.next_before, None, "the whole history fits one page");
@@ -396,8 +396,8 @@ async fn usage_history_exposes_ledger_semantics_across_periods() {
 
     // A later downgrade changes the policy, never stored periods: the same
     // read replays identically.
-    policy(&db.client, account_id, 0).await;
-    let replay = usage_history(&db.client, account_id, None, USAGE_PAGE_MAX)
+    policy(&db.owner, account_id, 0).await;
+    let replay = usage_history(&db.runtime, account_id, None, USAGE_PAGE_MAX)
         .await
         .unwrap();
     assert_eq!(
@@ -405,5 +405,5 @@ async fn usage_history_exposes_ledger_semantics_across_periods() {
         "reads reflect committed periods, not the policy"
     );
 
-    db.drop().await;
+    db.finish().await;
 }

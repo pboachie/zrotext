@@ -308,6 +308,7 @@ impl Owner {
             .as_chunks::<149>()
             .0
             .iter()
+            .map(|chunk| chunk.as_slice())
             .filter(|r| r[0] == 2 || r[0] == 6)
         {
             let mut r = record.to_vec();

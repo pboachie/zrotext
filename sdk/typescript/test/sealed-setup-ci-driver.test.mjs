@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import test from 'node:test';
-import {CleanupFailure,runOwnedProcess,ownedProcessFailureObservation,ownedProcessFailureStdout,ownedProcessFailureCleanup,assertOwnedPidTerminated} from './owned-process-fixture.mjs';
+import {CleanupFailure,runOwnedProcess,ownedProcessFailureObservation,ownedProcessFailureStdout,ownedProcessFailureCleanup,ownedProcessFailureGradleSignals,assertOwnedPidTerminated} from './owned-process-fixture.mjs';
+import {createGradleFailureSignals} from './gradle-failure-fixture.mjs';
 import childProcess from 'node:child_process';
 import {syncBuiltinESMExports} from 'node:module';
 import {EventEmitter} from 'node:events';
@@ -11,7 +12,7 @@ import {createHash} from 'node:crypto';
 import {packageOutput,confinedOutput} from '../../../scripts/package_conversation_browser.mjs';
 import {mkdtemp,writeFile,rm,readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {parseOptions,selectExecutable,ReadyParser,serverPassed,SERVER_TEST,capture,executableDigest,joinOwnedAcceptance,createBrowserPackage,assertPhoneConsumerOutput,phoneConsumerBuildFailureDiagnostic,phoneConsumerBuildProgress,phoneConsumerBuildProgressDiagnostic,phoneConsumerBuildSettlementDiagnostic,consumerProcessFailureDiagnostic} from '../../../scripts/sealed_setup_ci_driver.mjs';
+import {parseOptions,selectExecutable,ReadyParser,serverPassed,SERVER_TEST,capture,executableDigest,joinOwnedAcceptance,createBrowserPackage,assertPhoneConsumerOutput,phoneConsumerBuildFailureDiagnostic,phoneConsumerBuildSignalsDiagnostic,phoneConsumerBuildProgress,phoneConsumerBuildProgressDiagnostic,phoneConsumerBuildSettlementDiagnostic,consumerProcessFailureDiagnostic} from '../../../scripts/sealed_setup_ci_driver.mjs';
 const id='11111111-1111-4111-8111-111111111111',root=path.resolve('fixture-root'),manifest=path.join(root,'crates/server/Cargo.toml'),exe=path.join(root,'target/fixture.exe');
 function ready(){const paired=Buffer.alloc(65);paired[0]=4;return {version:1,synthetic:true,port:4444,controlToken:'07'.repeat(32),origin:'https://owner.example.test:4443',baseline:{accountId:id,userId:id,sessionId:id,deviceId:id,lineId:id,nextGeneration:'1',pairedPoint:paired.toString('hex'),pairedFingerprintHex:createHash('sha256').update(paired).digest('hex'),rootFactor:'fixture-factor'.padEnd(26,'x'),lineFactor:'fixture-factor'.padEnd(26,'y'),cookies:[{name:'__Host-zrotext_session',value:'fixture-session'},{name:'__Host-zrotext_csrf',value:'fixture-csrf'}],lease:{connectionEpoch:'1',deploymentEpoch:'1',siteId:'fixture-site',instanceId:'fixture-instance'}}};}
 const record=prefix=>prefix+JSON.stringify(ready())+'\n';
@@ -128,6 +129,100 @@ test('phone build progress accepts only complete exact allowlisted public task m
   const known='> Task :app:compileDebugKotlin\n';
   assert.equal(phoneConsumerBuildProgress(known+'> Task :app:compileDebugUnitTestKotlin\n'),'unit-test-kotlin');
   for(const output of [null,'synthetic-private-output\n',known+'> Task :app:syntheticPrivateTask\n',known+'> Task :app:compileDebugUnitTestKotlin',known+'incomplete',known+'prefix > Task :app:compileDebugUnitTestKotlin\n',known+'> Task :app:compileDebugUnitTestKotlin synthetic-private-output\n','x'.repeat(16*1024*1024+1)])assert.equal(phoneConsumerBuildProgress(output),'unknown');
+});
+
+const gradleIndicators=[
+  ['dependency-verification','Dependency verification failed for configuration '],
+  ['dependency-verification','Dependency verification failed for artifact '],
+  ['dependency-resolution','Could not resolve all files for configuration '],
+  ['dependency-resolution','Could not resolve all artifacts for configuration '],
+  ['java-tls','PKIX path building failed'],
+  ['java-tls','javax.net.ssl.SSLHandshakeException'],
+  ['gradle-daemon','Gradle build daemon disappeared unexpectedly'],
+  ['gradle-daemon','Unable to start the daemon process.'],
+];
+test('Gradle indicators survive every chunk boundary without decoding child bytes',()=>{
+  for(const [category,marker]of gradleIndicators)for(const stream of ['stdout','stderr'])for(let split=0;split<=marker.length;split++){
+    const signals=createGradleFailureSignals();
+    for(const part of [marker.slice(0,split),marker.slice(split)]){
+      const bytes=Buffer.from(part);bytes.toString=()=>assert.fail('Child text must not be decoded');signals.feed(stream,bytes);
+    }
+    assert.deepEqual(signals.snapshot(),[category]);assert.ok(Object.isFrozen(signals.snapshot()));
+  }
+});
+test('Gradle indicators do not join streams or classify incomplete and malformed markers',()=>{
+  const marker=gradleIndicators[0][1],split=20,signals=createGradleFailureSignals();
+  signals.feed('stdout',Buffer.from(marker.slice(0,split)));signals.feed('stderr',Buffer.from(marker.slice(split)));
+  assert.deepEqual(signals.snapshot(),['unknown']);
+  for(const value of ['',marker.slice(0,-1),marker.toLowerCase(),'Dependency verification succeeded for configuration ',marker.replace('failed','failed\u0000'),marker.replace('failed','f\x1b[0mailed')]){
+    const collector=createGradleFailureSignals();collector.feed('stderr',Buffer.from(value));assert.deepEqual(collector.snapshot(),['unknown']);
+  }
+  for(const value of [null,marker,{toString(){assert.fail('Do not inspect foreign text');}}]){
+    const collector=createGradleFailureSignals();collector.feed('stderr',Buffer.from(marker));collector.feed('stderr',value);collector.feed('stderr',Buffer.from(marker));assert.deepEqual(collector.snapshot(),['unknown']);
+  }
+});
+test('Gradle signal diagnostics expose only enumerated flags despite hostile sensitive surroundings',async t=>{
+  const canary='synthetic-private-canary',privateOutput=[
+    `Picked up JAVA_TOOL_OPTIONS: -Djavax.net.ssl.trustStore=${path.join(tmpdir(),canary)}`,
+    `Authorization: Bearer ${canary}`,`{"signingContext":"${canary}","observed":["injected"]}`,
+    `::error title=${canary}::${canary}`,`\u001b[31m${canary}\u001b[0m`,
+    ...gradleIndicators.map(([,marker])=>`> ${marker}'${canary}'`),
+  ].join('\r\n');
+  await withSyntheticProcess(t,{start:child=>{child.stderr.emit('data',Buffer.from(privateOutput));child.emit('close',1);}},async()=>{
+    const error=await ownedRejection({gradleFailureSignals:true});error.message=canary;error.stack=canary;error.observed=[canary];
+    const expected=['dependency-verification','dependency-resolution','java-tls','gradle-daemon'];
+    assert.deepEqual(ownedProcessFailureGradleSignals(error),expected);assert.ok(Object.isFrozen(ownedProcessFailureGradleSignals(error)));
+    const diagnostic=phoneConsumerBuildSignalsDiagnostic('phone-consumer-build',error);
+    assert.equal(diagnostic,'PHONE_CONSUMER_BUILD_SIGNALS '+JSON.stringify({observed:expected}));assert.equal(diagnostic.includes(canary),false);
+    assert.equal(ownedProcessFailureStdout(error),'','No stderr capture is added');
+    for(const stage of ['phone-consumer-admission','compiled-browser-native-consumption',canary,null,new Proxy({},{get(){assert.fail('Do not inspect foreign stage');}})])assert.equal(phoneConsumerBuildSignalsDiagnostic(stage,error),null);
+    for(const foreign of [null,undefined,1,canary,Error(canary),{observed:expected},new Proxy({},{get(){assert.fail('Do not inspect foreign error');}})]){
+      assert.equal(ownedProcessFailureGradleSignals(foreign),null);assert.equal(phoneConsumerBuildSignalsDiagnostic('phone-consumer-build',foreign),null);
+    }
+  });
+});
+test('Gradle classification requires explicit opt in and never returns stderr',async t=>{
+  for(const enabled of [undefined,false,'true',true])await t.test(String(enabled),async sub=>{
+    const marker=gradleIndicators[0][1];
+    await withSyntheticProcess(sub,{start:child=>{child.stderr.emit('data',Buffer.from(marker));child.emit('close',1);}},async()=>{
+      const error=await ownedRejection({gradleFailureSignals:enabled});assert.equal(ownedProcessFailureStdout(error),'');
+      assert.deepEqual(ownedProcessFailureGradleSignals(error),enabled===true?['dependency-verification']:null);
+    });
+  });
+});
+test('Gradle signals freeze at first failure before cleanup emits further markers',async t=>{
+  await withSyntheticProcess(t,{start:child=>child.stderr.emit('data',Buffer.from(gradleIndicators[0][1])),cleanup:(child,killer)=>{
+    child.stderr.emit('data',Buffer.from(gradleIndicators[4][1]));child.stdout.emit('data',Buffer.from(gradleIndicators[6][1]));child.emit('close',1);killer.emit('close',0);
+  }},async()=>{
+    const error=await ownedRejection({timeoutMs:10,gradleFailureSignals:true});assert.deepEqual(ownedProcessFailureGradleSignals(error),['dependency-verification']);assert.equal(ownedProcessFailureCleanup(error),'joined');
+  });
+});
+test('Gradle signal snapshot survives an unconfirmed cleanup without inspecting its error',async t=>{
+  const refused=new CleanupFailure('synthetic private cleanup');
+  await withSyntheticProcess(t,{start:child=>child.stderr.emit('data',Buffer.from(gradleIndicators[0][1])),cleanupFailure:refused},async()=>{
+    const error=await ownedRejection({timeoutMs:10,gradleFailureSignals:true});assert.equal(error,refused);
+    assert.deepEqual(ownedProcessFailureGradleSignals(error),['dependency-verification']);assert.equal(ownedProcessFailureCleanup(error),'unconfirmed');
+  });
+});
+test('Gradle output bound and marker-free launch failures report unknown signals',async t=>{
+  for(const stream of ['stdout','stderr'])await t.test(stream,async sub=>{
+    const marker=gradleIndicators[0][1];
+    await withSyntheticProcess(sub,{start:child=>{child[stream].emit('data',Buffer.from(marker));child[stream].emit('data',Buffer.from('private'));}},async()=>{
+      const error=await ownedRejection({maximum:Buffer.byteLength(marker),gradleFailureSignals:true});assert.deepEqual(ownedProcessFailureGradleSignals(error),['unknown']);
+    });
+  });
+  await t.test('launch',async sub=>{
+    await withSyntheticProcess(sub,{launchFailure:Error('synthetic private launch')},async()=>{
+      assert.deepEqual(ownedProcessFailureGradleSignals(await ownedRejection({gradleFailureSignals:true})),['unknown']);
+    });
+  });
+});
+test('real child stderr yields an allowlisted Gradle indicator without raw output',async()=>{
+  const marker=gradleIndicators[0][1],canary='synthetic-private-canary';let failure;
+  try{await runOwnedProcess(process.execPath,['-e',`process.stderr.write(${JSON.stringify(marker+canary)});process.exitCode=1;`],{gradleFailureSignals:true});}catch(error){failure=error;}
+  assert.ok(failure);assert.equal(ownedProcessFailureStdout(failure),'');
+  assert.equal(phoneConsumerBuildSignalsDiagnostic('phone-consumer-build',failure),'PHONE_CONSUMER_BUILD_SIGNALS {"observed":["dependency-verification"]}');
+  assert.equal(String(failure).includes(canary),false);
 });
 
 test('phone build deadline diagnostics freeze progress and wait for owned close',async t=>{

@@ -13,28 +13,17 @@ fn now_ms() -> i64 {
 }
 struct Db {
     client: Client,
-    schema: String,
+    current: crate::test_database::Fixture,
+    driver: crate::test_database::Driver,
     account: Uuid,
     device: Uuid,
     customer: String,
 }
 impl Db {
     async fn new() -> Self {
-        let url = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL").unwrap();
-        let (client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
-            .await
-            .unwrap();
-        tokio::spawn(async move {
-            connection.await.unwrap();
-        });
-        let schema = format!("billable_test_{}", Uuid::new_v4().simple());
-        client
-            .batch_execute(&format!(
-                "CREATE SCHEMA {schema}; SET search_path TO {schema}"
-            ))
-            .await
-            .unwrap();
-        crate::auth::test_schema::apply(&client).await;
+        let current =
+            crate::test_database::Fixture::for_store("ZT_DELIVERY_TEST_DATABASE_URL").await;
+        let client = &current.owner;
         let account = Uuid::new_v4();
         let device = Uuid::new_v4();
         let customer = format!("cus_Synthetic{}", account.simple());
@@ -64,9 +53,11 @@ impl Db {
             .batch_execute("UPDATE deployment_authority SET dispatch_enabled=true")
             .await
             .unwrap();
+        let (client, driver) = current.another_runtime().await;
         Self {
             client,
-            schema,
+            current,
+            driver,
             account,
             device,
             customer,
@@ -128,18 +119,13 @@ impl Db {
         (id, last_callback)
     }
     async fn close(self) {
-        self.client
-            .batch_execute(&format!(
-                "SET search_path TO public; DROP SCHEMA {} CASCADE",
-                self.schema
-            ))
-            .await
-            .unwrap();
+        crate::test_database::Fixture::close_connection(self.client, self.driver).await;
+        self.current.finish().await;
     }
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; isolated finalized usage and synthetic HTTPS"]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL with CREATEDB/CREATEROLE; disposable current database and synthetic HTTPS"]
 async fn finalized_outbox_https_ack_and_unknown_retry_preserve_one_original_charge() {
     let mut db = Db::new().await;
     let (id, event) = db.submit(2).await;
@@ -188,7 +174,7 @@ async fn finalized_outbox_https_ack_and_unknown_retry_preserve_one_original_char
     db.close().await;
 }
 #[tokio::test]
-#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; isolated finalized usage and synthetic HTTPS"]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL with CREATEDB/CREATEROLE; disposable current database and synthetic HTTPS"]
 async fn foreign_customer_https_ack_parks_review_without_validated_or_duplicate_usage() {
     let mut db = Db::new().await;
     db.submit(1).await;
@@ -221,7 +207,7 @@ async fn foreign_customer_https_ack_parks_review_without_validated_or_duplicate_
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; isolated finalized usage and synthetic HTTPS"]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL with CREATEDB/CREATEROLE; disposable current database and synthetic HTTPS"]
 async fn repeated_https_ack_fields_retain_one_charge_and_park_review_without_resend() {
     for nested_customer in [false, true] {
         let mut db = Db::new().await;

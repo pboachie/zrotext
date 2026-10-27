@@ -20,7 +20,9 @@ fn shared_raw_vectors_and_unsigned_clock_boundary() {
         };
         let body: Vec<u8> = cells[3]
             .as_bytes()
-            .as_chunks::<2>().0.iter()
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|v| u8::from_str_radix(std::str::from_utf8(v).unwrap(), 16).unwrap())
             .collect();
         let result = verify(

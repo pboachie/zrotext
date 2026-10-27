@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! PostgreSQL-backed tests for the owner erasure route, plus one
 //! repository-SQL proof that the runtime database role covers every table
-//! the erasure deletes. The ignored tests share the fixture style of the
-//! sibling owner/auth suites: a throwaway schema, the real migration files,
-//! and the router under test driven through `tower::ServiceExt`.
+//! the erasure deletes. Current HTTP cases use stock public-schema migrations
+//! and ordinary runtime credentials; their disposable bootstrap needs
+//! CREATEDB/CREATEROLE. Historical optional-storage SQL contracts
+//! are labeled separately, never current native or authenticated HTTP evidence.
 
 use super::*;
 use crate::auth::{authenticate_session, login, register, verify_email};
@@ -12,6 +13,11 @@ use serde_json::{Value, json};
 use totp_rs::{Builder, Secret};
 use tower::ServiceExt;
 mod anchor_lifecycle;
+mod current_fixture;
+mod current_hosted;
+mod upgrade_history;
+use current_fixture::current_case;
+mod historical_contracts;
 mod hosted;
 mod managed_grants;
 mod opening_capacity;
@@ -21,11 +27,10 @@ mod registration_intents;
 
 const ORIGIN: &str = "https://test.example";
 
-/// The complete, ordered migration set from deploy/compose/migrations, as
-/// the Compose runner applies it to a fresh database. Nothing is skipped:
-/// the erasure's blocked-table and delete plans must stay honest against the
-/// schema production actually runs.
-const MIGRATIONS: &[(&str, &str)] = &[
+/// Exact historical001..107 prefix plus the explicitly named dormant managed
+/// candidate. This inventory is for historical SQL contracts, not current HTTP
+/// acceptance; ordinary cases use the real migrator through119 and stock ACLs.
+const LEGACY_MIGRATIONS: &[(&str, &str)] = &[
     (
         "001_foundation.sql",
         include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
@@ -546,32 +551,16 @@ const PREPARED_INDEXES: &[(&str, &str)] = &[
     ),
 ];
 
-/// The fixture above must name every checked-in migration, in order. A
-/// skipped file lets the erasure plans drift from the schema production runs
-/// (054 dropped a table the delete plan still named, and no test noticed).
+/// This isolated schema deliberately retains the exact107 prefix. The shared
+/// inventory separately pins every current migration's name and bytes; current
+/// public-schema role coverage is exercised below, without replaying108+ here.
 #[test]
-fn migrations_fixture_is_every_checked_in_migration() {
-    let directory =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
-    let mut discovered = std::fs::read_dir(directory)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .filter(|name| name.ends_with(".sql"))
-        .collect::<Vec<_>>();
-    discovered.sort();
-    let embedded = MIGRATIONS
-        .iter()
-        .filter(|(name, _)| !name.starts_with("../migration-candidates/"))
-        .map(|(name, _)| name.to_string())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        discovered, embedded,
-        "add every migration file to MIGRATIONS, in order"
-    );
+fn erasure_fixture_retains_exact_legacy107_prefix() {
+    crate::test_migration_inventory::assert_legacy107_fixture(LEGACY_MIGRATIONS);
 }
 
-/// Every table the erasure deletes from or counts as blocking exists in the
-/// fully migrated schema. A migration that drops or renames one of them makes
+/// Every legacy plan table exists in the isolated107 fixture. A migration that
+/// drops or renames one of them makes
 /// every erasure fail with 42P01, roll back and return 503.
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
@@ -636,8 +625,9 @@ async fn migrated_schema_with_execution(
     migrated_schema_with_optional_setup(label, execution, true).await
 }
 
-// Upgrade compatibility controls omit sealed setup and its dependent exchanges.
-// Ordinary fixtures always replay the complete migration inventory.
+// Historical SQL controls may omit specifically named optional storage and
+// dependent exchanges from the legacy inventory. These synthetic partial
+// schemas are neither genuine migrator upgrades nor current HTTP acceptance.
 async fn migrated_schema_with_optional_setup(
     label: &str,
     execution: bool,
@@ -661,7 +651,7 @@ async fn migrated_schema_with_optional_setup(
     let database_url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
     let (db, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
-    for (file, migration) in MIGRATIONS {
+    for (file, migration) in LEGACY_MIGRATIONS {
         if !setup
             && matches!(
                 *file,
@@ -875,12 +865,9 @@ async fn fixture(
     )
     .await
     .unwrap();
-    // The second fence is a pre-accounting legacy row: a NULL account_id
-    // escapes the composite foreign keys, so it needs its own attempt and
-    // is matched by the message/device arms of the delete. The alpha fence
-    // guard from migration 045 rejects new NULL-account rows by design, so
-    // this pre-existing row is inserted the way the inbound tests seed
-    // guarded history: with that one trigger disabled for the insert.
+    // Both ordinary current rows obey the alpha guard. NULL-account legacy
+    // fencing is independently seeded before044, upgraded unchanged to119,
+    // and erased through the current HTTP route by the upgrade-history test.
     let legacy_attempt = Uuid::new_v4();
     db.execute(
         "INSERT INTO message_attempts(id,account_id,message_id,device_id,generation,session_epoch,deployment_epoch,status) \
@@ -889,20 +876,14 @@ async fn fixture(
     )
     .await
     .unwrap();
-    db.batch_execute("ALTER TABLE dispatch_fences DISABLE TRIGGER alpha_fence_before_write")
-        .await
-        .unwrap();
     db.execute(
         "INSERT INTO dispatch_fences(message_id,account_id,device_id,attempt_id,generation,session_epoch,deployment_epoch,grant_expires_at,outcome) \
-         VALUES($1,$2,$3,$4,1,1,1,now(),'failed'),($5,NULL,$3,$6,1,1,1,now(),'failed')",
+         VALUES($1,$2,$3,$4,1,1,1,now(),'failed'),($5,$2,$3,$6,1,1,1,now(),'failed')",
         &[&message_a0, &a.account_id, &device_a, &attempt, &message_a1,
             &legacy_attempt],
     )
     .await
     .unwrap();
-    db.batch_execute("ALTER TABLE dispatch_fences ENABLE TRIGGER alpha_fence_before_write")
-        .await
-        .unwrap();
     db.execute(
         "INSERT INTO idempotency_keys(account_id,key,request_digest,message_id,expires_at) \
          VALUES($1,'erase-key',$2,$3,now()+interval '1 hour')",
@@ -1114,658 +1095,611 @@ async fn fixture(
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn erasure_deletes_every_account_row_and_ends_the_session() {
-    let (admin, mut db, database_url, schema) = migrated_schema("full").await;
-    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(23)).unwrap());
-    let (a, session_a, b, _session_b, app) = fixture(&mut db, &hasher, &database_url, None).await;
-    // Minimal original-action provenance has account-lifetime custody. This
-    // full-schema, genuinely erasable account exercises the deferred DELETE
-    // constraint through the actual owner route and its committed transaction.
-    db.execute(
-        "INSERT INTO original_reply_sources(account_id,action_id,revision,binding_digest,source_grant_id,source_event_id,request_id,expires_at_ms) VALUES($1,$2,1,$3,$4,$5,$6,1)",
-        &[&a.account_id,&Uuid::new_v4(),&[9u8;32].as_slice(),&Uuid::new_v4(),&Uuid::new_v4(),&Uuid::new_v4()],
-    ).await.unwrap();
+    current_case(async |db, _admin, database_url| {
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(23)).unwrap());
+        let (a, session_a, b, _session_b, app) = fixture(db, &hasher, database_url, None).await;
+        // Minimal original-action provenance has account-lifetime custody. This
+        // full-schema, genuinely erasable account exercises the deferred DELETE
+        // constraint through the actual owner route and its committed transaction.
+        db.execute(
+            "INSERT INTO original_reply_sources(account_id,action_id,revision,binding_digest,source_grant_id,source_event_id,request_id,expires_at_ms) VALUES($1,$2,1,$3,$4,$5,$6,1)",
+            &[&a.account_id,&Uuid::new_v4(),&[9u8;32].as_slice(),&Uuid::new_v4(),&Uuid::new_v4(),&Uuid::new_v4()],
+        ).await.unwrap();
 
-    use crate::provider_sms::receipts::{self, test_support as provider_fixture};
-    db.batch_execute(provider_fixture::PROPOSAL).await.unwrap();
-    provider_fixture::seed(&db, a.account_id, Uuid::new_v4()).await;
-    let event = provider_fixture::receipt(
-        &provider_fixture::request(a.account_id),
-        Uuid::new_v4(),
-        "sent",
-    );
-    receipts::record_known_receipt(
-        &mut db,
-        &receipts::ElectedWriterPermit::synthetic(a.account_id, provider_fixture::SITE, 1),
-        &event,
-    )
-    .await
-    .unwrap();
-    let response = app
-        .clone()
-        .oneshot(erasure_post(
-            Some(&session_a.token),
-            Some(&session_a.csrf_token),
-            Some(ORIGIN),
-            &crate::test_keys::password(1),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
-    let report = body(response).await;
-    assert_eq!(report["account_id"], a.account_id.to_string());
-    assert_eq!(deleted_count(&report, "original_reply_sources"), 1);
-    assert_eq!(
-        db.query_one(
-            "SELECT count(*) FROM original_reply_sources WHERE account_id=$1",
-            &[&a.account_id]
-        )
-        .await
-        .unwrap()
-        .get::<_, i64>(0),
-        0
-    );
+        // Dormant receipt candidate SQL counts/rollback are separately proven in
+        // provider_receipts; installing it cannot authorize current native HTTP.
 
-    for (table, rows) in [
-        ("provider_receipt_events", 1),
-        ("provider_receipt_attempts", 1),
-        ("recipient_suppressions", 1),
-        ("webhook_attempts", 1),
-        ("webhook_replay_requests", 1),
-        ("webhook_deliveries", 1),
-        ("webhook_dispatch_accounts", 1),
-        ("webhook_endpoints", 1),
-        ("inbound_events", 1),
-        ("usage_ledger", 1),
-        ("usage_periods", 1),
-        ("usage_quota_policies", 1),
-        ("message_events", 2),
-        ("dispatch_jobs", 1),
-        ("dispatch_fences", 2),
-        ("idempotency_keys", 1),
-        ("message_attempts", 2),
-        ("messages", 2),
-        ("device_keys", 0),
-        ("pairing_requests", 1),
-        ("api_keys", 1),
-        ("device_sessions", 1),
-        ("device_preconditions", 1),
-        ("line_readiness_observations", 0),
-        ("devices", 1),
-        ("billing_payment_holds", 1),
-        ("billing_risk_events", 1),
-        ("billing_events", 1),
-        ("billing_quota_audit", 1),
-        ("billing_device_cap_audit", 1),
-        ("billing_device_caps", 1),
-        ("billing_subscriptions", 1),
-        ("billing_reconciliations", 1),
-        ("billing_customers", 1),
-        ("sealed_manifest_authorities", 0),
-        ("sealed_root_challenges", 0),
-        ("email_verifications", 1),
-        ("verification_mail_outbox", 1),
-        ("password_resets", 1),
-        ("password_reset_notice_outbox", 1),
-        ("sms_owner_key_challenges", 1),
-        ("owner_mfa", 1),
-        ("owner_mfa_recovery_codes", 1),
-        ("owner_mfa_login_challenges", 1),
-        ("sessions", 1),
-        ("memberships", 1),
-        ("users", 1),
-        ("accounts", 1),
-    ] {
+        let response = app
+            .clone()
+            .oneshot(erasure_post(
+                Some(&session_a.token),
+                Some(&session_a.csrf_token),
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let report = body(response).await;
+        assert!(report["deleted"].as_array().unwrap().iter().all(|row| !["provider_receipt_events", "provider_receipt_attempts"].contains(&row["table"].as_str().unwrap())));
+        assert_eq!(report["account_id"], a.account_id.to_string());
+        assert_eq!(deleted_count(&report, "original_reply_sources"), 1);
         assert_eq!(
-            deleted_count(&report, table),
-            rows,
-            "per-table count {table}"
-        );
-    }
-    assert_eq!(deleted_count(&report, "line_opt_out_events"), 0);
-    assert_eq!(deleted_count(&report, "sealed_inbound_events"), 0);
-    // Retention names both the shared budget and the explicit pseudonymous
-    // identity tombstone; billing risk content is still fully erased.
-    let retained = report["retained"].as_array().unwrap();
-    assert_eq!(
-        retained.len(),
-        2,
-        "retained must name the counters and minimal account anchor"
-    );
-    assert_eq!(retained[0]["table"], "auth_abuse_counters");
-    assert_eq!(retained[1]["table"], "payload_profile_account_anchors");
-    assert_eq!(retained[1]["rows"], 1);
-    assert!(
-        retained[1]["reason"]
-            .as_str()
+            db.query_one(
+                "SELECT count(*) FROM original_reply_sources WHERE account_id=$1",
+                &[&a.account_id]
+            )
+            .await
             .unwrap()
-            .contains("pseudonymous")
-    );
-    let anchor = db
-        .query_one(
-            "SELECT state,selection_epoch FROM payload_profile_account_anchors WHERE account_id=$1",
-            &[&a.account_id],
-        )
-        .await
-        .unwrap();
-    assert_eq!(anchor.get::<_, String>(0), "deleted");
-    assert_eq!(anchor.get::<_, i64>(1), 1);
-    // Direct queries: reported content is gone; the declared anchor is retained.
-    for table in [
-        "messages",
-        "message_events",
-        "message_attempts",
-        "dispatch_jobs",
-        "dispatch_fences",
-        "idempotency_keys",
-        "devices",
-        "device_sessions",
-        "device_keys",
-        "pairing_requests",
-        "api_keys",
-        "usage_ledger",
-        "usage_periods",
-        "usage_quota_policies",
-        "webhook_endpoints",
-        "webhook_deliveries",
-        "webhook_replay_requests",
-        "webhook_dispatch_accounts",
-        "inbound_events",
-        "recipient_suppressions",
-        "billing_customers",
-        "billing_events",
-        "billing_risk_events",
-        "billing_payment_holds",
-        "billing_reconciliations",
-        "billing_subscriptions",
-        "billing_quota_audit",
-        "billing_device_caps",
-        "billing_device_cap_audit",
-        "device_preconditions",
-        "line_readiness_observations",
-        "sealed_manifest_authorities",
-        "sealed_root_challenges",
-        "email_verifications",
-        "password_resets",
-        "password_reset_notice_outbox",
-        "sms_owner_key_challenges",
-        "owner_mfa",
-        "owner_mfa_recovery_codes",
-        "owner_mfa_login_challenges",
-        "sessions",
-        "memberships",
-    ] {
-        let sql = format!("SELECT count(*) FROM {table} WHERE account_id=$1");
-        let left: i64 = db.query_one(&sql, &[&a.account_id]).await.unwrap().get(0);
-        assert_eq!(left, 0, "{table} still holds erased-account rows");
-    }
-    // Outbox rows follow their verification codes, not an account column.
-    let mail_left: i64 = db
-        .query_one(
-            "SELECT count(*) FROM verification_mail_outbox o \
-             JOIN email_verifications v ON v.id=o.verification_id \
-             WHERE v.account_id=$1",
-            &[&a.account_id],
-        )
-        .await
-        .unwrap()
-        .get(0);
-    assert_eq!(mail_left, 0, "verification mail outbox still holds rows");
-    // Webhook attempts follow their delivery rows, not an account column.
-    let attempts_left: i64 = db
-        .query_one(
-            "SELECT count(*) FROM webhook_attempts a \
-             JOIN webhook_deliveries d ON d.id=a.delivery_id \
-             WHERE d.account_id=$1",
-            &[&a.account_id],
-        )
-        .await
-        .unwrap()
-        .get(0);
-    assert_eq!(attempts_left, 0, "webhook attempts still hold rows");
-    let account_gone: i64 = db
-        .query_one(
-            "SELECT count(*) FROM accounts WHERE id=$1",
-            &[&a.account_id],
-        )
-        .await
-        .unwrap()
-        .get(0);
-    assert_eq!(account_gone, 0, "the erased account row is gone");
-    let users_gone: i64 = db
-        .query_one("SELECT count(*) FROM users WHERE id=$1", &[&a.user_id])
-        .await
-        .unwrap()
-        .get(0);
-    assert_eq!(users_gone, 0);
-    // The second account keeps every row: tenant isolation.
-    let b_alive: i64 = db
-        .query_one(
-            "SELECT count(*) FROM accounts WHERE id=$1",
-            &[&b.account_id],
-        )
-        .await
-        .unwrap()
-        .get(0);
-    assert_eq!(b_alive, 1);
-    for sql in [
-        "SELECT count(*) FROM devices WHERE account_id=$1",
-        "SELECT count(*) FROM messages WHERE account_id=$1",
-        "SELECT count(*) FROM sessions WHERE account_id=$1",
-    ] {
-        let rows: i64 = db.query_one(sql, &[&b.account_id]).await.unwrap().get(0);
-        assert_eq!(rows, 1, "isolation probe row missing for account b");
-    }
-    let raw = serde_json::to_string(&report).unwrap();
-    assert!(!raw.contains("ERASE_A_BODY"));
-    assert!(!raw.contains("KEEP_B_BODY"));
-    // The erased session no longer authenticates.
-    let again = app
-        .clone()
-        .oneshot(erasure_post(
-            Some(&session_a.token),
-            Some(&session_a.csrf_token),
-            Some(ORIGIN),
-            &crate::test_keys::password(1),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(again.status(), StatusCode::UNAUTHORIZED);
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
+            .get::<_, i64>(0),
+            0
+        );
+
+        for (table, rows) in [
+            ("recipient_suppressions", 1),
+            ("webhook_attempts", 1),
+            ("webhook_replay_requests", 1),
+            ("webhook_deliveries", 1),
+            ("webhook_dispatch_accounts", 1),
+            ("webhook_endpoints", 1),
+            ("inbound_events", 1),
+            ("usage_ledger", 1),
+            ("usage_periods", 1),
+            ("usage_quota_policies", 1),
+            ("message_events", 2),
+            ("dispatch_jobs", 1),
+            ("dispatch_fences", 2),
+            ("idempotency_keys", 1),
+            ("message_attempts", 2),
+            ("messages", 2),
+            ("device_keys", 0),
+            ("pairing_requests", 1),
+            ("api_keys", 1),
+            ("device_sessions", 1),
+            ("device_preconditions", 1),
+            ("line_readiness_observations", 0),
+            ("devices", 1),
+            ("billing_payment_holds", 1),
+            ("billing_risk_events", 1),
+            ("billing_events", 1),
+            ("billing_quota_audit", 1),
+            ("billing_device_cap_audit", 1),
+            ("billing_device_caps", 1),
+            ("billing_subscriptions", 1),
+            ("billing_reconciliations", 1),
+            ("billing_customers", 1),
+            ("sealed_manifest_authorities", 0),
+            ("sealed_root_challenges", 0),
+            ("email_verifications", 1),
+            ("verification_mail_outbox", 1),
+            ("password_resets", 1),
+            ("password_reset_notice_outbox", 1),
+            ("sms_owner_key_challenges", 1),
+            ("owner_mfa", 1),
+            ("owner_mfa_recovery_codes", 1),
+            ("owner_mfa_login_challenges", 1),
+            ("sessions", 1),
+            ("memberships", 1),
+            ("users", 1),
+            ("accounts", 1),
+        ] {
+            assert_eq!(
+                deleted_count(&report, table),
+                rows,
+                "per-table count {table}"
+            );
+        }
+        assert_eq!(deleted_count(&report, "line_opt_out_events"), 0);
+        assert_eq!(deleted_count(&report, "sealed_inbound_events"), 0);
+        // Retention names both the shared budget and the explicit pseudonymous
+        // identity tombstone; billing risk content is still fully erased.
+        let retained = report["retained"].as_array().unwrap();
+        assert_eq!(
+            retained.len(),
+            2,
+            "retained must name the counters and minimal account anchor"
+        );
+        assert_eq!(retained[0]["table"], "auth_abuse_counters");
+        assert_eq!(retained[1]["table"], "payload_profile_account_anchors");
+        assert_eq!(retained[1]["rows"], 1);
+        assert!(
+            retained[1]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("pseudonymous")
+        );
+        let anchor = db
+            .query_one(
+                "SELECT state,selection_epoch FROM payload_profile_account_anchors WHERE account_id=$1",
+                &[&a.account_id],
+            )
+            .await
+            .unwrap();
+        assert_eq!(anchor.get::<_, String>(0), "deleted");
+        assert_eq!(anchor.get::<_, i64>(1), 1);
+        // Direct queries: reported content is gone; the declared anchor is retained.
+        for table in [
+            "messages",
+            "message_events",
+            "message_attempts",
+            "dispatch_jobs",
+            "dispatch_fences",
+            "idempotency_keys",
+            "devices",
+            "device_sessions",
+            "device_keys",
+            "pairing_requests",
+            "api_keys",
+            "usage_ledger",
+            "usage_periods",
+            "usage_quota_policies",
+            "webhook_endpoints",
+            "webhook_deliveries",
+            "webhook_replay_requests",
+            "webhook_dispatch_accounts",
+            "inbound_events",
+            "recipient_suppressions",
+            "billing_customers",
+            "billing_events",
+            "billing_risk_events",
+            "billing_payment_holds",
+            "billing_reconciliations",
+            "billing_subscriptions",
+            "billing_quota_audit",
+            "billing_device_caps",
+            "billing_device_cap_audit",
+            "device_preconditions",
+            "line_readiness_observations",
+            "sealed_manifest_authorities",
+            "sealed_root_challenges",
+            "email_verifications",
+            "password_resets",
+            "password_reset_notice_outbox",
+            "sms_owner_key_challenges",
+            "owner_mfa",
+            "owner_mfa_recovery_codes",
+            "owner_mfa_login_challenges",
+            "sessions",
+            "memberships",
+        ] {
+            let sql = format!("SELECT count(*) FROM {table} WHERE account_id=$1");
+            let left: i64 = db.query_one(&sql, &[&a.account_id]).await.unwrap().get(0);
+            assert_eq!(left, 0, "{table} still holds erased-account rows");
+        }
+        // Outbox rows follow their verification codes, not an account column.
+        let mail_left: i64 = db
+            .query_one(
+                "SELECT count(*) FROM verification_mail_outbox o \
+                 JOIN email_verifications v ON v.id=o.verification_id \
+                 WHERE v.account_id=$1",
+                &[&a.account_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(mail_left, 0, "verification mail outbox still holds rows");
+        // Webhook attempts follow their delivery rows, not an account column.
+        let attempts_left: i64 = db
+            .query_one(
+                "SELECT count(*) FROM webhook_attempts a \
+                 JOIN webhook_deliveries d ON d.id=a.delivery_id \
+                 WHERE d.account_id=$1",
+                &[&a.account_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(attempts_left, 0, "webhook attempts still hold rows");
+        let account_gone: i64 = db
+            .query_one(
+                "SELECT count(*) FROM accounts WHERE id=$1",
+                &[&a.account_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(account_gone, 0, "the erased account row is gone");
+        let users_gone: i64 = db
+            .query_one("SELECT count(*) FROM users WHERE id=$1", &[&a.user_id])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(users_gone, 0);
+        // The second account keeps every row: tenant isolation.
+        let b_alive: i64 = db
+            .query_one(
+                "SELECT count(*) FROM accounts WHERE id=$1",
+                &[&b.account_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(b_alive, 1);
+        for sql in [
+            "SELECT count(*) FROM devices WHERE account_id=$1",
+            "SELECT count(*) FROM messages WHERE account_id=$1",
+            "SELECT count(*) FROM sessions WHERE account_id=$1",
+        ] {
+            let rows: i64 = db.query_one(sql, &[&b.account_id]).await.unwrap().get(0);
+            assert_eq!(rows, 1, "isolation probe row missing for account b");
+        }
+        let raw = serde_json::to_string(&report).unwrap();
+        assert!(!raw.contains("ERASE_A_BODY"));
+        assert!(!raw.contains("KEEP_B_BODY"));
+        // The erased session no longer authenticates.
+        let again = app
+            .clone()
+            .oneshot(erasure_post(
+                Some(&session_a.token),
+                Some(&session_a.csrf_token),
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(again.status(), StatusCode::UNAUTHORIZED);
+    }).await;
 }
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn wrong_current_password_is_rejected_and_deletes_nothing() {
-    let (admin, mut db, database_url, schema) = migrated_schema("wrongpw").await;
-    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(24)).unwrap());
-    let (a, session_a, _b, _session_b, app) = fixture(&mut db, &hasher, &database_url, None).await;
-    let response = app
-        .clone()
-        .oneshot(erasure_post(
-            Some(&session_a.token),
-            Some(&session_a.csrf_token),
-            Some(ORIGIN),
-            &crate::test_keys::password(3),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
-    let error = body(response).await;
-    assert_eq!(error["code"], "invalid_request");
-    for sql in [
-        "SELECT count(*) FROM accounts WHERE id=$1",
-        "SELECT count(*) FROM users u JOIN memberships m ON m.user_id=u.id WHERE m.account_id=$1",
-        "SELECT count(*) FROM messages WHERE account_id=$1",
-        "SELECT count(*) FROM sessions WHERE account_id=$1",
-        "SELECT count(*) FROM billing_customers WHERE account_id=$1",
-    ] {
-        let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
-        assert_eq!(
-            rows,
-            if sql.contains("messages") { 2 } else { 1 },
-            "a rejected erasure must not delete anything"
-        );
-    }
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
+    current_case(async |db, _admin, database_url| {
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(24)).unwrap());
+        let (a, session_a, _b, _session_b, app) = fixture(db, &hasher, database_url, None).await;
+        let response = app
+            .clone()
+            .oneshot(erasure_post(
+                Some(&session_a.token),
+                Some(&session_a.csrf_token),
+                Some(ORIGIN),
+                &crate::test_keys::password(3),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let error = body(response).await;
+        assert_eq!(error["code"], "invalid_request");
+        for sql in [
+            "SELECT count(*) FROM accounts WHERE id=$1",
+            "SELECT count(*) FROM users u JOIN memberships m ON m.user_id=u.id WHERE m.account_id=$1",
+            "SELECT count(*) FROM messages WHERE account_id=$1",
+            "SELECT count(*) FROM sessions WHERE account_id=$1",
+            "SELECT count(*) FROM billing_customers WHERE account_id=$1",
+        ] {
+            let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
+            assert_eq!(
+                rows,
+                if sql.contains("messages") { 2 } else { 1 },
+                "a rejected erasure must not delete anything"
+            );
+        }
+    }).await;
 }
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn missing_csrf_or_wrong_origin_is_rejected_and_deletes_nothing() {
-    let (admin, mut db, database_url, schema) = migrated_schema("csrf").await;
-    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(25)).unwrap());
-    let (a, session_a, _b, _session_b, app) = fixture(&mut db, &hasher, &database_url, None).await;
-    let missing_csrf = app
-        .clone()
-        .oneshot(erasure_post(
-            Some(&session_a.token),
-            None,
-            Some(ORIGIN),
-            &crate::test_keys::password(1),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(missing_csrf.status(), StatusCode::FORBIDDEN);
-    assert_eq!(body(missing_csrf).await["code"], "forbidden");
-    let wrong_origin = app
-        .clone()
-        .oneshot(erasure_post(
-            Some(&session_a.token),
-            Some(&session_a.csrf_token),
-            Some("https://evil.example"),
-            &crate::test_keys::password(1),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(wrong_origin.status(), StatusCode::FORBIDDEN);
-    let anonymous = app
-        .clone()
-        .oneshot(erasure_post(
-            None,
-            Some(&session_a.csrf_token),
-            Some(ORIGIN),
-            &crate::test_keys::password(1),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
-    for sql in [
-        "SELECT count(*) FROM accounts WHERE id=$1",
-        "SELECT count(*) FROM messages WHERE account_id=$1",
-    ] {
-        let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
-        assert_eq!(rows, if sql.contains("messages") { 2 } else { 1 });
-    }
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
+    current_case(async |db, _admin, database_url| {
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(25)).unwrap());
+        let (a, session_a, _b, _session_b, app) = fixture(db, &hasher, database_url, None).await;
+        let missing_csrf = app
+            .clone()
+            .oneshot(erasure_post(
+                Some(&session_a.token),
+                None,
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(missing_csrf.status(), StatusCode::FORBIDDEN);
+        assert_eq!(body(missing_csrf).await["code"], "forbidden");
+        let wrong_origin = app
+            .clone()
+            .oneshot(erasure_post(
+                Some(&session_a.token),
+                Some(&session_a.csrf_token),
+                Some("https://evil.example"),
+                &crate::test_keys::password(1),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(wrong_origin.status(), StatusCode::FORBIDDEN);
+        let anonymous = app
+            .clone()
+            .oneshot(erasure_post(
+                None,
+                Some(&session_a.csrf_token),
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+        for sql in [
+            "SELECT count(*) FROM accounts WHERE id=$1",
+            "SELECT count(*) FROM messages WHERE account_id=$1",
+        ] {
+            let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
+            assert_eq!(rows, if sql.contains("messages") { 2 } else { 1 });
+        }
+    })
+    .await;
 }
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn schema_protected_consent_rows_block_the_whole_erasure() {
-    let (admin, mut db, database_url, schema) = migrated_schema("blocked").await;
-    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
-    let (a, session_a, _b, _session_b, app) = fixture(&mut db, &hasher, &database_url, None).await;
-    use crate::provider_sms::receipts::{self, test_support as provider_fixture};
-    db.batch_execute(provider_fixture::PROPOSAL).await.unwrap();
-    provider_fixture::seed(&db, a.account_id, Uuid::new_v4()).await;
-    let event = provider_fixture::receipt(
-        &provider_fixture::request(a.account_id),
-        Uuid::new_v4(),
-        "sent",
-    );
-    receipts::record_known_receipt(
-        &mut db,
-        &receipts::ElectedWriterPermit::synthetic(a.account_id, provider_fixture::SITE, 1),
-        &event,
-    )
-    .await
-    .unwrap();
-    db.execute(
-        "INSERT INTO owner_recipient_holds(id,account_id,recipient_e164,channel,reason,reported_at,created_by) \
-         VALUES($1,$2,'+15559999999','email','opt_out',now()-interval '1 hour',$3)",
-        &[&Uuid::new_v4(), &a.account_id, &a.user_id],
-    )
-    .await
-    .unwrap();
-    let response = app
-        .clone()
-        .oneshot(erasure_post(
-            Some(&session_a.token),
-            Some(&session_a.csrf_token),
-            Some(ORIGIN),
-            &crate::test_keys::password(1),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
-    let blocked = body(response).await;
-    assert_eq!(blocked["code"], "erasure_blocked");
-    assert_eq!(blocked_count(&blocked, "owner_recipient_holds"), 1);
-    // The rollback is complete: every fixture row is still present.
-    for sql in [
-        "SELECT count(*) FROM provider_receipt_attempts WHERE account_id=$1",
-        "SELECT count(*) FROM provider_receipt_events WHERE account_id=$1",
-        "SELECT count(*) FROM accounts WHERE id=$1",
-        "SELECT count(*) FROM messages WHERE account_id=$1",
-        "SELECT count(*) FROM sessions WHERE account_id=$1",
-        "SELECT count(*) FROM billing_events WHERE account_id=$1",
-    ] {
-        let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
-        assert_eq!(rows, if sql.contains("messages") { 2 } else { 1 });
-    }
-    let holds: i64 = db
-        .query_one(
-            "SELECT count(*) FROM owner_recipient_holds WHERE account_id=$1",
-            &[&a.account_id],
+    current_case(async |db, _admin, database_url| {
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
+        let (a, session_a, _b, _session_b, app) = fixture(db, &hasher, database_url, None).await;
+        // Dormant receipt candidate SQL counts/rollback are separately proven in
+        // provider_receipts; installing it cannot authorize current native HTTP.
+
+        db.execute(
+            "INSERT INTO owner_recipient_holds(id,account_id,recipient_e164,channel,reason,reported_at,created_by) \
+             VALUES($1,$2,'+15559999999','email','opt_out',now()-interval '1 hour',$3)",
+            &[&Uuid::new_v4(), &a.account_id, &a.user_id],
         )
         .await
-        .unwrap()
-        .get(0);
-    assert_eq!(holds, 1);
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
         .unwrap();
+        let response = app
+            .clone()
+            .oneshot(erasure_post(
+                Some(&session_a.token),
+                Some(&session_a.csrf_token),
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let blocked = body(response).await;
+        assert_eq!(blocked["code"], "erasure_blocked");
+        assert_eq!(blocked_count(&blocked, "owner_recipient_holds"), 1);
+        // The rollback is complete: every fixture row is still present.
+        for sql in [
+            "SELECT count(*) FROM accounts WHERE id=$1",
+            "SELECT count(*) FROM messages WHERE account_id=$1",
+            "SELECT count(*) FROM sessions WHERE account_id=$1",
+            "SELECT count(*) FROM billing_events WHERE account_id=$1",
+        ] {
+            let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
+            assert_eq!(rows, if sql.contains("messages") { 2 } else { 1 });
+        }
+        let holds: i64 = db
+            .query_one(
+                "SELECT count(*) FROM owner_recipient_holds WHERE account_id=$1",
+                &[&a.account_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(holds, 1);
+    }).await;
 }
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn phone_line_tombstone_blocks_erasure() {
-    let (admin, mut db, database_url, schema) = migrated_schema("phone_line").await;
-    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(30)).unwrap());
-    let (a, session_a, _b, _session_b, app) = fixture(&mut db, &hasher, &database_url, None).await;
-    // A pending line identity tombstone: schema policy keeps it, so the
-    // whole erasure must fail closed before anything is deleted.
-    let line = Uuid::new_v4();
-    db.execute(
-        "INSERT INTO phone_lines(id,account_id,state) VALUES($1,$2,'pending')",
-        &[&line, &a.account_id],
-    )
-    .await
-    .unwrap();
-    let device: Uuid = db
-        .query_one(
-            "SELECT id FROM devices WHERE account_id=$1 LIMIT 1",
-            &[&a.account_id],
+    current_case(async |db, _admin, database_url| {
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(30)).unwrap());
+        let (a, session_a, _b, _session_b, app) = fixture(db, &hasher, database_url, None).await;
+        // A pending line identity tombstone: schema policy keeps it, so the
+        // whole erasure must fail closed before anything is deleted.
+        let line = Uuid::new_v4();
+        db.execute(
+            "INSERT INTO phone_lines(id,account_id,state) VALUES($1,$2,'pending')",
+            &[&line, &a.account_id],
         )
         .await
-        .unwrap()
-        .get(0);
-    db.execute("INSERT INTO device_line_bindings(account_id,line_id,device_id,generation) VALUES($1,$2,$3,1)", &[&a.account_id, &line, &device]).await.unwrap();
-    // Withdrawn selection on a historical binding: complete account erasure
-    // is still blocked by immutable line identities and must retain this row.
-    db.execute("INSERT INTO owner_conversation_consents(account_id,device_id,line_id,binding_generation,peer,disclosure_version,enabled_by,revoked_at) VALUES($1,$2,$3,1,NULL,'conversation-content-v1',$4,clock_timestamp())", &[&a.account_id, &device, &line, &a.user_id]).await.unwrap();
-    let response = app
-        .clone()
-        .oneshot(erasure_post(
-            Some(&session_a.token),
-            Some(&session_a.csrf_token),
-            Some(ORIGIN),
-            &crate::test_keys::password(1),
-            None,
-        ))
-        .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    let blocked = body(response).await;
-    assert_eq!(blocked["code"], "erasure_blocked");
-    assert_eq!(blocked_count(&blocked, "phone_lines"), 1);
-    for sql in [
-        "SELECT count(*) FROM accounts WHERE id=$1",
-        "SELECT count(*) FROM messages WHERE account_id=$1",
-        "SELECT count(*) FROM sessions WHERE account_id=$1",
-        "SELECT count(*) FROM phone_lines WHERE account_id=$1",
-        "SELECT count(*) FROM owner_conversation_consents WHERE account_id=$1",
-    ] {
-        let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
-        assert_eq!(
-            rows,
-            if sql.contains("messages") { 2 } else { 1 },
-            "a blocked erasure must delete nothing"
-        );
-    }
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
+        let device: Uuid = db
+            .query_one(
+                "SELECT id FROM devices WHERE account_id=$1 LIMIT 1",
+                &[&a.account_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        db.execute("INSERT INTO device_line_bindings(account_id,line_id,device_id,generation) VALUES($1,$2,$3,1)", &[&a.account_id, &line, &device]).await.unwrap();
+        // Withdrawn selection on a historical binding: complete account erasure
+        // is still blocked by immutable line identities and must retain this row.
+        db.execute("INSERT INTO owner_conversation_consents(account_id,device_id,line_id,binding_generation,peer,disclosure_version,enabled_by,revoked_at) VALUES($1,$2,$3,1,NULL,'conversation-content-v1',$4,clock_timestamp())", &[&a.account_id, &device, &line, &a.user_id]).await.unwrap();
+        let response = app
+            .clone()
+            .oneshot(erasure_post(
+                Some(&session_a.token),
+                Some(&session_a.csrf_token),
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let blocked = body(response).await;
+        assert_eq!(blocked["code"], "erasure_blocked");
+        assert_eq!(blocked_count(&blocked, "phone_lines"), 1);
+        for sql in [
+            "SELECT count(*) FROM accounts WHERE id=$1",
+            "SELECT count(*) FROM messages WHERE account_id=$1",
+            "SELECT count(*) FROM sessions WHERE account_id=$1",
+            "SELECT count(*) FROM phone_lines WHERE account_id=$1",
+            "SELECT count(*) FROM owner_conversation_consents WHERE account_id=$1",
+        ] {
+            let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
+            assert_eq!(
+                rows,
+                if sql.contains("messages") { 2 } else { 1 },
+                "a blocked erasure must delete nothing"
+            );
+        }
+    }).await;
 }
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn sealed_trust_history_blocks_erasure() {
-    let (admin, mut db, database_url, schema) = migrated_schema("trust_history").await;
-    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(37)).unwrap());
-    let (a, session_a, _b, _session_b, app) = fixture(&mut db, &hasher, &database_url, None).await;
-    // Enroll a device key through the production path: migration 044's
-    // trigger records the immutable signing trust history, which neither a
-    // direct DELETE nor the account-row cascade may remove. The erasure
-    // must fail closed with those tables listed instead of dying on the
-    // cascade mid-transaction.
-    let device_a: Uuid = db
-        .query_one(
-            "SELECT id FROM devices WHERE account_id=$1 ORDER BY id LIMIT 1",
-            &[&a.account_id],
+    current_case(async |db, _admin, database_url| {
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(37)).unwrap());
+        let (a, session_a, _b, _session_b, app) = fixture(db, &hasher, database_url, None).await;
+        // Enroll a device key through the production path: migration 044's
+        // trigger records the immutable signing trust history, which neither a
+        // direct DELETE nor the account-row cascade may remove. The erasure
+        // must fail closed with those tables listed instead of dying on the
+        // cascade mid-transaction.
+        let device_a: Uuid = db
+            .query_one(
+                "SELECT id FROM devices WHERE account_id=$1 ORDER BY id LIMIT 1",
+                &[&a.account_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        db.execute(
+            "INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) \
+             VALUES($1,$2,$3,$4)",
+            &[&device_a, &a.account_id, &vec![24_u8; 65], &vec![25_u8; 32]],
         )
         .await
-        .unwrap()
-        .get(0);
-    db.execute(
-        "INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) \
-         VALUES($1,$2,$3,$4)",
-        &[&device_a, &a.account_id, &vec![24_u8; 65], &vec![25_u8; 32]],
-    )
-    .await
-    .unwrap();
-    // Synthetic storage fixtures prove guarded deletion rolls these new tables back too.
-    let line = Uuid::new_v4();
-    let interval = Uuid::new_v4();
-    let event = Uuid::new_v4();
-    db.execute("INSERT INTO phone_lines(id,account_id,state,approved_at,current_binding_generation,last_issued_generation) VALUES($1,$2,'active',clock_timestamp(),1,1)",&[&line,&a.account_id]).await.unwrap();
-    db.execute("INSERT INTO device_line_bindings(account_id,line_id,device_id,generation,state,owner_approval_digest,device_confirmation_digest,activated_at) VALUES($1,$2,$3,1,'active',$4,$4,clock_timestamp())",&[&a.account_id,&line,&device_a,&vec![7u8;32]]).await.unwrap();
-    db.execute("INSERT INTO conversation_intervals(account_id,id,receipt_id,device_id,line_id,binding_generation,initiating_session_id,statement,statement_digest,manifest,trust_generation,activation_version,activation_digest,expires_at_ms) VALUES($1,$2,$3,$4,$5,1,$6,$7,$8,$9,1,2,$8,1)",&[&a.account_id,&interval,&Uuid::new_v4(),&device_a,&line,&session_a.id,&vec![8u8;380],&vec![9u8;32],&vec![10u8;364]]).await.unwrap();
-    let mut envelope = vec![11u8; 426];
-    envelope[..6].copy_from_slice(&[0x5a, 0x54, 0x53, 0x45, 2, 2]);
-    db.execute("INSERT INTO sealed_inbound_events(id,account_id,device_id,line_id,binding_generation,device_sequence,observed_at,part_count,envelope,unsigned_digest,envelope_profile) VALUES($1,$2,$3,$4,1,1,clock_timestamp(),NULL,$5,$6,2)",&[&event,&a.account_id,&device_a,&line,&envelope,&vec![12u8;32]]).await.unwrap();
-    db.execute("INSERT INTO conversation_inbound_provenance(account_id,event_id,interval_id,trust_generation,manifest_version,manifest_digest,verified_manifest,accepted_at_ms) VALUES($1,$2,$3,1,2,$4,$5,1)",&[&a.account_id,&event,&interval,&vec![13u8;32],&vec![14u8;364]]).await.unwrap();
-    let response = app
-        .clone()
-        .oneshot(erasure_post(
-            Some(&session_a.token),
-            Some(&session_a.csrf_token),
-            Some(ORIGIN),
-            &crate::test_keys::password(1),
-            None,
-        ))
-        .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    let blocked = body(response).await;
-    assert_eq!(blocked["code"], "erasure_blocked");
-    assert_eq!(blocked_count(&blocked, "known_signing_role_claims"), 1);
-    assert_eq!(
-        blocked_count(&blocked, "known_signing_point_reservations"),
-        1
-    );
-    for sql in [
-        "SELECT count(*) FROM accounts WHERE id=$1",
-        "SELECT count(*) FROM messages WHERE account_id=$1",
-        "SELECT count(*) FROM device_keys WHERE account_id=$1",
-        "SELECT count(*) FROM known_signing_point_reservations WHERE account_id=$1",
-        "SELECT count(*) FROM conversation_intervals WHERE account_id=$1",
-        "SELECT count(*) FROM conversation_inbound_provenance WHERE account_id=$1",
-        "SELECT count(*) FROM sealed_inbound_events WHERE account_id=$1",
-    ] {
-        let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
+        // Synthetic storage fixtures prove guarded deletion rolls these new tables back too.
+        let line = Uuid::new_v4();
+        let interval = Uuid::new_v4();
+        let event = Uuid::new_v4();
+        db.execute("INSERT INTO phone_lines(id,account_id,state,approved_at,current_binding_generation,last_issued_generation) VALUES($1,$2,'active',clock_timestamp(),1,1)",&[&line,&a.account_id]).await.unwrap();
+        db.execute("INSERT INTO device_line_bindings(account_id,line_id,device_id,generation,state,owner_approval_digest,device_confirmation_digest,activated_at) VALUES($1,$2,$3,1,'active',$4,$4,clock_timestamp())",&[&a.account_id,&line,&device_a,&vec![7u8;32]]).await.unwrap();
+        db.execute("INSERT INTO conversation_intervals(account_id,id,receipt_id,device_id,line_id,binding_generation,initiating_session_id,statement,statement_digest,manifest,trust_generation,activation_version,activation_digest,expires_at_ms) VALUES($1,$2,$3,$4,$5,1,$6,$7,$8,$9,1,2,$8,1)",&[&a.account_id,&interval,&Uuid::new_v4(),&device_a,&line,&session_a.id,&vec![8u8;380],&vec![9u8;32],&vec![10u8;364]]).await.unwrap();
+        let mut envelope = vec![11u8; 426];
+        envelope[..6].copy_from_slice(&[0x5a, 0x54, 0x53, 0x45, 2, 2]);
+        db.execute("INSERT INTO sealed_inbound_events(id,account_id,device_id,line_id,binding_generation,device_sequence,observed_at,part_count,envelope,unsigned_digest,envelope_profile) VALUES($1,$2,$3,$4,1,1,clock_timestamp(),NULL,$5,$6,2)",&[&event,&a.account_id,&device_a,&line,&envelope,&vec![12u8;32]]).await.unwrap();
+        db.execute("INSERT INTO conversation_inbound_provenance(account_id,event_id,interval_id,trust_generation,manifest_version,manifest_digest,verified_manifest,accepted_at_ms) VALUES($1,$2,$3,1,2,$4,$5,1)",&[&a.account_id,&event,&interval,&vec![13u8;32],&vec![14u8;364]]).await.unwrap();
+        let response = app
+            .clone()
+            .oneshot(erasure_post(
+                Some(&session_a.token),
+                Some(&session_a.csrf_token),
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let blocked = body(response).await;
+        assert_eq!(blocked["code"], "erasure_blocked");
+        assert_eq!(blocked_count(&blocked, "known_signing_role_claims"), 1);
         assert_eq!(
-            rows,
-            if sql.contains("messages") { 2 } else { 1 },
-            "a blocked erasure must delete nothing"
+            blocked_count(&blocked, "known_signing_point_reservations"),
+            1
         );
-    }
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
+        for sql in [
+            "SELECT count(*) FROM accounts WHERE id=$1",
+            "SELECT count(*) FROM messages WHERE account_id=$1",
+            "SELECT count(*) FROM device_keys WHERE account_id=$1",
+            "SELECT count(*) FROM known_signing_point_reservations WHERE account_id=$1",
+            "SELECT count(*) FROM conversation_intervals WHERE account_id=$1",
+            "SELECT count(*) FROM conversation_inbound_provenance WHERE account_id=$1",
+            "SELECT count(*) FROM sealed_inbound_events WHERE account_id=$1",
+        ] {
+            let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
+            assert_eq!(
+                rows,
+                if sql.contains("messages") { 2 } else { 1 },
+                "a blocked erasure must delete nothing"
+            );
+        }
+    }).await;
 }
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn cross_account_billing_reference_blocks_erasure() {
-    let (admin, mut db, database_url, schema) = migrated_schema("shared_event").await;
-    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(31)).unwrap());
-    let (a, session_a, b, _session_b, app) = fixture(&mut db, &hasher, &database_url, None).await;
-    // Account A owns a second billing event, and account B's risk record
-    // references it. The event cannot be deleted while B's row exists, so a
-    // success-with-retained response was never reachable: the accounts
-    // foreign key would fail after the other deletes. This must block up
-    // front with nothing deleted.
-    db.execute(
-        "INSERT INTO billing_events(stripe_event_id,event_type,stripe_customer_id,account_id,body_sha256,disposition) \
-         VALUES('evt_sharedotheracct00','invoice.paid','cus_erasurefixture',$1,$2,'queued')",
-        &[&a.account_id, &vec![31_u8; 32]],
-    )
-    .await
-    .unwrap();
-    db.execute(
-        "INSERT INTO billing_risk_events(stripe_event_id,stripe_charge_id,risk_kind,account_id) \
-         VALUES('evt_sharedotheracct00','ch_sharedotheracct00','refund',$1)",
-        &[&b.account_id],
-    )
-    .await
-    .unwrap();
-    let response = app
-        .clone()
-        .oneshot(erasure_post(
-            Some(&session_a.token),
-            Some(&session_a.csrf_token),
-            Some(ORIGIN),
-            &crate::test_keys::password(1),
-            None,
-        ))
+    current_case(async |db, _admin, database_url| {
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(31)).unwrap());
+        let (a, session_a, b, _session_b, app) = fixture(db, &hasher, database_url, None).await;
+        // Account A owns a second billing event, and account B's risk record
+        // references it. The event cannot be deleted while B's row exists, so a
+        // success-with-retained response was never reachable: the accounts
+        // foreign key would fail after the other deletes. This must block up
+        // front with nothing deleted.
+        db.execute(
+            "INSERT INTO billing_events(stripe_event_id,event_type,stripe_customer_id,account_id,body_sha256,disposition) \
+             VALUES('evt_sharedotheracct00','invoice.paid','cus_erasurefixture',$1,$2,'queued')",
+            &[&a.account_id, &vec![31_u8; 32]],
+        )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    let blocked = body(response).await;
-    assert_eq!(blocked["code"], "erasure_blocked");
-    // Only the cross-account-referenced event counts: A's own risk row on
-    // evt_erasurefixture is deleted by the plan and must not block.
-    assert_eq!(blocked_count(&blocked, "billing_events"), 1);
-    for sql in [
-        "SELECT count(*) FROM accounts WHERE id=$1",
-        "SELECT count(*) FROM messages WHERE account_id=$1",
-        "SELECT count(*) FROM billing_events WHERE account_id=$1",
-    ] {
-        let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
-        assert_eq!(
-            rows,
-            if sql.contains("messages") || sql.contains("billing_events") {
-                2
-            } else {
-                1
-            },
-            "a blocked erasure must delete nothing"
-        );
-    }
-    // The other account's referencing row survives untouched.
-    let shared: i64 = db
-        .query_one(
-            "SELECT count(*) FROM billing_risk_events WHERE account_id=$1",
+        db.execute(
+            "INSERT INTO billing_risk_events(stripe_event_id,stripe_charge_id,risk_kind,account_id) \
+             VALUES('evt_sharedotheracct00','ch_sharedotheracct00','refund',$1)",
             &[&b.account_id],
         )
         .await
-        .unwrap()
-        .get(0);
-    assert_eq!(shared, 1);
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
         .unwrap();
+        let response = app
+            .clone()
+            .oneshot(erasure_post(
+                Some(&session_a.token),
+                Some(&session_a.csrf_token),
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let blocked = body(response).await;
+        assert_eq!(blocked["code"], "erasure_blocked");
+        // Only the cross-account-referenced event counts: A's own risk row on
+        // evt_erasurefixture is deleted by the plan and must not block.
+        assert_eq!(blocked_count(&blocked, "billing_events"), 1);
+        for sql in [
+            "SELECT count(*) FROM accounts WHERE id=$1",
+            "SELECT count(*) FROM messages WHERE account_id=$1",
+            "SELECT count(*) FROM billing_events WHERE account_id=$1",
+        ] {
+            let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
+            assert_eq!(
+                rows,
+                if sql.contains("messages") || sql.contains("billing_events") {
+                    2
+                } else {
+                    1
+                },
+                "a blocked erasure must delete nothing"
+            );
+        }
+        // The other account's referencing row survives untouched.
+        let shared: i64 = db
+            .query_one(
+                "SELECT count(*) FROM billing_risk_events WHERE account_id=$1",
+                &[&b.account_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(shared, 1);
+    }).await;
 }
 
 /// The erasure handler under test connects with this application_name
 /// appended to its database URL, so park detection can bind to this exact
 /// request instead of to any FOR UPDATE waiter in the database.
 fn handler_url(database_url: &str, application_name: &str) -> String {
-    format!("{database_url}&application_name={application_name}")
+    current_fixture::handler_url(database_url, application_name)
 }
 
 /// Block until this request's own connection (identified by its unique
@@ -1804,591 +1738,578 @@ async fn wait_until_handler_is_blocked_by(
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn session_revoked_during_erasure_deletes_nothing() {
-    let (admin, mut db, database_url, schema) = migrated_schema("revoke_race").await;
-    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(27)).unwrap());
-    let handler_database_url = handler_url(&database_url, "zt_erasure_revoke_race");
-    let (a, session_a, _b, _session_b, app) =
-        fixture(&mut db, &hasher, &handler_database_url, None).await;
-    // authenticate_session only rewrites last_used_at when it is stale;
-    // touching it here keeps the request from taking the session row lock
-    // before its final fence, so the park detected below is exactly the
-    // fence. This reproduces a revocation landing inside the request's
-    // pre-fence window deterministically, instead of racing argon2.
-    db.execute(
-        "UPDATE sessions SET last_used_at=now() WHERE id=$1",
-        &[&session_a.id],
-    )
-    .await
-    .unwrap();
-    // Hold the session row so the erasure transaction cannot get past its
-    // final authorization fence (which takes that row FOR UPDATE) until the
-    // revocation below has committed.
-    let blocker_pid: i32 = db
-        .query_one("SELECT pg_backend_pid()", &[])
-        .await
-        .unwrap()
-        .get(0);
-    let blocker = db.transaction().await.unwrap();
-    blocker
-        .query_opt(
-            "SELECT id FROM sessions WHERE id=$1 FOR UPDATE",
+    current_case(async |db, admin, database_url| {
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(27)).unwrap());
+        let handler_database_url = handler_url(database_url, "zt_erasure_revoke_race");
+        let (a, session_a, _b, _session_b, app) =
+            fixture(db, &hasher, &handler_database_url, None).await;
+        // authenticate_session only rewrites last_used_at when it is stale;
+        // touching it here keeps the request from taking the session row lock
+        // before its final fence, so the park detected below is exactly the
+        // fence. This reproduces a revocation landing inside the request's
+        // pre-fence window deterministically, instead of racing argon2.
+        db.execute(
+            "UPDATE sessions SET last_used_at=now() WHERE id=$1",
             &[&session_a.id],
         )
         .await
         .unwrap();
-    let token = session_a.token.clone();
-    let csrf = session_a.csrf_token.clone();
-    let request = tokio::spawn(async move {
-        app.oneshot(erasure_post(
-            Some(&token),
-            Some(&csrf),
-            Some(ORIGIN),
-            &crate::test_keys::password(1),
-            None,
-        ))
-        .await
-        .unwrap()
-    });
-    // Let the request finish its pre-transaction proof and park at the
-    // fence, then revoke the session on the blocker's connection while the
-    // erasure is in flight: the fenced recheck must observe the revocation
-    // and abort the whole transaction.
-    wait_until_handler_is_blocked_by(&admin, "zt_erasure_revoke_race", blocker_pid).await;
-    blocker
-        .execute(
-            "UPDATE sessions SET revoked_at=now() WHERE id=$1",
-            &[&session_a.id],
-        )
-        .await
-        .unwrap();
-    blocker.commit().await.unwrap();
-    let response = request.await.unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(body(response).await["code"], "unauthorized");
-    for sql in [
-        "SELECT count(*) FROM accounts WHERE id=$1",
-        "SELECT count(*) FROM messages WHERE account_id=$1",
-        "SELECT count(*) FROM sessions WHERE account_id=$1",
-        "SELECT count(*) FROM billing_events WHERE account_id=$1",
-    ] {
-        let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
-        assert_eq!(
-            rows,
-            if sql.contains("messages") { 2 } else { 1 },
-            "a fenced-off erasure must delete nothing"
-        );
-    }
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
-async fn password_changed_during_erasure_deletes_nothing() {
-    let (admin, mut db, database_url, schema) = migrated_schema("pw_race").await;
-    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(32)).unwrap());
-    let handler_database_url = handler_url(&database_url, "zt_erasure_pw_race");
-    let (a, session_a, _b, _session_b, app) =
-        fixture(&mut db, &hasher, &handler_database_url, None).await;
-    // Keep authenticate_session's last_used_at refresh from touching the
-    // session row before the fence (see wait_until_handler_is_blocked_by).
-    db.execute(
-        "UPDATE sessions SET last_used_at=now() WHERE id=$1",
-        &[&session_a.id],
-    )
-    .await
-    .unwrap();
-    // Hold the user row so the erasure's locked re-read of the password hash
-    // cannot complete until the rotation below has committed.
-    let blocker_pid: i32 = db
-        .query_one("SELECT pg_backend_pid()", &[])
-        .await
-        .unwrap()
-        .get(0);
-    let blocker = db.transaction().await.unwrap();
-    blocker
-        .query_opt("SELECT id FROM users WHERE id=$1 FOR UPDATE", &[&a.user_id])
-        .await
-        .unwrap();
-    let token = session_a.token.clone();
-    let csrf = session_a.csrf_token.clone();
-    let request = tokio::spawn(async move {
-        app.oneshot(erasure_post(
-            Some(&token),
-            Some(&csrf),
-            Some(ORIGIN),
-            &crate::test_keys::password(1),
-            None,
-        ))
-        .await
-        .unwrap()
-    });
-    // The password hash is replaced while the request is parked at the
-    // fence. The pre-transaction proof verified the old hash; the locked
-    // re-read must reject the new one and abort with nothing deleted.
-    wait_until_handler_is_blocked_by(&admin, "zt_erasure_pw_race", blocker_pid).await;
-    blocker
-        .execute(
-            "UPDATE users SET password_hash='rotated-during-erasure' WHERE id=$1",
-            &[&a.user_id],
-        )
-        .await
-        .unwrap();
-    blocker.commit().await.unwrap();
-    let response = request.await.unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(body(response).await["code"], "unauthorized");
-    for sql in [
-        "SELECT count(*) FROM accounts WHERE id=$1",
-        "SELECT count(*) FROM messages WHERE account_id=$1",
-        "SELECT count(*) FROM sessions WHERE account_id=$1",
-    ] {
-        let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
-        assert_eq!(
-            rows,
-            if sql.contains("messages") { 2 } else { 1 },
-            "a fenced-off erasure must delete nothing"
-        );
-    }
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
-async fn account_disabled_during_erasure_wait_deletes_nothing() {
-    let (admin, mut db, database_url, schema) = migrated_schema("disable_race").await;
-    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(33)).unwrap());
-    let handler_database_url = handler_url(&database_url, "zt_erasure_disable_race");
-    let (a, session_a, _b, _session_b, app) =
-        fixture(&mut db, &hasher, &handler_database_url, None).await;
-    // Keep authenticate_session's last_used_at refresh off the blocker's
-    // path (see wait_until_handler_is_blocked_by).
-    db.execute(
-        "UPDATE sessions SET last_used_at=now() WHERE id=$1",
-        &[&session_a.id],
-    )
-    .await
-    .unwrap();
-    // Connection A: hold the user row so the fence's joined lock parks there
-    // before it ever reaches the account row.
-    let blocker_pid: i32 = db
-        .query_one("SELECT pg_backend_pid()", &[])
-        .await
-        .unwrap()
-        .get(0);
-    let blocker = db.transaction().await.unwrap();
-    blocker
-        .query_opt("SELECT id FROM users WHERE id=$1 FOR UPDATE", &[&a.user_id])
-        .await
-        .unwrap();
-    let token = session_a.token.clone();
-    let csrf = session_a.csrf_token.clone();
-    let request = tokio::spawn(async move {
-        app.oneshot(erasure_post(
-            Some(&token),
-            Some(&csrf),
-            Some(ORIGIN),
-            &crate::test_keys::password(1),
-            None,
-        ))
-        .await
-        .unwrap()
-    });
-    // Once the request is parked on the user lock, connection B commits the
-    // disable, then A releases. The fence locks the account row too
-    // (FOR UPDATE OF u,m,a), so the disable committed before that grant
-    // fails the locked row's re-qualification — and the fence's final
-    // fresh-statement recheck would catch it regardless.
-    wait_until_handler_is_blocked_by(&admin, "zt_erasure_disable_race", blocker_pid).await;
-    admin
-        .execute(
-            &format!("UPDATE {schema}.accounts SET disabled_at=now() WHERE id=$1"),
-            &[&a.account_id],
-        )
-        .await
-        .unwrap();
-    blocker.commit().await.unwrap();
-    let response = request.await.unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(body(response).await["code"], "unauthorized");
-    for sql in [
-        "SELECT count(*) FROM accounts WHERE id=$1",
-        "SELECT count(*) FROM messages WHERE account_id=$1",
-        "SELECT count(*) FROM sessions WHERE account_id=$1",
-        "SELECT count(*) FROM billing_events WHERE account_id=$1",
-    ] {
-        let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
-        assert_eq!(
-            rows,
-            if sql.contains("messages") { 2 } else { 1 },
-            "a fenced-off erasure must delete nothing"
-        );
-    }
-    // The disable itself stands; only the erasure was refused.
-    let disabled: bool = db
-        .query_one(
-            "SELECT disabled_at IS NOT NULL FROM accounts WHERE id=$1",
-            &[&a.account_id],
-        )
-        .await
-        .unwrap()
-        .get(0);
-    assert!(disabled);
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
-async fn session_expires_during_erasure_wait_deletes_nothing() {
-    let (admin, mut db, database_url, schema) = migrated_schema("expiry_race").await;
-    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(34)).unwrap());
-    let handler_database_url = handler_url(&database_url, "zt_erasure_expiry_race");
-    let (a, session_a, _b, _session_b, app) =
-        fixture(&mut db, &hasher, &handler_database_url, None).await;
-    // The authenticate_session refresh must not touch the session row: the
-    // blocker below holds it, and the detected park must be the fence.
-    db.execute(
-        "UPDATE sessions SET last_used_at=now() WHERE id=$1",
-        &[&session_a.id],
-    )
-    .await
-    .unwrap();
-    // Short-fuse the session directly: the absolute expiry lands far enough
-    // out for the pre-transaction proof, then passes while the request is
-    // parked. `now()` inside the parked statement stays frozen at statement
-    // start, so only a post-lock `clock_timestamp()` recheck can catch it.
-    // The fuse also has to pass inside production's bounded lock wait: the
-    // server's pooled connections run with lock_timeout=3s
-    // (crate::runtime_db), after which the request fails closed with 503 —
-    // so the fuse is set well below that bound while still clearing the
-    // request's pre-fence proof work.
-    db.execute(
-        "UPDATE sessions SET expires_at=now()+interval '2 seconds' WHERE id=$1",
-        &[&session_a.id],
-    )
-    .await
-    .unwrap();
-    // Hold the session row so the fence parks inside its live-session lock
-    // statement, whose snapshot predates the expiry passing.
-    let blocker_pid: i32 = db
-        .query_one("SELECT pg_backend_pid()", &[])
-        .await
-        .unwrap()
-        .get(0);
-    let blocker = db.transaction().await.unwrap();
-    blocker
-        .query_opt(
-            "SELECT id FROM sessions WHERE id=$1 FOR UPDATE",
-            &[&session_a.id],
-        )
-        .await
-        .unwrap();
-    let token = session_a.token.clone();
-    let csrf = session_a.csrf_token.clone();
-    let request = tokio::spawn(async move {
-        app.oneshot(erasure_post(
-            Some(&token),
-            Some(&csrf),
-            Some(ORIGIN),
-            &crate::test_keys::password(1),
-            None,
-        ))
-        .await
-        .unwrap()
-    });
-    // Let the database clock run past the short fuse (with a short grace)
-    // while the request stays parked, then release the lock well inside the
-    // lock_timeout so the parked statement itself is not canceled.
-    wait_until_handler_is_blocked_by(&admin, "zt_erasure_expiry_race", blocker_pid).await;
-    let mut fuse_passed = false;
-    for _ in 0..1200 {
-        let past: bool = admin
-            .query_one(
-                &format!(
-                    "SELECT clock_timestamp() > expires_at + interval '250 milliseconds' \
-                     FROM {schema}.sessions WHERE id=$1"
-                ),
-                &[&session_a.id],
-            )
+        // Hold the session row so the erasure transaction cannot get past its
+        // final authorization fence (which takes that row FOR UPDATE) until the
+        // revocation below has committed.
+        let blocker_pid: i32 = db
+            .query_one("SELECT pg_backend_pid()", &[])
             .await
             .unwrap()
             .get(0);
-        if past {
-            fuse_passed = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
-    assert!(fuse_passed, "the short-fused expiry never passed");
-    blocker.commit().await.unwrap();
-    let response = request.await.unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(body(response).await["code"], "unauthorized");
-    for sql in [
-        "SELECT count(*) FROM accounts WHERE id=$1",
-        "SELECT count(*) FROM messages WHERE account_id=$1",
-        "SELECT count(*) FROM sessions WHERE account_id=$1",
-        "SELECT count(*) FROM billing_events WHERE account_id=$1",
-    ] {
-        let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
-        assert_eq!(
-            rows,
-            if sql.contains("messages") { 2 } else { 1 },
-            "a fenced-off erasure must delete nothing"
-        );
-    }
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
-async fn mfa_failure_budget_recorded_exactly_once_after_wait() {
-    let (admin, mut db, database_url, schema) = migrated_schema("mfa_wait").await;
-    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(35)).unwrap());
-    let cipher = Arc::new(mfa::MfaCipher::new(crate::test_keys::key(36)).unwrap());
-    let handler_database_url = handler_url(&database_url, "zt_erasure_mfa_wait");
-    let (a, session_a, _b, _session_b, app) = fixture(
-        &mut db,
-        &hasher,
-        &handler_database_url,
-        Some(cipher.clone()),
-    )
-    .await;
-    // Enroll a real TOTP factor through the production flow, then keep the
-    // request's factor state to check the budget bookkeeping around a
-    // late-wait abort.
-    let principal = authenticate_session(&db, &hasher, &session_a.token)
-        .await
-        .unwrap();
-    let enrollment =
-        mfa::begin_enrollment(&mut db, &cipher, &principal, &crate::test_keys::password(1))
+        let blocker = db.transaction().await.unwrap();
+        blocker
+            .query_opt(
+                "SELECT id FROM sessions WHERE id=$1 FOR UPDATE",
+                &[&session_a.id],
+            )
             .await
             .unwrap();
-    let secret = Secret::try_from_base32(&enrollment.secret_base32).unwrap();
-    let totp = Builder::new().with_secret(secret).build().unwrap();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let confirm_code = totp.generate(now).to_string();
-    mfa::confirm_enrollment(&mut db, &cipher, &hasher, &principal, &confirm_code)
-        .await
-        .unwrap();
-    // Park the request on the user row, then let it proceed to a wrong
-    // factor: the abort happens after a lock wait, and the shared failure
-    // budget must record that one wrong factor exactly once.
-    db.execute(
-        "UPDATE sessions SET last_used_at=now() WHERE id=$1",
-        &[&session_a.id],
-    )
-    .await
-    .unwrap();
-    let blocker_pid: i32 = db
-        .query_one("SELECT pg_backend_pid()", &[])
-        .await
-        .unwrap()
-        .get(0);
-    let blocker = db.transaction().await.unwrap();
-    blocker
-        .query_opt("SELECT id FROM users WHERE id=$1 FOR UPDATE", &[&a.user_id])
-        .await
-        .unwrap();
-    let token = session_a.token.clone();
-    let csrf = session_a.csrf_token.clone();
-    let request = tokio::spawn({
-        let app = app.clone();
-        async move {
+        let token = session_a.token.clone();
+        let csrf = session_a.csrf_token.clone();
+        let request = current_fixture::spawn(async move {
             app.oneshot(erasure_post(
                 Some(&token),
                 Some(&csrf),
                 Some(ORIGIN),
                 &crate::test_keys::password(1),
-                Some("not-a-code"),
+                None,
             ))
             .await
             .unwrap()
+        });
+        // Let the request finish its pre-transaction proof and park at the
+        // fence, then revoke the session on the blocker's connection while the
+        // erasure is in flight: the fenced recheck must observe the revocation
+        // and abort the whole transaction.
+        wait_until_handler_is_blocked_by(admin, "zt_erasure_revoke_race", blocker_pid).await;
+        blocker
+            .execute(
+                "UPDATE sessions SET revoked_at=now() WHERE id=$1",
+                &[&session_a.id],
+            )
+            .await
+            .unwrap();
+        blocker.commit().await.unwrap();
+        let response = request.await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(body(response).await["code"], "unauthorized");
+        for sql in [
+            "SELECT count(*) FROM accounts WHERE id=$1",
+            "SELECT count(*) FROM messages WHERE account_id=$1",
+            "SELECT count(*) FROM sessions WHERE account_id=$1",
+            "SELECT count(*) FROM billing_events WHERE account_id=$1",
+        ] {
+            let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
+            assert_eq!(
+                rows,
+                if sql.contains("messages") { 2 } else { 1 },
+                "a fenced-off erasure must delete nothing"
+            );
         }
-    });
-    wait_until_handler_is_blocked_by(&admin, "zt_erasure_mfa_wait", blocker_pid).await;
-    blocker.commit().await.unwrap();
-    let response = request.await.unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    // Exactly one recorded failure for exactly one wrong factor, committed
-    // by the rejection path rather than rolled back with the erasure.
-    let budget_after_late_wait =
-        abuse_limits::failures_in_window(&db, &hasher, Limit::MfaStepUp, &a.user_id.to_string())
+    })
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn password_changed_during_erasure_deletes_nothing() {
+    current_case(async |db, admin, database_url| {
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(32)).unwrap());
+        let handler_database_url = handler_url(database_url, "zt_erasure_pw_race");
+        let (a, session_a, _b, _session_b, app) =
+            fixture(db, &hasher, &handler_database_url, None).await;
+        // Keep authenticate_session's last_used_at refresh from touching the
+        // session row before the fence (see wait_until_handler_is_blocked_by).
+        db.execute(
+            "UPDATE sessions SET last_used_at=now() WHERE id=$1",
+            &[&session_a.id],
+        )
+        .await
+        .unwrap();
+        // Hold the user row so the erasure's locked re-read of the password hash
+        // cannot complete until the rotation below has committed.
+        let blocker_pid: i32 = db
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        let blocker = db.transaction().await.unwrap();
+        blocker
+            .query_opt("SELECT id FROM users WHERE id=$1 FOR UPDATE", &[&a.user_id])
             .await
             .unwrap();
-    assert_eq!(budget_after_late_wait, 1);
-    for sql in [
-        "SELECT count(*) FROM accounts WHERE id=$1",
-        "SELECT count(*) FROM messages WHERE account_id=$1",
-        "SELECT count(*) FROM sessions WHERE account_id=$1",
-        "SELECT count(*) FROM owner_mfa WHERE account_id=$1",
-    ] {
-        let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
+        let token = session_a.token.clone();
+        let csrf = session_a.csrf_token.clone();
+        let request = current_fixture::spawn(async move {
+            app.oneshot(erasure_post(
+                Some(&token),
+                Some(&csrf),
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                None,
+            ))
+            .await
+            .unwrap()
+        });
+        // The password hash is replaced while the request is parked at the
+        // fence. The pre-transaction proof verified the old hash; the locked
+        // re-read must reject the new one and abort with nothing deleted.
+        wait_until_handler_is_blocked_by(admin, "zt_erasure_pw_race", blocker_pid).await;
+        blocker
+            .execute(
+                "UPDATE users SET password_hash='rotated-during-erasure' WHERE id=$1",
+                &[&a.user_id],
+            )
+            .await
+            .unwrap();
+        blocker.commit().await.unwrap();
+        let response = request.await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(body(response).await["code"], "unauthorized");
+        for sql in [
+            "SELECT count(*) FROM accounts WHERE id=$1",
+            "SELECT count(*) FROM messages WHERE account_id=$1",
+            "SELECT count(*) FROM sessions WHERE account_id=$1",
+        ] {
+            let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
+            assert_eq!(
+                rows,
+                if sql.contains("messages") { 2 } else { 1 },
+                "a fenced-off erasure must delete nothing"
+            );
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn account_disabled_during_erasure_wait_deletes_nothing() {
+    current_case(async |db, admin, database_url| {
+        let schema = "public";
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(33)).unwrap());
+        let handler_database_url = handler_url(database_url, "zt_erasure_disable_race");
+        let (a, session_a, _b, _session_b, app) =
+            fixture(db, &hasher, &handler_database_url, None).await;
+        // Keep authenticate_session's last_used_at refresh off the blocker's
+        // path (see wait_until_handler_is_blocked_by).
+        db.execute(
+            "UPDATE sessions SET last_used_at=now() WHERE id=$1",
+            &[&session_a.id],
+        )
+        .await
+        .unwrap();
+        // Connection A: hold the user row so the fence's joined lock parks there
+        // before it ever reaches the account row.
+        let blocker_pid: i32 = db
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        let blocker = db.transaction().await.unwrap();
+        blocker
+            .query_opt("SELECT id FROM users WHERE id=$1 FOR UPDATE", &[&a.user_id])
+            .await
+            .unwrap();
+        let token = session_a.token.clone();
+        let csrf = session_a.csrf_token.clone();
+        let request = current_fixture::spawn(async move {
+            app.oneshot(erasure_post(
+                Some(&token),
+                Some(&csrf),
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                None,
+            ))
+            .await
+            .unwrap()
+        });
+        // Once the request is parked on the user lock, connection B commits the
+        // disable, then A releases. The fence locks the account row too
+        // (FOR UPDATE OF u,m,a), so the disable committed before that grant
+        // fails the locked row's re-qualification — and the fence's final
+        // fresh-statement recheck would catch it regardless.
+        wait_until_handler_is_blocked_by(admin, "zt_erasure_disable_race", blocker_pid).await;
+        admin
+            .execute(
+                &format!("UPDATE {schema}.accounts SET disabled_at=now() WHERE id=$1"),
+                &[&a.account_id],
+            )
+            .await
+            .unwrap();
+        blocker.commit().await.unwrap();
+        let response = request.await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(body(response).await["code"], "unauthorized");
+        for sql in [
+            "SELECT count(*) FROM accounts WHERE id=$1",
+            "SELECT count(*) FROM messages WHERE account_id=$1",
+            "SELECT count(*) FROM sessions WHERE account_id=$1",
+            "SELECT count(*) FROM billing_events WHERE account_id=$1",
+        ] {
+            let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
+            assert_eq!(
+                rows,
+                if sql.contains("messages") { 2 } else { 1 },
+                "a fenced-off erasure must delete nothing"
+            );
+        }
+        // The disable itself stands; only the erasure was refused.
+        let disabled: bool = db
+            .query_one(
+                "SELECT disabled_at IS NOT NULL FROM accounts WHERE id=$1",
+                &[&a.account_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert!(disabled);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn session_expires_during_erasure_wait_deletes_nothing() {
+    current_case(async |db, admin, database_url| {
+        let schema = "public";
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(34)).unwrap());
+        let handler_database_url = handler_url(database_url, "zt_erasure_expiry_race");
+        let (a, session_a, _b, _session_b, app) =
+            fixture(db, &hasher, &handler_database_url, None).await;
+        // The authenticate_session refresh must not touch the session row: the
+        // blocker below holds it, and the detected park must be the fence.
+        db.execute(
+            "UPDATE sessions SET last_used_at=now() WHERE id=$1",
+            &[&session_a.id],
+        )
+        .await
+        .unwrap();
+        // Keep the session live through password proof and the earlier member
+        // check. Start the short fuse only after the exact session-row wait,
+        // so proof duration cannot turn this into an early-refusal test.
+        // Hold the session row so the fence parks inside its live-session lock
+        // statement, whose snapshot predates the expiry passing.
+        let blocker_pid: i32 = db
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        let blocker = db.transaction().await.unwrap();
+        blocker
+            .query_opt(
+                "SELECT id FROM sessions WHERE id=$1 FOR UPDATE",
+                &[&session_a.id],
+            )
+            .await
+            .unwrap();
+        let token = session_a.token.clone();
+        let csrf = session_a.csrf_token.clone();
+        let request = current_fixture::spawn(async move {
+            app.oneshot(erasure_post(
+                Some(&token),
+                Some(&csrf),
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                None,
+            ))
+            .await
+            .unwrap()
+        });
+        // First prove the request is parked after its pre-transaction proof.
+        wait_until_handler_is_blocked_by(admin, "zt_erasure_expiry_race", blocker_pid).await;
+        // The blocker owns the session row. Its uncommitted new expiry is
+        // later than the waiting erasure transaction's frozen now(), but will
+        // be in the past when that row is released. Only the final real-clock
+        // recheck must reject it. Keep the wait below the production 3s bound.
+        blocker
+            .execute(
+                "UPDATE sessions SET expires_at=clock_timestamp()+interval '1 second' WHERE id=$1",
+                &[&session_a.id],
+            )
+            .await
+            .unwrap();
+        let mut fuse_passed = false;
+        for _ in 0..1200 {
+            let past: bool = blocker
+                .query_one(
+                    &format!(
+                        "SELECT clock_timestamp() > expires_at + interval '250 milliseconds' \
+                         FROM {schema}.sessions WHERE id=$1"
+                    ),
+                    &[&session_a.id],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            if past {
+                fuse_passed = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert!(fuse_passed, "the short-fused expiry never passed");
+        blocker.commit().await.unwrap();
+        let response = request.await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(body(response).await["code"], "unauthorized");
+        for sql in [
+            "SELECT count(*) FROM accounts WHERE id=$1",
+            "SELECT count(*) FROM messages WHERE account_id=$1",
+            "SELECT count(*) FROM sessions WHERE account_id=$1",
+            "SELECT count(*) FROM billing_events WHERE account_id=$1",
+        ] {
+            let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
+            assert_eq!(
+                rows,
+                if sql.contains("messages") { 2 } else { 1 },
+                "a fenced-off erasure must delete nothing"
+            );
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn mfa_failure_budget_recorded_exactly_once_after_wait() {
+    current_case(async |db, admin, database_url| {
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(35)).unwrap());
+        let cipher = Arc::new(mfa::MfaCipher::new(crate::test_keys::key(36)).unwrap());
+        let handler_database_url = handler_url(database_url, "zt_erasure_mfa_wait");
+        let (a, session_a, _b, _session_b, app) =
+            fixture(db, &hasher, &handler_database_url, Some(cipher.clone())).await;
+        // Enroll a real TOTP factor through the production flow, then keep the
+        // request's factor state to check the budget bookkeeping around a
+        // late-wait abort.
+        let principal = authenticate_session(&*db, &hasher, &session_a.token)
+            .await
+            .unwrap();
+        let enrollment =
+            mfa::begin_enrollment(db, &cipher, &principal, &crate::test_keys::password(1))
+                .await
+                .unwrap();
+        let secret = Secret::try_from_base32(&enrollment.secret_base32).unwrap();
+        let totp = Builder::new().with_secret(secret).build().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let confirm_code = totp.generate(now).to_string();
+        mfa::confirm_enrollment(db, &cipher, &hasher, &principal, &confirm_code)
+            .await
+            .unwrap();
+        // Park the request on the user row, then let it proceed to a wrong
+        // factor: the abort happens after a lock wait, and the shared failure
+        // budget must record that one wrong factor exactly once.
+        db.execute(
+            "UPDATE sessions SET last_used_at=now() WHERE id=$1",
+            &[&session_a.id],
+        )
+        .await
+        .unwrap();
+        let blocker_pid: i32 = db
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        let blocker = db.transaction().await.unwrap();
+        blocker
+            .query_opt("SELECT id FROM users WHERE id=$1 FOR UPDATE", &[&a.user_id])
+            .await
+            .unwrap();
+        let token = session_a.token.clone();
+        let csrf = session_a.csrf_token.clone();
+        let request = current_fixture::spawn({
+            let app = app.clone();
+            async move {
+                app.oneshot(erasure_post(
+                    Some(&token),
+                    Some(&csrf),
+                    Some(ORIGIN),
+                    &crate::test_keys::password(1),
+                    Some("not-a-code"),
+                ))
+                .await
+                .unwrap()
+            }
+        });
+        wait_until_handler_is_blocked_by(admin, "zt_erasure_mfa_wait", blocker_pid).await;
+        blocker.commit().await.unwrap();
+        let response = request.await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        // Exactly one recorded failure for exactly one wrong factor, committed
+        // by the rejection path rather than rolled back with the erasure.
+        let budget_after_late_wait = abuse_limits::failures_in_window(
+            &*db,
+            &hasher,
+            Limit::MfaStepUp,
+            &a.user_id.to_string(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(budget_after_late_wait, 1);
+        for sql in [
+            "SELECT count(*) FROM accounts WHERE id=$1",
+            "SELECT count(*) FROM messages WHERE account_id=$1",
+            "SELECT count(*) FROM sessions WHERE account_id=$1",
+            "SELECT count(*) FROM owner_mfa WHERE account_id=$1",
+        ] {
+            let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
+            assert_eq!(
+                rows,
+                if sql.contains("messages") { 2 } else { 1 },
+                "a fenced-off erasure must delete nothing"
+            );
+        }
+        // An abort that happens before the factor step (the session was
+        // revoked) must not touch the budget at all.
+        db.execute(
+            "UPDATE sessions SET revoked_at=now() WHERE id=$1",
+            &[&session_a.id],
+        )
+        .await
+        .unwrap();
+        let response = app
+            .oneshot(erasure_post(
+                Some(&session_a.token),
+                Some(&session_a.csrf_token),
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                Some("not-a-code"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let budget_after_pre_factor_abort = abuse_limits::failures_in_window(
+            &*db,
+            &hasher,
+            Limit::MfaStepUp,
+            &a.user_id.to_string(),
+        )
+        .await
+        .unwrap();
         assert_eq!(
-            rows,
-            if sql.contains("messages") { 2 } else { 1 },
-            "a fenced-off erasure must delete nothing"
+            budget_after_pre_factor_abort, 1,
+            "a pre-factor abort must not record a failure"
         );
-    }
-    // An abort that happens before the factor step (the session was
-    // revoked) must not touch the budget at all.
-    db.execute(
-        "UPDATE sessions SET revoked_at=now() WHERE id=$1",
-        &[&session_a.id],
-    )
-    .await
-    .unwrap();
-    let response = app
-        .oneshot(erasure_post(
-            Some(&session_a.token),
-            Some(&session_a.csrf_token),
-            Some(ORIGIN),
-            &crate::test_keys::password(1),
-            Some("not-a-code"),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    let budget_after_pre_factor_abort =
-        abuse_limits::failures_in_window(&db, &hasher, Limit::MfaStepUp, &a.user_id.to_string())
-            .await
-            .unwrap();
-    assert_eq!(
-        budget_after_pre_factor_abort, 1,
-        "a pre-factor abort must not record a failure"
-    );
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
+    })
+    .await;
 }
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn mfa_enabled_erasure_requires_code() {
-    let (admin, mut db, database_url, schema) = migrated_schema("mfa").await;
-    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(28)).unwrap());
-    let cipher = Arc::new(mfa::MfaCipher::new(crate::test_keys::key(29)).unwrap());
-    let (a, session_a, _b, _session_b, app) =
-        fixture(&mut db, &hasher, &database_url, Some(cipher.clone())).await;
-    // Enroll a real TOTP factor through the production flow.
-    let principal = authenticate_session(&db, &hasher, &session_a.token)
-        .await
-        .unwrap();
-    let enrollment =
-        mfa::begin_enrollment(&mut db, &cipher, &principal, &crate::test_keys::password(1))
+    current_case(async |db, _admin, database_url| {
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(28)).unwrap());
+        let cipher = Arc::new(mfa::MfaCipher::new(crate::test_keys::key(29)).unwrap());
+        let (a, session_a, _b, _session_b, app) =
+            fixture(db, &hasher, database_url, Some(cipher.clone())).await;
+        // Enroll a real TOTP factor through the production flow.
+        let principal = authenticate_session(&*db, &hasher, &session_a.token)
             .await
             .unwrap();
-    let secret = Secret::try_from_base32(&enrollment.secret_base32).unwrap();
-    let totp = Builder::new().with_secret(secret).build().unwrap();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let confirm_code = totp.generate(now).to_string();
-    mfa::confirm_enrollment(&mut db, &cipher, &hasher, &principal, &confirm_code)
-        .await
-        .unwrap();
-    // Without a code the erasure is an auth failure and deletes nothing.
-    let missing = app
-        .clone()
-        .oneshot(erasure_post(
-            Some(&session_a.token),
-            Some(&session_a.csrf_token),
-            Some(ORIGIN),
-            &crate::test_keys::password(1),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(body(missing).await["code"], "unauthorized");
-    // A malformed code is a failed factor: still an auth failure, still
-    // nothing deleted, and the shared failure budget recorded it.
-    let wrong = app
-        .clone()
-        .oneshot(erasure_post(
-            Some(&session_a.token),
-            Some(&session_a.csrf_token),
-            Some(ORIGIN),
-            &crate::test_keys::password(1),
-            Some("not-a-code"),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
-    let budget =
-        abuse_limits::failures_in_window(&db, &hasher, Limit::MfaStepUp, &a.user_id.to_string())
+        let enrollment =
+            mfa::begin_enrollment(db, &cipher, &principal, &crate::test_keys::password(1))
+                .await
+                .unwrap();
+        let secret = Secret::try_from_base32(&enrollment.secret_base32).unwrap();
+        let totp = Builder::new().with_secret(secret).build().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let confirm_code = totp.generate(now).to_string();
+        mfa::confirm_enrollment(db, &cipher, &hasher, &principal, &confirm_code)
             .await
             .unwrap();
-    assert_eq!(budget, 1, "the wrong factor must spend the failure budget");
-    for sql in [
-        "SELECT count(*) FROM accounts WHERE id=$1",
-        "SELECT count(*) FROM messages WHERE account_id=$1",
-        "SELECT count(*) FROM sessions WHERE account_id=$1",
-    ] {
-        let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
-        assert_eq!(
-            rows,
-            if sql.contains("messages") { 2 } else { 1 },
-            "a fenced-off erasure must delete nothing"
-        );
-    }
-    // A fresh step's code satisfies the step-up and the erasure proceeds.
-    let next_code = totp.generate(((now / 30) + 1) * 30).to_string();
-    let response = app
-        .clone()
-        .oneshot(erasure_post(
-            Some(&session_a.token),
-            Some(&session_a.csrf_token),
-            Some(ORIGIN),
-            &crate::test_keys::password(1),
-            Some(&next_code),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let report = body(response).await;
-    assert_eq!(deleted_count(&report, "owner_mfa"), 1);
-    let account_gone: i64 = db
-        .query_one(
-            "SELECT count(*) FROM accounts WHERE id=$1",
-            &[&a.account_id],
+        // Without a code the erasure is an auth failure and deletes nothing.
+        let missing = app
+            .clone()
+            .oneshot(erasure_post(
+                Some(&session_a.token),
+                Some(&session_a.csrf_token),
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(body(missing).await["code"], "unauthorized");
+        // A malformed code is a failed factor: still an auth failure, still
+        // nothing deleted, and the shared failure budget recorded it.
+        let wrong = app
+            .clone()
+            .oneshot(erasure_post(
+                Some(&session_a.token),
+                Some(&session_a.csrf_token),
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                Some("not-a-code"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+        let budget = abuse_limits::failures_in_window(
+            &*db,
+            &hasher,
+            Limit::MfaStepUp,
+            &a.user_id.to_string(),
         )
         .await
-        .unwrap()
-        .get(0);
-    assert_eq!(account_gone, 0);
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
         .unwrap();
+        assert_eq!(budget, 1, "the wrong factor must spend the failure budget");
+        for sql in [
+            "SELECT count(*) FROM accounts WHERE id=$1",
+            "SELECT count(*) FROM messages WHERE account_id=$1",
+            "SELECT count(*) FROM sessions WHERE account_id=$1",
+        ] {
+            let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
+            assert_eq!(
+                rows,
+                if sql.contains("messages") { 2 } else { 1 },
+                "a fenced-off erasure must delete nothing"
+            );
+        }
+        // A fresh step's code satisfies the step-up and the erasure proceeds.
+        let next_code = totp.generate(((now / 30) + 1) * 30).to_string();
+        let response = app
+            .clone()
+            .oneshot(erasure_post(
+                Some(&session_a.token),
+                Some(&session_a.csrf_token),
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                Some(&next_code),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let report = body(response).await;
+        assert_eq!(deleted_count(&report, "owner_mfa"), 1);
+        let account_gone: i64 = db
+            .query_one(
+                "SELECT count(*) FROM accounts WHERE id=$1",
+                &[&a.account_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(account_gone, 0);
+    })
+    .await;
 }
 
-/// The runtime database role provisioner cannot run inside an isolated test
-/// schema: it drives psql meta-commands (`\getenv`, `\gset`, `\if`,
-/// `\gexec`) that tokio-postgres cannot execute, and it issues cluster-level
-/// `CREATE ROLE`/`ALTER ROLE` statements plus database-wide ACLs that are
-/// not schema-scopable. The honest repository-level proof is parsing: every
-/// table the erasure plan deletes (plus `users` and `accounts`) must be
-/// covered by the role's schema-wide DML grant, and none may appear in the
-/// file's per-table revocation exceptions. The schema coverage itself is
-/// proven for real by the PostgreSQL tests above, which apply the identical
-/// migration set before the plan's deletes run.
+/// Static contract for directly named runtime revocations. PUBLIC-only revokes
+/// do not revoke the runtime's grant. Dynamic stock ACL blocks are exercised by
+/// the genuine public-schema ordinary-role test below, not inferred by parsing.
 #[test]
 fn runtime_role_covers_every_erased_table() {
     let role_sql = include_str!("../../../../deploy/compose/runtime-role.sql");
@@ -2398,19 +2319,32 @@ fn runtime_role_covers_every_erased_table() {
         ),
         "the runtime role must hold DELETE on the erasure plan's public tables"
     );
-    let revoked: Vec<&str> = role_sql
+    let mut revoked: Vec<&str> = role_sql
         .lines()
         .filter_map(|line| line.trim().strip_prefix("REVOKE ALL ON TABLE public."))
-        .map(|rest| {
-            rest.split_whitespace()
-                .next()
-                .expect("a table name follows every table revocation")
+        .filter_map(|rest| {
+            let (table, subjects) = rest.split_once(" FROM ")?;
+            subjects
+                .trim_end_matches(';')
+                .split(',')
+                .any(|role| role.trim() == "zrotext_runtime")
+                .then_some(table)
         })
         .collect();
+    revoked.sort_unstable();
+    revoked.dedup();
     assert_eq!(
         revoked.as_slice(),
-        ["schema_migrations", "payload_profile_account_anchors"],
-        "new table exceptions would silently deny the runtime role's erasure access"
+        [
+            "conversation_profile03_grants",
+            "conversation_profile03_intervals",
+            "conversation_reviewed_sends03",
+            "payload_profile_account_anchors",
+            "payload_profile_manifest_successors",
+            "payload_profile_v2_activation_receipts",
+            "schema_migrations"
+        ],
+        "evolve the explicit named protected-table contract; never restore generic DML to history"
     );
     for table in DELETE_PLAN
         .iter()
@@ -2422,6 +2356,86 @@ fn runtime_role_covers_every_erased_table() {
             "runtime-role.sql revokes {table}, which the erasure deletes"
         );
     }
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE on a disposable cluster"]
+async fn current_public_runtime_preserves_plan_acl_and_protected_history_exceptions() {
+    let f = crate::sealed_payload_election03::test_database::Fixture::runtime().await;
+    crate::hosted_runtime_identity::require(&f.reader)
+        .await
+        .unwrap();
+    for table in DELETE_PLAN
+        .iter()
+        .map(|(table, _)| *table)
+        .chain(["users", "accounts"])
+    {
+        if table == OBSERVER_USERS_TABLE {
+            continue;
+        }
+        let row=f.reader.query_one("SELECT pg_catalog.to_regclass(pg_catalog.format('public.%I',$1::text))::pg_catalog.oid",&[&table]).await.unwrap();
+        let Some(relation) = row.get::<_, Option<u32>>(0) else {
+            assert!(
+                crate::managed_ai::lifecycle::TABLES.contains(&table)
+                    || ["provider_receipt_events", "provider_receipt_attempts"].contains(&table),
+                "unrecognized missing plan table {table}"
+            );
+            continue;
+        };
+        assert!(
+            f.reader
+                .query_one(
+                    "SELECT pg_catalog.has_table_privilege(CURRENT_USER,$1::oid,'DELETE')",
+                    &[&relation]
+                )
+                .await
+                .unwrap()
+                .get::<_, bool>(0),
+            "actual ordinary plan ACL refuses {table}"
+        );
+    }
+    for table in [
+        "payload_profile_account_anchors",
+        "payload_profile_writer_catalog",
+        "payload_profile_writer_global_fences",
+        "payload_profile_v2_activation_receipts",
+        "payload_profile_election_challenges",
+        "payload_profile_elections",
+        "payload_profile_selection_challenges",
+        "payload_profile_selection_receipts",
+        "payload_profile_manifest_successors",
+        "conversation_profile03_intervals",
+        "conversation_reviewed_sends03",
+        "conversation_profile03_grants",
+        "hosted_runtime_entries",
+        "hosted_runtime_requests",
+        "device_protection_origins",
+        "device_protection_associations",
+        "device_protection_attempts",
+        "device_protection_receipts",
+        "device_protection_retirements",
+        "conversation_profile03_effect_actors",
+        "conversation_profile03_submits",
+        "conversation_profile03_outcomes",
+        "conversation_profile03_closure_records",
+        "conversation_profile03_closure_challenges",
+        "conversation_profile03_closure_receipts",
+        "conversation_profile03_effect_quarantines",
+    ] {
+        assert!(!f.reader.query_one("SELECT pg_catalog.has_table_privilege(CURRENT_USER,pg_catalog.to_regclass(pg_catalog.format('public.%I',$1::text)),'UPDATE,DELETE,TRUNCATE')",&[&table]).await.unwrap().get::<_,bool>(0),"protected history unexpectedly permits table mutation: {table}");
+        let columns=f.reader.query("SELECT a.attname::text,pg_catalog.has_column_privilege(CURRENT_USER,a.attrelid,a.attname,'UPDATE') FROM pg_catalog.pg_attribute a WHERE a.attrelid=pg_catalog.to_regclass(pg_catalog.format('public.%I',$1::text)) AND a.attnum>0 AND NOT a.attisdropped ORDER BY a.attnum",&[&table]).await.unwrap();
+        assert!(!columns.is_empty(), "missing protected table {table}");
+        for column in columns {
+            let name: String = column.get(0);
+            let permitted: bool = column.get(1);
+            assert_eq!(
+                permitted,
+                table == "payload_profile_account_anchors" && name == "account_id",
+                "protected history column capability differs: {table}.{name}"
+            );
+        }
+    }
+    f.finish().await;
 }
 
 // ---------------------------------------------------------------------------
@@ -2480,1101 +2494,1090 @@ async fn rows(db: &tokio_postgres::Client, sql: &str, id: Uuid) -> i64 {
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn erasure_deletes_the_accounts_observers_invitations_and_tombstones_only() {
-    let (admin, mut db, database_url, schema) = migrated_schema("observers").await;
-    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(41)).unwrap());
-    let (a, session_a, b, session_b, app) = fixture(&mut db, &hasher, &database_url, None).await;
-    let owner_a = principal_of(&db, &hasher, &session_a).await;
-    let owner_b = principal_of(&db, &hasher, &session_b).await;
-    let (pw_a, pw_b) = (crate::test_keys::password(1), crate::test_keys::password(2));
+    current_case(async |db, _admin, database_url| {
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(41)).unwrap());
+        let (a, session_a, b, session_b, app) = fixture(db, &hasher, database_url, None).await;
+        let owner_a = principal_of(&*db, &hasher, &session_a).await;
+        let owner_b = principal_of(&*db, &hasher, &session_b).await;
+        let (pw_a, pw_b) = (crate::test_keys::password(1), crate::test_keys::password(2));
 
-    // Account A: a live verified observer with a session and an API key, an
-    // accepted but unverified observer, a removed observer (tombstone, user
-    // deleted), a removed observer whose user survived because a restricting
-    // reference refused the delete, and one open invitation.
-    let (live_id, live_pw) = seat_observer(
-        &mut db,
-        &hasher,
-        &owner_a,
-        &pw_a,
-        "live-observer@example.test",
-        true,
-    )
-    .await;
-    let (pending_id, _) = seat_observer(
-        &mut db,
-        &hasher,
-        &owner_a,
-        &pw_a,
-        "pending-observer@example.test",
-        false,
-    )
-    .await;
-    let (removed_id, _) = seat_observer(
-        &mut db,
-        &hasher,
-        &owner_a,
-        &pw_a,
-        "removed-observer@example.test",
-        true,
-    )
-    .await;
-    assert!(
-        seats::remove_observer(&mut db, &owner_a, removed_id)
-            .await
-            .unwrap()
-            .unwrap()
-            .address_freed
-    );
-    let (fallback_id, _) = seat_observer(
-        &mut db,
-        &hasher,
-        &owner_a,
-        &pw_a,
-        "fallback-observer@example.test",
-        true,
-    )
-    .await;
-    db.execute(
-        "INSERT INTO pairing_requests(id,account_id,created_by_user_id,token_digest,display_name,expires_at) VALUES($1,$2,$3,$4,'synthetic',now()+interval '1 hour')",
-        &[
-            &Uuid::new_v4(),
-            &a.account_id,
-            &fallback_id,
-            &crate::test_keys::key(43),
-        ],
-    )
-    .await
-    .unwrap();
-    assert!(
-        !seats::remove_observer(&mut db, &owner_a, fallback_id)
-            .await
-            .unwrap()
-            .unwrap()
-            .address_freed
-    );
-    seats::create_invitation_with_proof(
-        &mut db,
-        None,
-        &hasher,
-        &owner_a,
-        &pw_a,
-        None,
-        "open-invite@example.test",
-    )
-    .await
-    .unwrap();
-    let live_session = login(&db, &hasher, "live-observer@example.test", &live_pw)
-        .await
-        .unwrap();
-    let key_prefix = Uuid::new_v4().simple().to_string();
-    let key_hash = crate::test_keys::key(42);
-    db.execute(
-        "INSERT INTO api_keys(id,account_id,created_by_user_id,public_prefix,token_hash,scopes) VALUES($1,$2,$3,$4,$5,ARRAY['devices:read'])",
-        &[&Uuid::new_v4(), &a.account_id, &live_id, &key_prefix, &key_hash],
-    )
-    .await
-    .unwrap();
-
-    // Account B keeps a verified observer and an open invitation.
-    let (b_observer, b_observer_pw) = seat_observer(
-        &mut db,
-        &hasher,
-        &owner_b,
-        &pw_b,
-        "b-observer@example.test",
-        true,
-    )
-    .await;
-    let b_open = seats::create_invitation_with_proof(
-        &mut db,
-        None,
-        &hasher,
-        &owner_b,
-        &pw_b,
-        None,
-        "b-open@example.test",
-    )
-    .await
-    .unwrap();
-
-    let response = app
-        .clone()
-        .oneshot(erasure_post(
-            Some(&session_a.token),
-            Some(&session_a.csrf_token),
-            Some(ORIGIN),
+        // Account A: a live verified observer with a session and an API key, an
+        // accepted but unverified observer, a removed observer (tombstone, user
+        // deleted), a removed observer whose user survived because a restricting
+        // reference refused the delete, and one open invitation.
+        let (live_id, live_pw) = seat_observer(
+            db,
+            &hasher,
+            &owner_a,
             &pw_a,
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let report = body(response).await;
-
-    // The report says what happened: three surviving observer users (live,
-    // pending, fallback) plus the owner, five invitation rows including both
-    // tombstones and the open one, and only the owner's membership left for
-    // the membership delete because the user deletes cascaded the rest.
-    assert_eq!(deleted_count(&report, "observer_users"), 3);
-    assert_eq!(deleted_count(&report, "seat_invitations"), 5);
-    assert_eq!(deleted_count(&report, "memberships"), 1);
-    assert_eq!(deleted_count(&report, "users"), 1);
-    assert_eq!(deleted_count(&report, "accounts"), 1);
-    let raw = serde_json::to_string(&report).unwrap();
-    assert!(!raw.contains("observer@example.test"));
-
-    // Nothing of the erased account's observers survives: user rows (email,
-    // password hash), sessions, keys, verification state, invitations.
-    let emails = [
-        "live-observer@example.test",
-        "pending-observer@example.test",
-        "removed-observer@example.test",
-        "fallback-observer@example.test",
-        "open-invite@example.test",
-        "erase-a@example.test",
-    ];
-    let left: i64 = db
-        .query_one(
-            "SELECT count(*) FROM users WHERE email = ANY($1) OR id = ANY($2)",
+            "live-observer@example.test",
+            true,
+        )
+        .await;
+        let (pending_id, _) = seat_observer(
+            db,
+            &hasher,
+            &owner_a,
+            &pw_a,
+            "pending-observer@example.test",
+            false,
+        )
+        .await;
+        let (removed_id, _) = seat_observer(
+            db,
+            &hasher,
+            &owner_a,
+            &pw_a,
+            "removed-observer@example.test",
+            true,
+        )
+        .await;
+        assert!(
+            seats::remove_observer(db, &owner_a, removed_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .address_freed
+        );
+        let (fallback_id, _) = seat_observer(
+            db,
+            &hasher,
+            &owner_a,
+            &pw_a,
+            "fallback-observer@example.test",
+            true,
+        )
+        .await;
+        db.execute(
+            "INSERT INTO pairing_requests(id,account_id,created_by_user_id,token_digest,display_name,expires_at) VALUES($1,$2,$3,$4,'synthetic',now()+interval '1 hour')",
             &[
-                &emails.to_vec(),
-                &vec![a.user_id, live_id, pending_id, removed_id, fallback_id],
+                &Uuid::new_v4(),
+                &a.account_id,
+                &fallback_id,
+                &crate::test_keys::key(43),
             ],
         )
         .await
-        .unwrap()
-        .get(0);
-    assert_eq!(left, 0, "users of the erased account survive");
-    for sql in [
-        "SELECT count(*) FROM seat_invitations WHERE account_id=$1",
-        "SELECT count(*) FROM memberships WHERE account_id=$1",
-        "SELECT count(*) FROM sessions WHERE account_id=$1",
-        "SELECT count(*) FROM api_keys WHERE account_id=$1",
-        "SELECT count(*) FROM email_verifications WHERE account_id=$1",
-        "SELECT count(*) FROM verification_mail_outbox o JOIN email_verifications v ON v.id=o.verification_id WHERE v.account_id=$1",
-    ] {
-        assert_eq!(rows(&db, sql, a.account_id).await, 0, "{sql}");
-    }
-    assert!(
-        crate::auth::authenticate_session(&db, &hasher, &live_session.token)
-            .await
-            .is_err()
-    );
-    assert!(
-        login(&db, &hasher, "live-observer@example.test", &live_pw)
-            .await
-            .is_err()
-    );
-
-    // The addresses are free again: the person can register their own
-    // account, and another account can invite and seat a former address.
-    register(
-        &mut db,
-        &hasher,
-        "live-observer@example.test",
-        &crate::test_keys::password(8),
-    )
-    .await
-    .unwrap();
-    let elsewhere = seats::create_invitation_with_proof(
-        &mut db,
-        None,
-        &hasher,
-        &owner_b,
-        &pw_b,
-        None,
-        "pending-observer@example.test",
-    )
-    .await
-    .unwrap();
-    seats::accept_invitation(
-        &mut db,
-        &hasher,
-        &elsewhere.token,
-        &crate::test_keys::password(9),
-    )
-    .await
-    .unwrap();
-
-    // Account B is untouched: owner, observer, sessions, and its open
-    // invitation with a still-live token.
-    for user in [b.user_id, b_observer] {
-        assert_eq!(
-            rows(&db, "SELECT count(*) FROM users WHERE id=$1", user).await,
-            1
+        .unwrap();
+        assert!(
+            !seats::remove_observer(db, &owner_a, fallback_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .address_freed
         );
-    }
-    assert!(
-        login(&db, &hasher, "b-observer@example.test", &b_observer_pw)
-            .await
-            .is_ok()
-    );
-    assert!(
-        login(&db, &hasher, "erase-b@example.test", &pw_b)
-            .await
-            .is_ok()
-    );
-    assert!(
-        seats::invitation_token_is_live(&db, &hasher, &b_open.token)
-            .await
-            .unwrap()
-    );
-    assert_eq!(
-        rows(
-            &db,
-            "SELECT count(*) FROM seat_invitations WHERE account_id=$1 AND email='b-observer@example.test' AND accepted_at IS NOT NULL",
-            b.account_id
+        seats::create_invitation_with_proof(
+            db,
+            None,
+            &hasher,
+            &owner_a,
+            &pw_a,
+            None,
+            "open-invite@example.test",
         )
-        .await,
-        1
-    );
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await
         .unwrap();
+        let live_session = login(&*db, &hasher, "live-observer@example.test", &live_pw)
+            .await
+            .unwrap();
+        let key_prefix = Uuid::new_v4().simple().to_string();
+        let key_hash = crate::test_keys::key(42);
+        db.execute(
+            "INSERT INTO api_keys(id,account_id,created_by_user_id,public_prefix,token_hash,scopes) VALUES($1,$2,$3,$4,$5,ARRAY['devices:read'])",
+            &[&Uuid::new_v4(), &a.account_id, &live_id, &key_prefix, &key_hash],
+        )
+        .await
+        .unwrap();
+
+        // Account B keeps a verified observer and an open invitation.
+        let (b_observer, b_observer_pw) = seat_observer(
+            db,
+            &hasher,
+            &owner_b,
+            &pw_b,
+            "b-observer@example.test",
+            true,
+        )
+        .await;
+        let b_open = seats::create_invitation_with_proof(
+            db,
+            None,
+            &hasher,
+            &owner_b,
+            &pw_b,
+            None,
+            "b-open@example.test",
+        )
+        .await
+        .unwrap();
+
+        let response = app
+            .clone()
+            .oneshot(erasure_post(
+                Some(&session_a.token),
+                Some(&session_a.csrf_token),
+                Some(ORIGIN),
+                &pw_a,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let report = body(response).await;
+
+        // The report says what happened: three surviving observer users (live,
+        // pending, fallback) plus the owner, five invitation rows including both
+        // tombstones and the open one, and only the owner's membership left for
+        // the membership delete because the user deletes cascaded the rest.
+        assert_eq!(deleted_count(&report, "observer_users"), 3);
+        assert_eq!(deleted_count(&report, "seat_invitations"), 5);
+        assert_eq!(deleted_count(&report, "memberships"), 1);
+        assert_eq!(deleted_count(&report, "users"), 1);
+        assert_eq!(deleted_count(&report, "accounts"), 1);
+        let raw = serde_json::to_string(&report).unwrap();
+        assert!(!raw.contains("observer@example.test"));
+
+        // Nothing of the erased account's observers survives: user rows (email,
+        // password hash), sessions, keys, verification state, invitations.
+        let emails = [
+            "live-observer@example.test",
+            "pending-observer@example.test",
+            "removed-observer@example.test",
+            "fallback-observer@example.test",
+            "open-invite@example.test",
+            "erase-a@example.test",
+        ];
+        let left: i64 = db
+            .query_one(
+                "SELECT count(*) FROM users WHERE email = ANY($1) OR id = ANY($2)",
+                &[
+                    &emails.to_vec(),
+                    &vec![a.user_id, live_id, pending_id, removed_id, fallback_id],
+                ],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(left, 0, "users of the erased account survive");
+        for sql in [
+            "SELECT count(*) FROM seat_invitations WHERE account_id=$1",
+            "SELECT count(*) FROM memberships WHERE account_id=$1",
+            "SELECT count(*) FROM sessions WHERE account_id=$1",
+            "SELECT count(*) FROM api_keys WHERE account_id=$1",
+            "SELECT count(*) FROM email_verifications WHERE account_id=$1",
+            "SELECT count(*) FROM verification_mail_outbox o JOIN email_verifications v ON v.id=o.verification_id WHERE v.account_id=$1",
+        ] {
+            assert_eq!(rows(&*db, sql, a.account_id).await, 0, "{sql}");
+        }
+        assert!(
+            crate::auth::authenticate_session(&*db, &hasher, &live_session.token)
+                .await
+                .is_err()
+        );
+        assert!(
+            login(&*db, &hasher, "live-observer@example.test", &live_pw)
+                .await
+                .is_err()
+        );
+
+        // The addresses are free again: the person can register their own
+        // account, and another account can invite and seat a former address.
+        register(
+            db,
+            &hasher,
+            "live-observer@example.test",
+            &crate::test_keys::password(8),
+        )
+        .await
+        .unwrap();
+        let elsewhere = seats::create_invitation_with_proof(
+            db,
+            None,
+            &hasher,
+            &owner_b,
+            &pw_b,
+            None,
+            "pending-observer@example.test",
+        )
+        .await
+        .unwrap();
+        seats::accept_invitation(
+            db,
+            &hasher,
+            &elsewhere.token,
+            &crate::test_keys::password(9),
+        )
+        .await
+        .unwrap();
+
+        // Account B is untouched: owner, observer, sessions, and its open
+        // invitation with a still-live token.
+        for user in [b.user_id, b_observer] {
+            assert_eq!(
+                rows(&*db, "SELECT count(*) FROM users WHERE id=$1", user).await,
+                1
+            );
+        }
+        assert!(
+            login(&*db, &hasher, "b-observer@example.test", &b_observer_pw)
+                .await
+                .is_ok()
+        );
+        assert!(
+            login(&*db, &hasher, "erase-b@example.test", &pw_b)
+                .await
+                .is_ok()
+        );
+        assert!(
+            seats::invitation_token_is_live(&*db, &hasher, &b_open.token)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            rows(
+                &*db,
+                "SELECT count(*) FROM seat_invitations WHERE account_id=$1 AND email='b-observer@example.test' AND accepted_at IS NOT NULL",
+                b.account_id
+            )
+            .await,
+            1
+        );
+    }).await;
 }
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
-async fn erasure_fails_closed_when_an_observer_user_cannot_be_deleted() {
-    let (admin, mut db, database_url, schema) = migrated_schema("observer_block").await;
-    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(44)).unwrap());
-    let (a, session_a, _b, _session_b, app) = fixture(&mut db, &hasher, &database_url, None).await;
-    let owner_a = principal_of(&db, &hasher, &session_a).await;
-    let (observer, _) = seat_observer(
-        &mut db,
-        &hasher,
-        &owner_a,
-        &crate::test_keys::password(1),
-        "pinned-observer@example.test",
-        true,
-    )
-    .await;
-    // A restricting reference to the observer's user row that no erasure
-    // step clears, standing in for any future table that pins a user.
-    db.batch_execute(
-        "CREATE TABLE observer_user_pin(user_id uuid PRIMARY KEY REFERENCES users(id))",
-    )
-    .await
-    .unwrap();
-    db.execute(
-        "INSERT INTO observer_user_pin(user_id) VALUES($1)",
-        &[&observer],
-    )
-    .await
-    .unwrap();
-    let response = app
-        .clone()
-        .oneshot(erasure_post(
-            Some(&session_a.token),
-            Some(&session_a.csrf_token),
-            Some(ORIGIN),
+async fn current_unrecognized_observer_reference_refuses_before_deletion() {
+    current_case(async |db, admin, database_url| {
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(44)).unwrap());
+        let (a, session_a, _b, _session_b, app) = fixture(db, &hasher, database_url, None).await;
+        let owner_a = principal_of(&*db, &hasher, &session_a).await;
+        let (observer, _) = seat_observer(
+            db,
+            &hasher,
+            &owner_a,
             &crate::test_keys::password(1),
-            None,
-        ))
-        .await
-        .unwrap();
-    // Fail closed like every other blocker: a 409 naming what blocks it,
-    // never a 503 that looks retryable and never a half-erased account.
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    let report = body(response).await;
-    assert_eq!(report["code"], "erasure_blocked");
-    assert_eq!(blocked_count(&report, "observer_users"), 1);
-    for (sql, expected) in [
-        ("SELECT count(*) FROM accounts WHERE id=$1", 1),
-        ("SELECT count(*) FROM messages WHERE account_id=$1", 2),
-        ("SELECT count(*) FROM memberships WHERE account_id=$1", 2),
-        ("SELECT count(*) FROM sessions WHERE account_id=$1", 1),
-        (
-            "SELECT count(*) FROM seat_invitations WHERE account_id=$1",
-            1,
-        ),
-    ] {
+            "pinned-observer@example.test",
+            true,
+        )
+        .await;
+        // A restricting reference to the observer's user row that no erasure
+        // step clears, standing in for any future table that pins a user.
+        crate::hosted_runtime_identity::require(&*db).await.unwrap();
+        admin
+            .batch_execute(
+                "CREATE TABLE public.observer_user_pin(user_id uuid PRIMARY KEY REFERENCES public.users(id))",
+            )
+            .await
+            .unwrap();
+        admin
+            .execute(
+                "INSERT INTO observer_user_pin(user_id) VALUES($1)",
+                &[&observer],
+            )
+            .await
+            .unwrap();
+        assert!(crate::hosted_runtime_identity::require(&*db).await.is_err());
+        let response = app
+            .clone()
+            .oneshot(erasure_post(
+                Some(&session_a.token),
+                Some(&session_a.csrf_token),
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                None,
+            ))
+            .await
+            .unwrap();
+        // The current closed graph refuses this extra table before deletion.
+        // historical_contracts separately witnesses the exact observer DELETE's
+        // foreign-key failure after prior SQL deletions and its complete rollback.
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body(response).await["code"], "unavailable");
+        for (sql, expected) in [
+            ("SELECT count(*) FROM accounts WHERE id=$1", 1),
+            ("SELECT count(*) FROM messages WHERE account_id=$1", 2),
+            ("SELECT count(*) FROM memberships WHERE account_id=$1", 2),
+            ("SELECT count(*) FROM sessions WHERE account_id=$1", 1),
+            (
+                "SELECT count(*) FROM seat_invitations WHERE account_id=$1",
+                1,
+            ),
+        ] {
+            assert_eq!(
+                rows(&*db, sql, a.account_id).await,
+                expected,
+                "a blocked erasure must delete nothing: {sql}"
+            );
+        }
         assert_eq!(
-            rows(&db, sql, a.account_id).await,
-            expected,
-            "a blocked erasure must delete nothing: {sql}"
+            rows(&*db, "SELECT count(*) FROM users WHERE id=$1", observer).await,
+            1
         );
-    }
-    assert_eq!(
-        rows(&db, "SELECT count(*) FROM users WHERE id=$1", observer).await,
-        1
-    );
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
+    })
+    .await;
 }
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn an_acceptance_in_flight_during_erasure_cannot_leave_an_observer_behind() {
-    let (admin, mut db, database_url, schema) = migrated_schema("observer_accept").await;
-    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(45)).unwrap());
-    let handler_database_url = handler_url(&database_url, "zt_erasure_accept_race");
-    let (a, session_a, _b, _session_b, app) =
-        fixture(&mut db, &hasher, &handler_database_url, None).await;
-    let owner_a = principal_of(&db, &hasher, &session_a).await;
-    let issued = seats::create_invitation_with_proof(
-        &mut db,
-        None,
-        &hasher,
-        &owner_a,
-        &crate::test_keys::password(1),
-        None,
-        "race-observer@example.test",
-    )
-    .await
-    .unwrap();
-    db.execute(
-        "UPDATE sessions SET last_used_at=now() WHERE id=$1",
-        &[&session_a.id],
-    )
-    .await
-    .unwrap();
-    // Act as an acceptance that has claimed its invitation and created the
-    // observer but not yet committed.
-    let blocker_pid: i32 = db
-        .query_one("SELECT pg_backend_pid()", &[])
-        .await
-        .unwrap()
-        .get(0);
-    let observer = Uuid::new_v4();
-    let acceptance = db.transaction().await.unwrap();
-    acceptance
-        .query_one(
-            "SELECT id FROM seat_invitations WHERE account_id=$1 AND email='race-observer@example.test' AND accepted_at IS NULL FOR UPDATE",
-            &[&a.account_id],
-        )
-        .await
-        .unwrap();
-    let token = session_a.token.clone();
-    let csrf = session_a.csrf_token.clone();
-    let request = tokio::spawn(async move {
-        app.oneshot(erasure_post(
-            Some(&token),
-            Some(&csrf),
-            Some(ORIGIN),
+    current_case(async |db, admin, database_url| {
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(45)).unwrap());
+        let handler_database_url = handler_url(database_url, "zt_erasure_accept_race");
+        let (a, session_a, _b, _session_b, app) =
+            fixture(db, &hasher, &handler_database_url, None).await;
+        let owner_a = principal_of(&*db, &hasher, &session_a).await;
+        let issued = seats::create_invitation_with_proof(
+            db,
+            None,
+            &hasher,
+            &owner_a,
             &crate::test_keys::password(1),
             None,
-        ))
-        .await
-        .unwrap()
-    });
-    // The erasure parks on the invitation row before its fence, so it waits
-    // for the acceptance instead of racing it.
-    wait_until_handler_is_blocked_by(&admin, "zt_erasure_accept_race", blocker_pid).await;
-    // Only now does the acceptance create the observer. Were the erasure past
-    // its fence, this membership insert would queue behind the fence's lock on
-    // the account row while the erasure queued behind this invitation row: a
-    // deadlock. Parked before the fence, it completes first.
-    acceptance
-        .execute(
-            "INSERT INTO users(id,email,password_hash) SELECT $1,'race-observer@example.test',password_hash FROM users WHERE id=$2",
-            &[&observer, &a.user_id],
+            "race-observer@example.test",
         )
         .await
         .unwrap();
-    acceptance
-        .execute(
-            "INSERT INTO memberships(account_id,user_id,role) VALUES($1,$2,'observer')",
-            &[&a.account_id, &observer],
+        db.execute(
+            "UPDATE sessions SET last_used_at=now() WHERE id=$1",
+            &[&session_a.id],
         )
         .await
         .unwrap();
-    acceptance
-        .execute(
-            "UPDATE seat_invitations SET accepted_at=now(),accepted_user_id=$2 WHERE account_id=$1 AND email='race-observer@example.test'",
-            &[&a.account_id, &observer],
-        )
-        .await
-        .unwrap();
-    acceptance.commit().await.unwrap();
-    let response = request.await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let report = body(response).await;
-    // The observer created by the acceptance is erased with the account, not
-    // orphaned, and its token is dead.
-    assert_eq!(deleted_count(&report, "observer_users"), 1);
-    assert_eq!(
-        rows(&db, "SELECT count(*) FROM users WHERE id=$1", observer).await,
-        0
-    );
-    assert_eq!(
-        rows(
-            &db,
-            "SELECT count(*) FROM seat_invitations WHERE account_id=$1",
-            a.account_id
-        )
-        .await,
-        0
-    );
-    assert!(matches!(
-        seats::accept_invitation(
-            &mut db,
-            &hasher,
-            &issued.token,
-            &crate::test_keys::password(9)
-        )
-        .await,
-        Err(AuthError::InvalidCredentials)
-    ));
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
+        // Act as an acceptance that has claimed its invitation and created the
+        // observer but not yet committed.
+        let blocker_pid: i32 = db
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        let observer = Uuid::new_v4();
+        let acceptance = db.transaction().await.unwrap();
+        acceptance
+            .query_one(
+                "SELECT id FROM seat_invitations WHERE account_id=$1 AND email='race-observer@example.test' AND accepted_at IS NULL FOR UPDATE",
+                &[&a.account_id],
+            )
+            .await
+            .unwrap();
+        let token = session_a.token.clone();
+        let csrf = session_a.csrf_token.clone();
+        let request = current_fixture::spawn(async move {
+            app.oneshot(erasure_post(
+                Some(&token),
+                Some(&csrf),
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                None,
+            ))
+            .await
+            .unwrap()
+        });
+        // The erasure parks on the invitation row before its fence, so it waits
+        // for the acceptance instead of racing it.
+        wait_until_handler_is_blocked_by(admin, "zt_erasure_accept_race", blocker_pid).await;
+        // Only now does the acceptance create the observer. Were the erasure past
+        // its fence, this membership insert would queue behind the fence's lock on
+        // the account row while the erasure queued behind this invitation row: a
+        // deadlock. Parked before the fence, it completes first.
+        acceptance
+            .execute(
+                "INSERT INTO users(id,email,password_hash) SELECT $1,'race-observer@example.test',password_hash FROM users WHERE id=$2",
+                &[&observer, &a.user_id],
+            )
+            .await
+            .unwrap();
+        acceptance
+            .execute(
+                "INSERT INTO memberships(account_id,user_id,role) VALUES($1,$2,'observer')",
+                &[&a.account_id, &observer],
+            )
+            .await
+            .unwrap();
+        acceptance
+            .execute(
+                "UPDATE seat_invitations SET accepted_at=now(),accepted_user_id=$2 WHERE account_id=$1 AND email='race-observer@example.test'",
+                &[&a.account_id, &observer],
+            )
+            .await
+            .unwrap();
+        acceptance.commit().await.unwrap();
+        let response = request.await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let report = body(response).await;
+        // The observer created by the acceptance is erased with the account, not
+        // orphaned, and its token is dead.
+        assert_eq!(deleted_count(&report, "observer_users"), 1);
+        assert_eq!(
+            rows(&*db, "SELECT count(*) FROM users WHERE id=$1", observer).await,
+            0
+        );
+        assert_eq!(
+            rows(
+                &*db,
+                "SELECT count(*) FROM seat_invitations WHERE account_id=$1",
+                a.account_id
+            )
+            .await,
+            0
+        );
+        assert!(matches!(
+            seats::accept_invitation(
+                db,
+                &hasher,
+                &issued.token,
+                &crate::test_keys::password(9)
+            )
+            .await,
+            Err(AuthError::InvalidCredentials)
+        ));
+    }).await;
 }
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn a_seat_removal_in_flight_during_erasure_finishes_first_without_a_deadlock() {
-    let (admin, mut db, database_url, schema) = migrated_schema("observer_remove").await;
-    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(46)).unwrap());
-    let handler_database_url = handler_url(&database_url, "zt_erasure_remove_race");
-    let (a, session_a, _b, _session_b, app) =
-        fixture(&mut db, &hasher, &handler_database_url, None).await;
-    let owner_a = principal_of(&db, &hasher, &session_a).await;
-    let (observer, observer_pw) = seat_observer(
-        &mut db,
-        &hasher,
-        &owner_a,
-        &crate::test_keys::password(1),
-        "removal-race@example.test",
-        true,
-    )
-    .await;
-    let observer_session = login(&db, &hasher, "removal-race@example.test", &observer_pw)
-        .await
-        .unwrap();
-    db.execute(
-        "UPDATE sessions SET last_used_at=now() WHERE id=$1",
-        &[&session_a.id],
-    )
-    .await
-    .unwrap();
-    // Act as seat removal: it locks the observer's membership first and only
-    // then touches the observer's sessions and invitation.
-    let blocker_pid: i32 = db
-        .query_one("SELECT pg_backend_pid()", &[])
-        .await
-        .unwrap()
-        .get(0);
-    let removal = db.transaction().await.unwrap();
-    removal
-        .query_one(
-            "SELECT user_id FROM memberships WHERE user_id=$1 FOR UPDATE",
-            &[&observer],
-        )
-        .await
-        .unwrap();
-    let token = session_a.token.clone();
-    let csrf = session_a.csrf_token.clone();
-    let request = tokio::spawn(async move {
-        app.oneshot(erasure_post(
-            Some(&token),
-            Some(&csrf),
-            Some(ORIGIN),
+    current_case(async |db, admin, database_url| {
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(46)).unwrap());
+        let handler_database_url = handler_url(database_url, "zt_erasure_remove_race");
+        let (a, session_a, _b, _session_b, app) =
+            fixture(db, &hasher, &handler_database_url, None).await;
+        let owner_a = principal_of(&*db, &hasher, &session_a).await;
+        let (observer, observer_pw) = seat_observer(
+            db,
+            &hasher,
+            &owner_a,
             &crate::test_keys::password(1),
-            None,
-        ))
-        .await
-        .unwrap()
-    });
-    wait_until_handler_is_blocked_by(&admin, "zt_erasure_remove_race", blocker_pid).await;
-    // The erasure has taken no session or invitation lock yet, so the removal
-    // can finish its remaining statements without waiting on it.
-    removal
-        .execute(
-            "UPDATE memberships SET revoked_at=now() WHERE user_id=$1",
-            &[&observer],
+            "removal-race@example.test",
+            true,
+        )
+        .await;
+        let observer_session = login(&*db, &hasher, "removal-race@example.test", &observer_pw)
+            .await
+            .unwrap();
+        db.execute(
+            "UPDATE sessions SET last_used_at=now() WHERE id=$1",
+            &[&session_a.id],
         )
         .await
         .unwrap();
-    removal
-        .execute(
-            "UPDATE sessions SET revoked_at=now() WHERE id=$1",
-            &[&observer_session.id],
-        )
-        .await
-        .unwrap();
-    removal
-        .execute(
-            "UPDATE seat_invitations SET canceled_at=now() WHERE account_id=$1 AND email='removal-race@example.test' AND accepted_at IS NULL",
-            &[&a.account_id],
-        )
-        .await
-        .unwrap();
-    removal.commit().await.unwrap();
-    let response = request.await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let report = body(response).await;
-    // The removal's revoked membership still belonged to an observer user, so
-    // the erasure deleted that user too.
-    assert_eq!(deleted_count(&report, "observer_users"), 1);
-    assert_eq!(
-        rows(&db, "SELECT count(*) FROM users WHERE id=$1", observer).await,
-        0
-    );
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
+        // Act as seat removal: it locks the observer's membership first and only
+        // then touches the observer's sessions and invitation.
+        let blocker_pid: i32 = db
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        let removal = db.transaction().await.unwrap();
+        removal
+            .query_one(
+                "SELECT user_id FROM memberships WHERE user_id=$1 FOR UPDATE",
+                &[&observer],
+            )
+            .await
+            .unwrap();
+        let token = session_a.token.clone();
+        let csrf = session_a.csrf_token.clone();
+        let request = current_fixture::spawn(async move {
+            app.oneshot(erasure_post(
+                Some(&token),
+                Some(&csrf),
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                None,
+            ))
+            .await
+            .unwrap()
+        });
+        wait_until_handler_is_blocked_by(admin, "zt_erasure_remove_race", blocker_pid).await;
+        // The erasure has taken no session or invitation lock yet, so the removal
+        // can finish its remaining statements without waiting on it.
+        removal
+            .execute(
+                "UPDATE memberships SET revoked_at=now() WHERE user_id=$1",
+                &[&observer],
+            )
+            .await
+            .unwrap();
+        removal
+            .execute(
+                "UPDATE sessions SET revoked_at=now() WHERE id=$1",
+                &[&observer_session.id],
+            )
+            .await
+            .unwrap();
+        removal
+            .execute(
+                "UPDATE seat_invitations SET canceled_at=now() WHERE account_id=$1 AND email='removal-race@example.test' AND accepted_at IS NULL",
+                &[&a.account_id],
+            )
+            .await
+            .unwrap();
+        removal.commit().await.unwrap();
+        let response = request.await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let report = body(response).await;
+        // The removal's revoked membership still belonged to an observer user, so
+        // the erasure deleted that user too.
+        assert_eq!(deleted_count(&report, "observer_users"), 1);
+        assert_eq!(
+            rows(&*db, "SELECT count(*) FROM users WHERE id=$1", observer).await,
+            0
+        );
+    }).await;
 }
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn the_observer_user_delete_never_reaches_owners_or_other_accounts() {
-    let (admin, mut db, database_url, schema) = migrated_schema("observer_guard").await;
-    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(47)).unwrap());
-    let (a, session_a, b, session_b, _app) = fixture(&mut db, &hasher, &database_url, None).await;
-    let owner_a = principal_of(&db, &hasher, &session_a).await;
-    let owner_b = principal_of(&db, &hasher, &session_b).await;
-    let (a_observer, _) = seat_observer(
-        &mut db,
-        &hasher,
-        &owner_a,
-        &crate::test_keys::password(1),
-        "guard-a@example.test",
-        true,
-    )
+    current_case(async |db, _admin, database_url| {
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(47)).unwrap());
+        let (a, session_a, b, session_b, _app) = fixture(db, &hasher, database_url, None).await;
+        let owner_a = principal_of(&*db, &hasher, &session_a).await;
+        let owner_b = principal_of(&*db, &hasher, &session_b).await;
+        let (a_observer, _) = seat_observer(
+            db,
+            &hasher,
+            &owner_a,
+            &crate::test_keys::password(1),
+            "guard-a@example.test",
+            true,
+        )
+        .await;
+        let (b_observer, _) = seat_observer(
+            db,
+            &hasher,
+            &owner_b,
+            &crate::test_keys::password(2),
+            "guard-b@example.test",
+            true,
+        )
+        .await;
+        // Run exactly the erasure's observer statement for account A inside a
+        // transaction and inspect what it reaches.
+        let tx = db.transaction().await.unwrap();
+        let deleted = tx
+            .execute(OBSERVER_USERS_SQL, &[&a.account_id])
+            .await
+            .unwrap();
+        assert_eq!(deleted, 1, "only account A's observer");
+        let exists = |user: Uuid| {
+            let tx = &tx;
+            async move {
+                tx.query_one("SELECT count(*) FROM users WHERE id=$1", &[&user])
+                    .await
+                    .unwrap()
+                    .get::<_, i64>(0)
+                    == 1
+            }
+        };
+        assert!(!exists(a_observer).await, "account A observer is deleted");
+        assert!(exists(b_observer).await, "account B observer survives");
+        assert!(exists(a.user_id).await, "account A owner survives");
+        assert!(exists(b.user_id).await, "account B owner survives");
+        // An account with no observers of its own reaches nothing, even though
+        // observers and owners exist elsewhere.
+        tx.rollback().await.unwrap();
+        let nothing = db
+            .execute(OBSERVER_USERS_SQL, &[&Uuid::new_v4()])
+            .await
+            .unwrap();
+        assert_eq!(nothing, 0);
+    })
     .await;
-    let (b_observer, _) = seat_observer(
-        &mut db,
-        &hasher,
-        &owner_b,
-        &crate::test_keys::password(2),
-        "guard-b@example.test",
-        true,
-    )
-    .await;
-    // Run exactly the erasure's observer statement for account A inside a
-    // transaction and inspect what it reaches.
-    let tx = db.transaction().await.unwrap();
-    let deleted = tx
-        .execute(OBSERVER_USERS_SQL, &[&a.account_id])
-        .await
-        .unwrap();
-    assert_eq!(deleted, 1, "only account A's observer");
-    let exists = |user: Uuid| {
-        let tx = &tx;
-        async move {
-            tx.query_one("SELECT count(*) FROM users WHERE id=$1", &[&user])
-                .await
-                .unwrap()
-                .get::<_, i64>(0)
-                == 1
-        }
-    };
-    assert!(!exists(a_observer).await, "account A observer is deleted");
-    assert!(exists(b_observer).await, "account B observer survives");
-    assert!(exists(a.user_id).await, "account A owner survives");
-    assert!(exists(b.user_id).await, "account B owner survives");
-    // An account with no observers of its own reaches nothing, even though
-    // observers and owners exist elsewhere.
-    tx.rollback().await.unwrap();
-    let nothing = db
-        .execute(OBSERVER_USERS_SQL, &[&Uuid::new_v4()])
-        .await
-        .unwrap();
-    assert_eq!(nothing, 0);
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
 }
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeout() {
-    // Issue #515: every deleted row runs a foreign-key check against each
-    // referencing table, and the runtime connection caps one statement at
-    // ten seconds. Without the migration-059 support indexes those checks
-    // scan the referencing rows once per deleted row, so the erasure grows
-    // quadratically with the account and a large account times out (503).
-    //
-    // Wall-clock time is not the proof here, because it depends on the
-    // machine. At this size the erasure without the indexes still finished
-    // in about 2 s locally, and with them a loaded CI runner once missed
-    // the 10 s timeout. So the test pins the mechanism with checks that do
-    // not depend on machine speed:
-    //
-    // 1. EXPLAIN of each foreign-key probe names its erasure_fk_* index and
-    //    contains no Seq Scan.
-    // 2. The handler's exact DELETE_PLAN runs in a rolled-back transaction,
-    //    and that transaction's own statistics counters show each
-    //    erasure_fk_* index on a populated table scanned at least once per
-    //    deleted row. So the real foreign-key trigger probes used it, and no
-    //    referencing table was sequentially scanned per row. Counts are the
-    //    same on every runner. Tuple counters would not discriminate: the
-    //    probed rows were deleted earlier in the same transaction, so every
-    //    probe returns nothing, indexed or not.
-    // 3. The real route, under the unchanged 10 s runtime statement
-    //    timeout, erases the account end to end and returns 200.
-    //
-    // Margin for (3): with the indexes, over 20 local runs (PostgreSQL 18.6
-    // in Docker) the DELETE_PLAN for these 5000 rows took 0.6-1.2 s and the
-    // whole route 0.9-1.4 s, at least 7x under the timeout. All remaining work is
-    // linear in the row count. The earlier version of this test put all
-    // 5000 attempts on one message and ran on unanalyzed tables. That made
-    // the inbound_events -> message_attempts check quadratic: until
-    // migration 061 it was served only by the (account_id, message_id)
-    // prefix of inbound_events_timeline, and that one check took 7.4 s of
-    // an 8.5 s DELETE locally and overran 10 s on loaded runners (#601).
-    // Migration 061 gives it the dedicated four-column index this test now
-    // pins below. The bulk rows still use a few attempts per message, as
-    // real retries do, and the populated tables are analyzed, as autovacuum
-    // does in production, so the timing does not depend on planner
-    // statistics that a fresh test database lacks.
-    let (admin, mut db, database_url, schema) = migrated_schema("fk_scale").await;
-    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(37)).unwrap());
-    let handler_database_url = handler_url(&database_url, "zt_erasure_fk_scale");
-    let (a, session_a, _b, _session_b, app) =
-        fixture(&mut db, &hasher, &handler_database_url, None).await;
-    let device: Uuid = db
-        .query_one(
-            "SELECT id FROM devices WHERE account_id=$1",
-            &[&a.account_id],
-        )
-        .await
-        .unwrap()
-        .get(0);
-    // Dedicated messages, marked by their payload, keep the bulk attempts
-    // away from the fixture's unique (message_id, generation) slots.
-    let marker = b"ERASE_FK_SCALE".to_vec();
-    let messages = 1_000_i64;
-    let attempts_per_message = 5_i64;
-    let rows = messages * attempts_per_message;
-    db.execute(
-        "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) \
-         SELECT gen_random_uuid(),$1,$2,'+15551112222',$3,'synthetic_alpha',$4,$5,'delivered',now()+interval '1 hour' \
-         FROM generate_series(1,$6::bigint)",
-        &[&a.account_id, &device, &vec![6_u8; 32], &marker, &vec![7_u8; 32], &messages],
-    )
-    .await
-    .unwrap();
-    db.execute(
-        "INSERT INTO message_attempts(id,account_id,message_id,device_id,generation,session_epoch,deployment_epoch,status) \
-         SELECT gen_random_uuid(),$1,m.id,$2,g,1,1,'submitted' \
-         FROM messages m CROSS JOIN generate_series(1,$4::bigint) g \
-         WHERE m.account_id=$1 AND m.transport_payload=$3",
-        &[&a.account_id, &device, &marker, &attempts_per_message],
-    )
-    .await
-    .unwrap();
-    db.execute(
-        "INSERT INTO inbound_events(id,account_id,device_id,message_id,attempt_id,device_sequence,classification,observed_at,received_at,part_count,content_kind,event_digest,signature_der) \
-         SELECT gen_random_uuid(),$1,$2,ma.message_id,ma.id,1000+row_number() OVER (ORDER BY ma.id),'sim_unverified',now(),now(),1,'metadata_only', \
-                sha256(ma.id::text::bytea),sha256(ma.id::text::bytea) \
-         FROM message_attempts ma JOIN messages m ON m.id=ma.message_id \
-         WHERE ma.account_id=$1 AND m.transport_payload=$3",
-        &[&a.account_id, &device, &marker],
-    )
-    .await
-    .unwrap();
-    db.execute(
-        "INSERT INTO webhook_endpoints(id,account_id,callback_url,signing_secret_ciphertext,signing_secret_key_version,enabled) \
-         VALUES(gen_random_uuid(),$1,'https://example.test/erasure-fk-scale',$2,1,true)",
-        &[&a.account_id, &vec![8_u8; 32]],
-    )
-    .await
-    .unwrap();
-    const BULK_EVENTS: &str = "FROM inbound_events e JOIN messages m ON m.id=e.message_id \
-         WHERE e.account_id=$1 AND m.transport_payload=$2";
-    db.execute(
-        &format!(
-            "INSERT INTO webhook_deliveries(id,account_id,endpoint_id,event_id,status,next_attempt_at) \
-             SELECT gen_random_uuid(),$1,(SELECT id FROM webhook_endpoints WHERE account_id=$1 ORDER BY created_at LIMIT 1),e.id,'pending',now() \
-             {BULK_EVENTS}"
-        ),
-        &[&a.account_id, &marker],
-    )
-    .await
-    .unwrap();
-    db.execute(
-        &format!(
-            "INSERT INTO recipient_suppressions(account_id,recipient_e164,active,source_event_id,source_attempt_id,source_observed_at,source) \
-             SELECT $1,'+1555'||lpad(e.device_sequence::text,8,'0'),true,e.id,e.attempt_id,now(),'sms_keyword' \
-             {BULK_EVENTS}"
-        ),
-        &[&a.account_id, &marker],
-    )
-    .await
-    .unwrap();
-    // The fixture itself contributes one event, delivery and suppression.
-    for sql in [
-        "SELECT count(*) FROM inbound_events WHERE account_id=$1",
-        "SELECT count(*) FROM webhook_deliveries WHERE account_id=$1",
-        "SELECT count(*) FROM recipient_suppressions WHERE account_id=$1",
-    ] {
-        let count: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
-        assert_eq!(count, rows + 1);
-    }
-    // Conversation intervals require a line binding, and the registry
-    // forbids deleting bindings, so an account owning intervals can never be
-    // erased. Seed them for the OTHER fixture account: erasing this account
-    // still deletes its sessions, and every deleted session runs the
-    // referential-integrity probe against the cross-tenant table (#660) -
-    // an unindexed probe would sequentially scan it per deleted session.
-    let conversation_line = Uuid::new_v4();
-    db.execute(
-        "INSERT INTO phone_lines(id,account_id) VALUES($1,$2)",
-        &[&conversation_line, &_b.account_id],
-    )
-    .await
-    .unwrap();
-    db.execute(
-        "INSERT INTO device_line_bindings(account_id,line_id,device_id,generation)          SELECT $1,$2,d.id,1 FROM devices d WHERE d.account_id=$1",
-        &[&_b.account_id, &conversation_line],
-    )
-    .await
-    .unwrap();
-    db.execute(
-        "INSERT INTO conversation_intervals(account_id,id,receipt_id,device_id,line_id, \
-         binding_generation,initiating_session_id,statement,statement_digest,manifest, \
-         trust_generation,activation_version,activation_digest,expires_at_ms,phase, \
-         accepted_at_ms,approval_signature,installation_signature,closed_at) \
-         SELECT $1,gen_random_uuid(),gen_random_uuid(),d.id,$2,1,s.id, \
-                convert_to(repeat('c',400),'UTF8'),sha256(convert_to('conv','UTF8')), \
-                convert_to(repeat('m',400),'UTF8'),1,2,sha256(convert_to('conv','UTF8')), \
-                9999999999999,'history',1,convert_to(repeat('s',64),'UTF8'), \
-                convert_to(repeat('t',64),'UTF8'),now() \
-         FROM sessions s JOIN devices d ON d.account_id=s.account_id \
-         WHERE s.account_id=$1",
-        &[&_b.account_id, &conversation_line],
-    )
-    .await
-    .unwrap();
-    // Production tables carry planner statistics (autovacuum analyzes them
-    // after bulk writes), and the foreign-key trigger probes run as generic
-    // plans, so a fresh unanalyzed fixture can pick a different shape than
-    // production would. Analyze only the populated tables; the always-empty
-    // hold tables keep their default estimates, as in a fresh deployment.
-    // The probes themselves stay pinned by the plan and counter checks
-    // below regardless of statistics.
-    db.batch_execute(
-        "ANALYZE messages, message_attempts, inbound_events, webhook_deliveries, recipient_suppressions",
-    )
-    .await
-    .unwrap();
-    // (1) Each foreign-key probe the DELETE triggers is planned as an index
-    // scan on its erasure_fk_* index; without migrations 059 and 061 each of
-    // these plans is a sequential scan over the account's thousands of rows.
-    let sample_event: Uuid = db
-        .query_one(
-            &format!("SELECT e.id {BULK_EVENTS} LIMIT 1"),
-            &[&a.account_id, &marker],
-        )
-        .await
-        .unwrap()
-        .get(0);
-    let sample_row = db
-        .query_one(
-            &format!("SELECT e.attempt_id, e.message_id {BULK_EVENTS} LIMIT 1"),
-            &[&a.account_id, &marker],
-        )
-        .await
-        .unwrap();
-    let sample_attempt: Uuid = sample_row.get(0);
-    let sample_message: Uuid = sample_row.get(1);
-    for (index, probe, key, with_account) in [
-        (
-            "erasure_fk_webhook_deliveries_event",
-            "SELECT 1 FROM webhook_deliveries WHERE account_id=$1 AND event_id=$2",
-            &sample_event,
-            true,
-        ),
-        (
-            "erasure_fk_suppressions_event",
-            "SELECT 1 FROM recipient_suppressions WHERE account_id=$1 AND source_event_id=$2",
-            &sample_event,
-            true,
-        ),
-        (
-            "erasure_fk_holds_release_event",
-            "SELECT 1 FROM owner_recipient_holds WHERE account_id=$1 AND release_event_id=$2",
-            &sample_event,
-            true,
-        ),
-        (
-            "erasure_fk_opt_out_audit_release_event",
-            "SELECT 1 FROM owner_opt_out_audit WHERE account_id=$1 AND release_event_id=$2",
-            &sample_event,
-            true,
-        ),
-        (
-            "erasure_fk_suppressions_attempt",
-            "SELECT 1 FROM recipient_suppressions WHERE source_attempt_id=$1",
-            &sample_attempt,
-            false,
-        ),
-    ] {
-        let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = if with_account {
-            vec![&a.account_id, key]
-        } else {
-            vec![key]
-        };
-        let plan: String = db
-            .query(&format!("EXPLAIN (COSTS OFF) {probe}"), &params)
-            .await
-            .unwrap()
-            .iter()
-            .map(|row| row.get::<_, String>(0))
-            .collect::<Vec<_>>()
-            .join(" ");
-        assert!(
-            plan.contains(index) && !plan.contains("Seq Scan"),
-            "foreign-key probe must use {index}: {plan}"
-        );
-    }
-    // The inbound_events -> message_attempts probe keys on all four foreign
-    // key columns; before migration 061 it could only ride the
-    // (account_id, message_id) prefix of inbound_events_timeline.
-    {
-        let plan: String = db
-            .query(
-                "EXPLAIN (COSTS OFF) SELECT 1 FROM inbound_events                  WHERE account_id=$1 AND device_id=$2 AND message_id=$3 AND attempt_id=$4",
-                &[&a.account_id, &device, &sample_message, &sample_attempt],
-            )
-            .await
-            .unwrap()
-            .iter()
-            .map(|row| row.get::<_, String>(0))
-            .collect::<Vec<_>>()
-            .join(" ");
-        assert!(
-            plan.contains("erasure_fk_inbound_events_attempt") && !plan.contains("Seq Scan"),
-            "attempt foreign-key probe must use erasure_fk_inbound_events_attempt: {plan}"
-        );
-    }
-
-    // (2) Run the handler's exact delete sequence and read this
-    // transaction's own scan counters, then roll it back so the route below
-    // erases the same data. Every deleted inbound event fires one probe on
-    // each event-keyed index, and every deleted attempt fires one probe on
-    // the attempt index and on the inbound_events foreign-key index of
-    // migration 061, so each index on a populated referencing table must
-    // be scanned at least `rows` times. The two hold tables are left out
-    // here: their rows are append-only and block erasure (see
-    // schema_protected_consent_rows_block_the_whole_erasure), so an account
-    // that can be erased never has any, and step (1) already pins their
-    // probes to the account-scoped index.
-    {
-        let erased_sessions: i64 = db
+    current_case(async |db, admin, database_url| {
+        // Issue #515: every deleted row runs a foreign-key check against each
+        // referencing table, and the runtime connection caps one statement at
+        // ten seconds. Without the migration-059 support indexes those checks
+        // scan the referencing rows once per deleted row, so the erasure grows
+        // quadratically with the account and a large account times out (503).
+        //
+        // Wall-clock time is not the proof here, because it depends on the
+        // machine. At this size the erasure without the indexes still finished
+        // in about 2 s locally, and with them a loaded CI runner once missed
+        // the 10 s timeout. So the test pins the mechanism with checks that do
+        // not depend on machine speed:
+        //
+        // 1. EXPLAIN of each foreign-key probe names its erasure_fk_* index and
+        //    contains no Seq Scan.
+        // 2. The handler's exact DELETE_PLAN runs in a rolled-back transaction,
+        //    and that transaction's own statistics counters show each
+        //    erasure_fk_* index on a populated table scanned at least once per
+        //    deleted row. So the real foreign-key trigger probes used it, and no
+        //    referencing table was sequentially scanned per row. Counts are the
+        //    same on every runner. Tuple counters would not discriminate: the
+        //    probed rows were deleted earlier in the same transaction, so every
+        //    probe returns nothing, indexed or not.
+        // 3. The real route, under the unchanged 10 s runtime statement
+        //    timeout, erases the account end to end and returns 200.
+        //
+        // Margin for (3): with the indexes, over 20 local runs (PostgreSQL 18.6
+        // in Docker) the DELETE_PLAN for these 5000 rows took 0.6-1.2 s and the
+        // whole route 0.9-1.4 s, at least 7x under the timeout. All remaining work is
+        // linear in the row count. The earlier version of this test put all
+        // 5000 attempts on one message and ran on unanalyzed tables. That made
+        // the inbound_events -> message_attempts check quadratic: until
+        // migration 061 it was served only by the (account_id, message_id)
+        // prefix of inbound_events_timeline, and that one check took 7.4 s of
+        // an 8.5 s DELETE locally and overran 10 s on loaded runners (#601).
+        // Migration 061 gives it the dedicated four-column index this test now
+        // pins below. The bulk rows still use a few attempts per message, as
+        // real retries do, and the populated tables are analyzed, as autovacuum
+        // does in production, so the timing does not depend on planner
+        // statistics that a fresh test database lacks.
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(37)).unwrap());
+        let handler_database_url = handler_url(database_url, "zt_erasure_fk_scale");
+        let (a, session_a, _b, _session_b, app) =
+            fixture(db, &hasher, &handler_database_url, None).await;
+        let device: Uuid = db
             .query_one(
-                "SELECT count(*) FROM sessions WHERE account_id=$1",
+                "SELECT id FROM devices WHERE account_id=$1",
                 &[&a.account_id],
             )
             .await
             .unwrap()
             .get(0);
-        assert!(
-            erased_sessions > 0,
-            "the erased account must own sessions for the probe to fire"
-        );
-        let tx = db.transaction().await.unwrap();
-        let started = std::time::Instant::now();
-        let provider_receipts_installed = crate::provider_sms::receipts::lifecycle::installed(&tx)
+        // Dedicated messages, marked by their payload, keep the bulk attempts
+        // away from the fixture's unique (message_id, generation) slots.
+        let marker = b"ERASE_FK_SCALE".to_vec();
+        let messages = 1_000_i64;
+        let attempts_per_message = 5_i64;
+        let rows = messages * attempts_per_message;
+        db.execute(
+            "INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) \
+             SELECT gen_random_uuid(),$1,$2,'+15551112222',$3,'synthetic_alpha',$4,$5,'delivered',now()+interval '1 hour' \
+             FROM generate_series(1,$6::bigint)",
+            &[&a.account_id, &device, &vec![6_u8; 32], &marker, &vec![7_u8; 32], &messages],
+        )
+        .await
+        .unwrap();
+        db.execute(
+            "INSERT INTO message_attempts(id,account_id,message_id,device_id,generation,session_epoch,deployment_epoch,status) \
+             SELECT gen_random_uuid(),$1,m.id,$2,g,1,1,'submitted' \
+             FROM messages m CROSS JOIN generate_series(1,$4::bigint) g \
+             WHERE m.account_id=$1 AND m.transport_payload=$3",
+            &[&a.account_id, &device, &marker, &attempts_per_message],
+        )
+        .await
+        .unwrap();
+        db.execute(
+            "INSERT INTO inbound_events(id,account_id,device_id,message_id,attempt_id,device_sequence,classification,observed_at,received_at,part_count,content_kind,event_digest,signature_der) \
+             SELECT gen_random_uuid(),$1,$2,ma.message_id,ma.id,1000+row_number() OVER (ORDER BY ma.id),'sim_unverified',now(),now(),1,'metadata_only', \
+                    sha256(ma.id::text::bytea),sha256(ma.id::text::bytea) \
+             FROM message_attempts ma JOIN messages m ON m.id=ma.message_id \
+             WHERE ma.account_id=$1 AND m.transport_payload=$3",
+            &[&a.account_id, &device, &marker],
+        )
+        .await
+        .unwrap();
+        db.execute(
+            "INSERT INTO webhook_endpoints(id,account_id,callback_url,signing_secret_ciphertext,signing_secret_key_version,enabled) \
+             VALUES(gen_random_uuid(),$1,'https://example.test/erasure-fk-scale',$2,1,true)",
+            &[&a.account_id, &vec![8_u8; 32]],
+        )
+        .await
+        .unwrap();
+        const BULK_EVENTS: &str = "FROM inbound_events e JOIN messages m ON m.id=e.message_id \
+             WHERE e.account_id=$1 AND m.transport_payload=$2";
+        db.execute(
+            &format!(
+                "INSERT INTO webhook_deliveries(id,account_id,endpoint_id,event_id,status,next_attempt_at) \
+                 SELECT gen_random_uuid(),$1,(SELECT id FROM webhook_endpoints WHERE account_id=$1 ORDER BY created_at LIMIT 1),e.id,'pending',now() \
+                 {BULK_EVENTS}"
+            ),
+            &[&a.account_id, &marker],
+        )
+        .await
+        .unwrap();
+        db.execute(
+            &format!(
+                "INSERT INTO recipient_suppressions(account_id,recipient_e164,active,source_event_id,source_attempt_id,source_observed_at,source) \
+                 SELECT $1,'+1555'||lpad(e.device_sequence::text,8,'0'),true,e.id,e.attempt_id,now(),'sms_keyword' \
+                 {BULK_EVENTS}"
+            ),
+            &[&a.account_id, &marker],
+        )
+        .await
+        .unwrap();
+        // The fixture itself contributes one event, delivery and suppression.
+        for sql in [
+            "SELECT count(*) FROM inbound_events WHERE account_id=$1",
+            "SELECT count(*) FROM webhook_deliveries WHERE account_id=$1",
+            "SELECT count(*) FROM recipient_suppressions WHERE account_id=$1",
+        ] {
+            let count: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
+            assert_eq!(count, rows + 1);
+        }
+        // Conversation intervals require a line binding, and the registry
+        // forbids deleting bindings, so an account owning intervals can never be
+        // erased. Seed them for the OTHER fixture account: erasing this account
+        // still deletes its sessions, and every deleted session runs the
+        // referential-integrity probe against the cross-tenant table (#660) -
+        // an unindexed probe would sequentially scan it per deleted session.
+        let conversation_line = Uuid::new_v4();
+        db.execute(
+            "INSERT INTO phone_lines(id,account_id) VALUES($1,$2)",
+            &[&conversation_line, &_b.account_id],
+        )
+        .await
+        .unwrap();
+        db.execute(
+            "INSERT INTO device_line_bindings(account_id,line_id,device_id,generation)          SELECT $1,$2,d.id,1 FROM devices d WHERE d.account_id=$1",
+            &[&_b.account_id, &conversation_line],
+        )
+        .await
+        .unwrap();
+        db.execute(
+            "INSERT INTO conversation_intervals(account_id,id,receipt_id,device_id,line_id, \
+             binding_generation,initiating_session_id,statement,statement_digest,manifest, \
+             trust_generation,activation_version,activation_digest,expires_at_ms,phase, \
+             accepted_at_ms,approval_signature,installation_signature,closed_at) \
+             SELECT $1,gen_random_uuid(),gen_random_uuid(),d.id,$2,1,s.id, \
+                    convert_to(repeat('c',400),'UTF8'),sha256(convert_to('conv','UTF8')), \
+                    convert_to(repeat('m',400),'UTF8'),1,2,sha256(convert_to('conv','UTF8')), \
+                    9999999999999,'history',1,convert_to(repeat('s',64),'UTF8'), \
+                    convert_to(repeat('t',64),'UTF8'),now() \
+             FROM sessions s JOIN devices d ON d.account_id=s.account_id \
+             WHERE s.account_id=$1",
+            &[&_b.account_id, &conversation_line],
+        )
+        .await
+        .unwrap();
+        // Production tables carry planner statistics (autovacuum analyzes them
+        // after bulk writes), and the foreign-key trigger probes run as generic
+        // plans, so a fresh unanalyzed fixture can pick a different shape than
+        // production would. Analyze only the populated tables; the always-empty
+        // hold tables keep their default estimates, as in a fresh deployment.
+        // The probes themselves stay pinned by the plan and counter checks
+        // below regardless of statistics.
+        admin.batch_execute(
+            "ANALYZE messages, message_attempts, inbound_events, webhook_deliveries, recipient_suppressions",
+        )
+        .await
+        .unwrap();
+        // (1) Each foreign-key probe the DELETE triggers is planned as an index
+        // scan on its erasure_fk_* index; without migrations 059 and 061 each of
+        // these plans is a sequential scan over the account's thousands of rows.
+        let sample_event: Uuid = db
+            .query_one(
+                &format!("SELECT e.id {BULK_EVENTS} LIMIT 1"),
+                &[&a.account_id, &marker],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        let sample_row = db
+            .query_one(
+                &format!("SELECT e.attempt_id, e.message_id {BULK_EVENTS} LIMIT 1"),
+                &[&a.account_id, &marker],
+            )
             .await
             .unwrap();
-        assert!(!provider_receipts_installed, "ordinary migrated fixture");
-        for &(table, sql) in DELETE_PLAN {
-            if ["provider_receipt_events", "provider_receipt_attempts"].contains(&table)
-                && !provider_receipts_installed
-            {
-                continue;
-            }
-            tx.execute(sql, &[&a.account_id]).await.unwrap();
+        let sample_attempt: Uuid = sample_row.get(0);
+        let sample_message: Uuid = sample_row.get(1);
+        for (index, probe, key, with_account) in [
+            (
+                "erasure_fk_webhook_deliveries_event",
+                "SELECT 1 FROM webhook_deliveries WHERE account_id=$1 AND event_id=$2",
+                &sample_event,
+                true,
+            ),
+            (
+                "erasure_fk_suppressions_event",
+                "SELECT 1 FROM recipient_suppressions WHERE account_id=$1 AND source_event_id=$2",
+                &sample_event,
+                true,
+            ),
+            (
+                "erasure_fk_holds_release_event",
+                "SELECT 1 FROM owner_recipient_holds WHERE account_id=$1 AND release_event_id=$2",
+                &sample_event,
+                true,
+            ),
+            (
+                "erasure_fk_opt_out_audit_release_event",
+                "SELECT 1 FROM owner_opt_out_audit WHERE account_id=$1 AND release_event_id=$2",
+                &sample_event,
+                true,
+            ),
+            (
+                "erasure_fk_suppressions_attempt",
+                "SELECT 1 FROM recipient_suppressions WHERE source_attempt_id=$1",
+                &sample_attempt,
+                false,
+            ),
+        ] {
+            let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = if with_account {
+                vec![&a.account_id, key]
+            } else {
+                vec![key]
+            };
+            let plan: String = db
+                .query(&format!("EXPLAIN (COSTS OFF) {probe}"), &params)
+                .await
+                .unwrap()
+                .iter()
+                .map(|row| row.get::<_, String>(0))
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(
+                plan.contains(index) && !plan.contains("Seq Scan"),
+                "foreign-key probe must use {index}: {plan}"
+            );
         }
-        eprintln!(
-            "DELETE_PLAN over {rows} referenced rows took {:?}",
-            started.elapsed()
-        );
-        // Every deleted session row probes the conversation-interval
-        // foreign key once, whatever account owns the intervals.
+        // The inbound_events -> message_attempts probe keys on all four foreign
+        // key columns; before migration 061 it could only ride the
+        // (account_id, message_id) prefix of inbound_events_timeline.
         {
-            let index = "erasure_fk_conversation_interval_session";
-            let row = tx
-                .query_one(
-                    "SELECT to_regclass($1) IS NOT NULL, \
-                            coalesce(pg_stat_get_xact_numscans(to_regclass($1)), 0)",
-                    &[&index],
+            let plan: String = db
+                .query(
+                    "EXPLAIN (COSTS OFF) SELECT 1 FROM inbound_events                  WHERE account_id=$1 AND device_id=$2 AND message_id=$3 AND attempt_id=$4",
+                    &[&a.account_id, &device, &sample_message, &sample_attempt],
                 )
                 .await
-                .unwrap();
-            assert!(row.get::<_, bool>(0), "index {index} must exist");
-            let scans: i64 = row.get(1);
+                .unwrap()
+                .iter()
+                .map(|row| row.get::<_, String>(0))
+                .collect::<Vec<_>>()
+                .join(" ");
             assert!(
-                scans >= erased_sessions,
-                "every deleted session must probe {index}: {scans} scans for {erased_sessions} sessions"
+                plan.contains("erasure_fk_inbound_events_attempt") && !plan.contains("Seq Scan"),
+                "attempt foreign-key probe must use erasure_fk_inbound_events_attempt: {plan}"
             );
         }
-        for index in [
-            "erasure_fk_webhook_deliveries_event",
-            "erasure_fk_suppressions_event",
-            "erasure_fk_suppressions_attempt",
-            "erasure_fk_inbound_events_attempt",
-        ] {
-            let row = tx
+
+        // (2) Run the handler's exact delete sequence and read this
+        // transaction's own scan counters, then roll it back so the route below
+        // erases the same data. Every deleted inbound event fires one probe on
+        // each event-keyed index, and every deleted attempt fires one probe on
+        // the attempt index and on the inbound_events foreign-key index of
+        // migration 061, so each index on a populated referencing table must
+        // be scanned at least `rows` times. The two hold tables are left out
+        // here: their rows are append-only and block erasure (see
+        // schema_protected_consent_rows_block_the_whole_erasure), so an account
+        // that can be erased never has any, and step (1) already pins their
+        // probes to the account-scoped index.
+        {
+            let erased_sessions: i64 = db
                 .query_one(
-                    "SELECT to_regclass($1) IS NOT NULL, \
-                            coalesce(pg_stat_get_xact_numscans(to_regclass($1)), 0)",
-                    &[&index],
-                )
-                .await
-                .unwrap();
-            assert!(row.get::<_, bool>(0), "index {index} must exist");
-            let scans: i64 = row.get(1);
-            assert!(
-                scans >= rows,
-                "every foreign-key check must probe {index}: {scans} scans for {rows} deleted rows"
-            );
-        }
-        // For a table, the same counter is its sequential scan count. A
-        // per-row sequential scan would show up here as thousands.
-        for table in [
-            "webhook_deliveries",
-            "recipient_suppressions",
-            "inbound_events",
-            "conversation_intervals",
-        ] {
-            let seq_scans: i64 = tx
-                .query_one(
-                    "SELECT pg_stat_get_xact_numscans(to_regclass($1))",
-                    &[&table],
+                    "SELECT count(*) FROM sessions WHERE account_id=$1",
+                    &[&a.account_id],
                 )
                 .await
                 .unwrap()
                 .get(0);
             assert!(
-                seq_scans < 100,
-                "{table} must not be sequentially scanned per deleted row: {seq_scans} scans"
+                erased_sessions > 0,
+                "the erased account must own sessions for the probe to fire"
             );
+            let tx = db.transaction().await.unwrap();
+            let started = std::time::Instant::now();
+            let provider_receipts_installed = crate::provider_sms::receipts::lifecycle::installed(&tx)
+                .await
+                .unwrap();
+            assert!(!provider_receipts_installed, "ordinary migrated fixture");
+            let managed_installed = crate::managed_ai::lifecycle::installed(&tx).await.unwrap();
+            assert!(!managed_installed, "ordinary current candidate absence");
+            for &(table, sql) in DELETE_PLAN {
+                if crate::managed_ai::lifecycle::TABLES.contains(&table) && !managed_installed {
+                    continue;
+                }
+                if ["provider_receipt_events", "provider_receipt_attempts"].contains(&table)
+                    && !provider_receipts_installed
+                {
+                    continue;
+                }
+                tx.execute(sql, &[&a.account_id]).await.unwrap();
+            }
+            eprintln!(
+                "DELETE_PLAN over {rows} referenced rows took {:?}",
+                started.elapsed()
+            );
+            // Every deleted session row probes the conversation-interval
+            // foreign key once, whatever account owns the intervals.
+            {
+                let index = "erasure_fk_conversation_interval_session";
+                let row = tx
+                    .query_one(
+                        "SELECT to_regclass($1) IS NOT NULL, \
+                                coalesce(pg_stat_get_xact_numscans(to_regclass($1)), 0)",
+                        &[&index],
+                    )
+                    .await
+                    .unwrap();
+                assert!(row.get::<_, bool>(0), "index {index} must exist");
+                let scans: i64 = row.get(1);
+                assert!(
+                    scans >= erased_sessions,
+                    "every deleted session must probe {index}: {scans} scans for {erased_sessions} sessions"
+                );
+            }
+            for index in [
+                "erasure_fk_webhook_deliveries_event",
+                "erasure_fk_suppressions_event",
+                "erasure_fk_suppressions_attempt",
+                "erasure_fk_inbound_events_attempt",
+            ] {
+                let row = tx
+                    .query_one(
+                        "SELECT to_regclass($1) IS NOT NULL, \
+                                coalesce(pg_stat_get_xact_numscans(to_regclass($1)), 0)",
+                        &[&index],
+                    )
+                    .await
+                    .unwrap();
+                assert!(row.get::<_, bool>(0), "index {index} must exist");
+                let scans: i64 = row.get(1);
+                assert!(
+                    scans >= rows,
+                    "every foreign-key check must probe {index}: {scans} scans for {rows} deleted rows"
+                );
+            }
+            // For a table, the same counter is its sequential scan count. A
+            // per-row sequential scan would show up here as thousands.
+            for table in [
+                "webhook_deliveries",
+                "recipient_suppressions",
+                "inbound_events",
+                "conversation_intervals",
+            ] {
+                let seq_scans: i64 = tx
+                    .query_one(
+                        "SELECT pg_stat_get_xact_numscans(to_regclass($1))",
+                        &[&table],
+                    )
+                    .await
+                    .unwrap()
+                    .get(0);
+                assert!(
+                    seq_scans < 100,
+                    "{table} must not be sequentially scanned per deleted row: {seq_scans} scans"
+                );
+            }
+            tx.rollback().await.unwrap();
         }
-        tx.rollback().await.unwrap();
-    }
 
-    // (3) End to end, under the real runtime statement timeout.
-    let started = std::time::Instant::now();
-    let response = app
-        .oneshot(erasure_post(
-            Some(&session_a.token),
-            Some(&session_a.csrf_token),
-            Some(ORIGIN),
-            &crate::test_keys::password(1),
-            None,
-        ))
-        .await
-        .unwrap();
-    let elapsed = started.elapsed();
-    assert_eq!(
-        response.status(),
-        StatusCode::OK,
-        "erasure of {rows} referenced rows must finish inside the runtime statement timeout"
-    );
-    eprintln!("erasure of {rows} referenced rows took {elapsed:?}");
-    for sql in [
-        "SELECT count(*) FROM inbound_events WHERE account_id=$1",
-        "SELECT count(*) FROM webhook_deliveries WHERE account_id=$1",
-        "SELECT count(*) FROM recipient_suppressions WHERE account_id=$1",
-        "SELECT count(*) FROM message_attempts WHERE account_id=$1",
-        "SELECT count(*) FROM messages WHERE account_id=$1",
-        "SELECT count(*) FROM accounts WHERE id=$1",
-    ] {
-        let count: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
-        assert_eq!(count, 0, "{sql} after erasure");
-    }
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
+        // (3) End to end, under the real runtime statement timeout.
+        let started = std::time::Instant::now();
+        let response = app
+            .oneshot(erasure_post(
+                Some(&session_a.token),
+                Some(&session_a.csrf_token),
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                None,
+            ))
+            .await
+            .unwrap();
+        let elapsed = started.elapsed();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "erasure of {rows} referenced rows must finish inside the runtime statement timeout"
+        );
+        eprintln!("erasure of {rows} referenced rows took {elapsed:?}");
+        for sql in [
+            "SELECT count(*) FROM inbound_events WHERE account_id=$1",
+            "SELECT count(*) FROM webhook_deliveries WHERE account_id=$1",
+            "SELECT count(*) FROM recipient_suppressions WHERE account_id=$1",
+            "SELECT count(*) FROM message_attempts WHERE account_id=$1",
+            "SELECT count(*) FROM messages WHERE account_id=$1",
+            "SELECT count(*) FROM accounts WHERE id=$1",
+        ] {
+            let count: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
+            assert_eq!(count, 0, "{sql} after erasure");
+        }
+    }).await;
 }
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn erasure_deletes_contacts_and_their_consent_history() {
-    let (admin, mut db, database_url, schema) = migrated_schema("contacts").await;
-    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(51)).unwrap());
-    let (a, session_a, b, _session_b, app) = fixture(&mut db, &hasher, &database_url, None).await;
-    // Account a keeps two contacts, one with encrypted fields and a full
-    // consent history; account b keeps one contact that must survive.
-    let contact = Uuid::new_v4();
-    db.execute(
-        "INSERT INTO contacts(id,account_id,recipient_e164,display_name_ciphertext,notes_ciphertext) \
-         VALUES($1,$2,'+15550100001',$3,$4)",
-        &[&contact, &a.account_id, &vec![1_u8; 64], &vec![2_u8; 80]],
-    )
-    .await
-    .unwrap();
-    db.execute(
-        "INSERT INTO contacts(id,account_id,recipient_e164) VALUES($1,$2,'+15550100002')",
-        &[&Uuid::new_v4(), &a.account_id],
-    )
-    .await
-    .unwrap();
-    db.execute(
-        "INSERT INTO contacts(id,account_id,recipient_e164) VALUES($1,$2,'+15550100001')",
-        &[&Uuid::new_v4(), &b.account_id],
-    )
-    .await
-    .unwrap();
-    db.execute(
-        "INSERT INTO contact_consent_records \
-         (id,account_id,contact_id,purpose,action,source,effective_at,expires_at,recorded_by) \
-         SELECT $1::uuid,$2::uuid,$3::uuid,'marketing','grant','manual_entry', \
-         now()-interval '1 hour',now()+interval '30 days',$4::uuid \
-         UNION ALL SELECT $5::uuid,$2::uuid,$3::uuid,'marketing','withdraw', \
-         'off_channel_record',now()-interval '30 minutes',NULL,$4::uuid \
-         UNION ALL SELECT $6::uuid,$2::uuid,$3::uuid,'transactional','grant', \
-         'manual_entry',now()-interval '2 hours',NULL,$4::uuid",
-        &[
-            &Uuid::new_v4(),
-            &a.account_id,
-            &contact,
-            &a.user_id,
-            &Uuid::new_v4(),
-            &Uuid::new_v4(),
-        ],
-    )
-    .await
-    .unwrap();
-    let response = app
-        .clone()
-        .oneshot(erasure_post(
-            Some(&session_a.token),
-            Some(&session_a.csrf_token),
-            Some(ORIGIN),
-            &crate::test_keys::password(1),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let report = body(response).await;
-    assert_eq!(deleted_count(&report, "contacts"), 2);
-    assert_eq!(deleted_count(&report, "contact_consent_records"), 3);
-    let remaining = db
-        .query_one(
-            "SELECT (SELECT count(*) FROM contacts),(SELECT count(*) FROM contact_consent_records)",
-            &[],
+    current_case(async |db, _admin, database_url| {
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(51)).unwrap());
+        let (a, session_a, b, _session_b, app) = fixture(db, &hasher, database_url, None).await;
+        // Account a keeps two contacts, one with encrypted fields and a full
+        // consent history; account b keeps one contact that must survive.
+        let contact = Uuid::new_v4();
+        db.execute(
+            "INSERT INTO contacts(id,account_id,recipient_e164,display_name_ciphertext,notes_ciphertext) \
+             VALUES($1,$2,'+15550100001',$3,$4)",
+            &[&contact, &a.account_id, &vec![1_u8; 64], &vec![2_u8; 80]],
         )
         .await
         .unwrap();
-    let (contacts_left, consent_left): (i64, i64) = (remaining.get(0), remaining.get(1));
-    assert_eq!(
-        (contacts_left, consent_left),
-        (1, 0),
-        "only the other account's contact survives, without its own history"
-    );
-    let survivor: String = db
-        .query_one("SELECT recipient_e164 FROM contacts", &[])
-        .await
-        .unwrap()
-        .get(0);
-    assert_eq!(survivor, "+15550100001");
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        db.execute(
+            "INSERT INTO contacts(id,account_id,recipient_e164) VALUES($1,$2,'+15550100002')",
+            &[&Uuid::new_v4(), &a.account_id],
+        )
         .await
         .unwrap();
+        db.execute(
+            "INSERT INTO contacts(id,account_id,recipient_e164) VALUES($1,$2,'+15550100001')",
+            &[&Uuid::new_v4(), &b.account_id],
+        )
+        .await
+        .unwrap();
+        db.execute(
+            "INSERT INTO contact_consent_records \
+             (id,account_id,contact_id,purpose,action,source,effective_at,expires_at,recorded_by) \
+             SELECT $1::uuid,$2::uuid,$3::uuid,'marketing','grant','manual_entry', \
+             now()-interval '1 hour',now()+interval '30 days',$4::uuid \
+             UNION ALL SELECT $5::uuid,$2::uuid,$3::uuid,'marketing','withdraw', \
+             'off_channel_record',now()-interval '30 minutes',NULL,$4::uuid \
+             UNION ALL SELECT $6::uuid,$2::uuid,$3::uuid,'transactional','grant', \
+             'manual_entry',now()-interval '2 hours',NULL,$4::uuid",
+            &[
+                &Uuid::new_v4(),
+                &a.account_id,
+                &contact,
+                &a.user_id,
+                &Uuid::new_v4(),
+                &Uuid::new_v4(),
+            ],
+        )
+        .await
+        .unwrap();
+        let response = app
+            .clone()
+            .oneshot(erasure_post(
+                Some(&session_a.token),
+                Some(&session_a.csrf_token),
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let report = body(response).await;
+        assert_eq!(deleted_count(&report, "contacts"), 2);
+        assert_eq!(deleted_count(&report, "contact_consent_records"), 3);
+        let remaining = db
+            .query_one(
+                "SELECT (SELECT count(*) FROM contacts),(SELECT count(*) FROM contact_consent_records)",
+                &[],
+            )
+            .await
+            .unwrap();
+        let (contacts_left, consent_left): (i64, i64) = (remaining.get(0), remaining.get(1));
+        assert_eq!(
+            (contacts_left, consent_left),
+            (1, 0),
+            "only the other account's contact survives, without its own history"
+        );
+        let survivor: String = db
+            .query_one("SELECT recipient_e164 FROM contacts", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(survivor, "+15550100001");
+    }).await;
 }
 #[test]
 fn confirmed_proof_delete_precedes_every_referenced_parent() {
@@ -3608,55 +3611,337 @@ fn confirmed_proof_delete_precedes_every_referenced_parent() {
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn malformed_confirmation_schema_fails_erasure_closed_without_partial_deletes() {
-    let (_admin, mut db, database_url, schema) = migrated_schema("proof_shape").await;
-    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
-    let (a, session_a, _b, _session_b, app) = fixture(&mut db, &hasher, &database_url, None).await;
-    db.batch_execute("DROP TABLE conversation_execution_records CASCADE; DROP TABLE conversation_confirmation_records; CREATE TABLE conversation_confirmation_records(account_id uuid NOT NULL)").await.unwrap();
-    db.execute(
-        "INSERT INTO conversation_confirmation_records(account_id) VALUES($1)",
-        &[&a.account_id],
-    )
-    .await
-    .unwrap();
-    let response = app
-        .oneshot(erasure_post(
-            Some(&session_a.token),
-            Some(&session_a.csrf_token),
-            Some(ORIGIN),
-            &crate::test_keys::password(1),
-            None,
-        ))
+    current_case(async |db, admin, database_url| {
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
+        let (a, session_a, _b, _session_b, app) = fixture(db, &hasher, database_url, None).await;
+        crate::hosted_runtime_identity::require(&*db).await.unwrap();
+        admin.batch_execute("DROP TABLE conversation_execution_records CASCADE; DROP TABLE conversation_confirmation_records; CREATE TABLE public.conversation_confirmation_records(account_id uuid NOT NULL)").await.unwrap();
+        admin.execute(
+            "INSERT INTO conversation_confirmation_records(account_id) VALUES($1)",
+            &[&a.account_id],
+        )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    for (table, column) in [
-        ("accounts", "id"),
-        ("messages", "account_id"),
-        ("conversation_confirmation_records", "account_id"),
-    ] {
-        let count: i64 = db
-            .query_one(
-                &format!("SELECT count(*) FROM {table} WHERE {column}=$1"),
-                &[&a.account_id],
-            )
+        assert!(crate::hosted_runtime_identity::require(&*db).await.is_err());
+        // Current catalog corruption refuses at native entry; historical validator
+        // controls are separate and do not claim this later branch was reached.
+        let response = app
+            .oneshot(erasure_post(
+                Some(&session_a.token),
+                Some(&session_a.csrf_token),
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                None,
+            ))
             .await
-            .unwrap()
-            .get(0);
-        assert!(count > 0);
-    }
-    crate::sealed_manifest_store::tests::cleanup::drop_fixture(&db, &schema)
-        .await
-        .unwrap();
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        for (table, column) in [
+            ("accounts", "id"),
+            ("messages", "account_id"),
+            ("conversation_confirmation_records", "account_id"),
+        ] {
+            let count: i64 = admin
+                .query_one(
+                    &format!("SELECT count(*) FROM {table} WHERE {column}=$1"),
+                    &[&a.account_id],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            assert!(count > 0);
+        }
+    }).await;
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated synthetic schema"]
-async fn execution_installed_schema_erasure_succeeds_and_absence_keeps_existing_behavior() {
-    for absent in [false, true] {
-        let (_admin, mut db, database_url, schema) =
-            migrated_schema_with_execution("execution_erase", !absent).await;
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; current stock runtime fixture"]
+async fn current_execution_storage_succeeds_and_missing_storage_refuses_without_changes() {
+    for missing in [false, true] {
+        current_case(async |db, admin, database_url| {
+            let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
+            let (a, session, _, _, app) = fixture(db, &hasher, database_url, None).await;
+            crate::hosted_runtime_identity::require(&*db).await.unwrap();
+            if missing {
+                admin
+                    .batch_execute("DROP TABLE conversation_execution_records CASCADE")
+                    .await
+                    .unwrap();
+                assert!(crate::hosted_runtime_identity::require(&*db).await.is_err());
+            }
+            let response = app
+                .oneshot(erasure_post(
+                    Some(&session.token),
+                    Some(&session.csrf_token),
+                    Some(ORIGIN),
+                    &crate::test_keys::password(1),
+                    None,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                if missing {
+                    StatusCode::SERVICE_UNAVAILABLE
+                } else {
+                    StatusCode::OK
+                }
+            );
+            if !missing {
+                assert_eq!(
+                    deleted_count(&body(response).await, "conversation_execution_records"),
+                    0
+                );
+            }
+            for (table, column, retained) in [
+                ("accounts", "id", 1),
+                ("messages", "account_id", 2),
+                ("sessions", "account_id", 1),
+            ] {
+                assert_eq!(
+                    rows(
+                        &*db,
+                        &format!("SELECT count(*) FROM {table} WHERE {column}=$1"),
+                        a.account_id
+                    )
+                    .await,
+                    if missing { retained } else { 0 }
+                );
+            }
+            if missing {
+                assert!(
+                    db.query_one(
+                        "SELECT disabled_at IS NULL FROM accounts WHERE id=$1",
+                        &[&a.account_id]
+                    )
+                    .await
+                    .unwrap()
+                    .get::<_, bool>(0)
+                );
+            }
+        })
+        .await;
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; current stock runtime fixture"]
+async fn native_execution_schema_wait_rechecks_expired_owner_without_any_mutation() {
+    current_case(async |db, admin, database_url| {
+        let schema = "public";
         let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
-        let (a, session, _b, _bsession, app) = fixture(&mut db, &hasher, &database_url, None).await;
+        let handler_database_url = handler_url(database_url, "zt_execution_erase_expiry");
+        let (a, session, _b, _bsession, app) =
+            fixture(db, &hasher, &handler_database_url, None).await;
+        db.execute("UPDATE sessions SET last_used_at=clock_timestamp(),expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1",&[&session.id]).await.unwrap();
+        let pid = db
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get::<_, i32>(0);
+        let blocker = db.transaction().await.unwrap();
+        blocker
+            .batch_execute("LOCK TABLE conversation_execution_records IN ACCESS EXCLUSIVE MODE")
+            .await
+            .unwrap();
+        let token = session.token.clone();
+        let csrf = session.csrf_token.clone();
+        let request = current_fixture::spawn(async move {
+            app.oneshot(erasure_post(
+                Some(&token),
+                Some(&csrf),
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                None,
+            ))
+            .await
+            .unwrap()
+        });
+        wait_until_handler_is_blocked_by(admin, "zt_execution_erase_expiry", pid).await;
+        // Current native admission precedes business/account locks. Prove the
+        // actual execution relation wait, not an obsolete outer SQL substring.
+        let wait = admin.query_one("SELECT EXISTS(SELECT FROM pg_stat_activity a JOIN pg_locks l ON l.pid=a.pid WHERE a.application_name='zt_execution_erase_expiry' AND $1=ANY(pg_blocking_pids(a.pid)) AND l.locktype='relation' AND l.relation='public.conversation_execution_records'::regclass AND l.mode='AccessShareLock' AND NOT l.granted AND (a.query LIKE '%payload_profile_writer_graph%' OR a.query LIKE '%hosted_runtime%'))", &[&pid]).await.unwrap();
+        assert!(wait.get::<_,bool>(0));
+        // Do not mislabel early native admission as the later owner-held wait.
+        // The separate record-wait test proves its genuine NOWAIT refusal.
+        admin.batch_execute("BEGIN").await.unwrap();
+        let account_available = admin.query_opt("SELECT id FROM public.accounts WHERE id=$1 FOR UPDATE NOWAIT", &[&a.account_id]).await;
+        admin.batch_execute("ROLLBACK").await.unwrap();
+        assert!(account_available.unwrap().is_some());
+        assert!(
+            admin
+                .query_one(
+                    &format!("SELECT expires_at>clock_timestamp() FROM {schema}.sessions WHERE id=$1"),
+                    &[&session.id],
+                )
+                .await
+                .unwrap()
+                .get::<_, bool>(0)
+        );
+        // Expire only after observing the schema wait, so password verification
+        // cannot consume a short fixture deadline before reaching this barrier.
+        admin.execute(
+            &format!("UPDATE {schema}.sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1"),
+            &[&session.id],
+        ).await.unwrap();
+        blocker.commit().await.unwrap();
+        assert_eq!(request.await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        assert!(
+            db.query_one(
+                "SELECT disabled_at IS NULL FROM accounts WHERE id=$1",
+                &[&a.account_id]
+            )
+            .await
+            .unwrap()
+            .get::<_, bool>(0)
+        );
+        assert_eq!(
+            db.query_one(
+                "SELECT count(*) FROM messages WHERE account_id=$1",
+                &[&a.account_id]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+            2
+        );
+    }).await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; current stock runtime fixture"]
+async fn execution_record_wait_holds_owner_lock_and_expiry_rolls_back_all_deletes() {
+    current_case(async |db, admin, database_url| {
+        let schema = "public";
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
+        let handler_database_url = handler_url(database_url, "zt_execution_record_expiry");
+        let (a, session, _b, _bsession, app) =
+            fixture(db, &hasher, &handler_database_url, None).await;
+        db.execute(
+            "UPDATE sessions SET last_used_at=clock_timestamp() WHERE id=$1",
+            &[&session.id],
+        )
+        .await
+        .unwrap();
+        let pid = db
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get::<_, i32>(0);
+        let blocker = db.transaction().await.unwrap();
+        blocker
+            .batch_execute("LOCK TABLE conversation_execution_records IN EXCLUSIVE MODE")
+            .await
+            .unwrap();
+        let token = session.token.clone();
+        let csrf = session.csrf_token.clone();
+        let request = current_fixture::spawn(async move {
+            app.oneshot(erasure_post(
+                Some(&token),
+                Some(&csrf),
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                None,
+            ))
+            .await
+            .unwrap()
+        });
+        wait_until_handler_is_blocked_by(admin, "zt_execution_record_expiry", pid).await;
+        // EXCLUSIVE permits plain SELECT queries but blocks the exact FOR UPDATE record
+        // acquisition. Observe the known blocker while the owner is still live.
+        let waiting:String=admin.query_one("SELECT query FROM pg_stat_activity WHERE application_name='zt_execution_record_expiry' AND $1=ANY(pg_blocking_pids(pid))",&[&pid]).await.unwrap().get(0);
+        assert!(waiting.contains("SELECT message_id FROM conversation_execution_records"));
+        assert!(
+            admin
+                .query_one(
+                    &format!("SELECT expires_at>clock_timestamp() FROM {schema}.sessions WHERE id=$1"),
+                    &[&session.id]
+                )
+                .await
+                .unwrap()
+                .get::<_, bool>(0)
+        );
+        let account_lock = admin
+            .query_one(
+                &format!("SELECT id FROM {schema}.accounts WHERE id=$1 FOR UPDATE NOWAIT"),
+                &[&a.account_id],
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            account_lock.code(),
+            Some(&tokio_postgres::error::SqlState::LOCK_NOT_AVAILABLE)
+        );
+        // Arm expiry only after proving the record wait and prior owner/account lock.
+        // No session lock or approval is acquired before the final complete fence.
+        admin.execute(&format!("UPDATE {schema}.sessions SET expires_at=clock_timestamp()+interval '500 milliseconds' WHERE id=$1"), &[&session.id]).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if admin
+                    .query_one(
+                        &format!(
+                            "SELECT expires_at<=clock_timestamp() FROM {schema}.sessions WHERE id=$1"
+                        ),
+                        &[&session.id],
+                    )
+                    .await
+                    .unwrap()
+                    .get::<_, bool>(0)
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        blocker.commit().await.unwrap();
+        assert_eq!(request.await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        assert!(
+            db.query_one(
+                "SELECT disabled_at IS NULL FROM accounts WHERE id=$1",
+                &[&a.account_id]
+            )
+            .await
+            .unwrap()
+            .get::<_, bool>(0)
+        );
+        assert_eq!(
+            db.query_one(
+                "SELECT count(*) FROM messages WHERE account_id=$1",
+                &[&a.account_id]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+            2
+        );
+    }).await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; current stock runtime fixture"]
+async fn execution_partial_schema_erasure_fails_without_disabling_or_deleting_account_data() {
+    current_case(async |db, admin, database_url| {
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
+        let (a, session, _b, _bsession, app) = fixture(db, &hasher, database_url, None).await;
+        crate::hosted_runtime_identity::require(&*db).await.unwrap();
+        admin.batch_execute("DROP TABLE conversation_execution_records CASCADE")
+            .await
+            .unwrap();
+        let snapshot = "SELECT jsonb_build_object('accounts',(SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM accounts a), \
+            'messages',(SELECT jsonb_agg(to_jsonb(m) ORDER BY m.id) FROM messages m), \
+            'attempts',(SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM message_attempts a), \
+            'fences',(SELECT jsonb_agg(to_jsonb(f) ORDER BY f.attempt_id) FROM dispatch_fences f), \
+            'devices',(SELECT jsonb_agg(to_jsonb(d) ORDER BY d.id) FROM devices d), \
+            'sessions',(SELECT jsonb_agg(id ORDER BY id) FROM sessions), \
+            'users',(SELECT jsonb_agg(id ORDER BY id) FROM users), \
+            'memberships',(SELECT jsonb_agg(to_jsonb(member) ORDER BY member.account_id,member.user_id) FROM memberships member), \
+            'confirmation',(SELECT jsonb_agg(to_jsonb(p) ORDER BY p.message_id) FROM conversation_confirmation_records p))::text";
+        let before: String = db.query_one(snapshot, &[]).await.unwrap().get(0);
+        assert!(crate::hosted_runtime_identity::require(&*db).await.is_err());
+        // Current catalog corruption refuses at native entry; historical validator
+        // controls are separate and do not claim this later branch was reached.
         let response = app
             .oneshot(erasure_post(
                 Some(&session.token),
@@ -3667,412 +3952,188 @@ async fn execution_installed_schema_erasure_succeeds_and_absence_keeps_existing_
             ))
             .await
             .unwrap();
-        assert_eq!(
-            response.status(),
-            StatusCode::OK,
-            "execution candidate absent={absent}"
-        );
-        let report = body(response).await;
-        let listed = report["deleted"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|r| r["table"] == "conversation_execution_records");
-        assert_eq!(listed, !absent);
-        assert_eq!(
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let after: String = db.query_one(snapshot, &[]).await.unwrap().get(0);
+        assert_eq!(after, before);
+        assert!(
             db.query_one(
-                "SELECT count(*) FROM accounts WHERE id=$1",
+                "SELECT disabled_at IS NULL FROM accounts WHERE id=$1",
                 &[&a.account_id]
             )
             .await
             .unwrap()
-            .get::<_, i64>(0),
-            0
+            .get::<_, bool>(0)
         );
-        crate::sealed_manifest_store::tests::cleanup::drop_fixture(&db, &schema)
-            .await
-            .unwrap();
-    }
+    }).await;
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated synthetic schema"]
-async fn execution_schema_wait_expired_owner_rolls_back_disable_and_all_deletes() {
-    let (admin, mut db, database_url, schema) = migrated_schema("execution_expiry").await;
-    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
-    let handler_database_url = handler_url(&database_url, "zt_execution_erase_expiry");
-    let (a, session, _b, _bsession, app) =
-        fixture(&mut db, &hasher, &handler_database_url, None).await;
-    db.execute("UPDATE sessions SET last_used_at=clock_timestamp(),expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1",&[&session.id]).await.unwrap();
-    let pid = db
-        .query_one("SELECT pg_backend_pid()", &[])
-        .await
-        .unwrap()
-        .get::<_, i32>(0);
-    let blocker = db.transaction().await.unwrap();
-    blocker
-        .batch_execute("LOCK TABLE conversation_execution_records IN ACCESS EXCLUSIVE MODE")
-        .await
-        .unwrap();
-    let token = session.token.clone();
-    let csrf = session.csrf_token.clone();
-    let request = tokio::spawn(async move {
-        app.oneshot(erasure_post(
-            Some(&token),
-            Some(&csrf),
-            Some(ORIGIN),
-            &crate::test_keys::password(1),
-            None,
-        ))
-        .await
-        .unwrap()
-    });
-    wait_until_handler_is_blocked_by(&admin, "zt_execution_erase_expiry", pid).await;
-    // The lock is on the installed execution table before the final authenticated
-    // final owner fence, rather than on an earlier password/session read.
-    let waiting:String=admin.query_one("SELECT query FROM pg_stat_activity WHERE application_name='zt_execution_erase_expiry' AND $1=ANY(pg_blocking_pids(pid))",&[&pid]).await.unwrap().get(0);
-    assert!(waiting.contains("conversation_execution_records"));
-    assert!(
-        admin
-            .query_one(
-                &format!("SELECT expires_at>clock_timestamp() FROM {schema}.sessions WHERE id=$1"),
-                &[&session.id],
-            )
-            .await
-            .unwrap()
-            .get::<_, bool>(0)
-    );
-    // Expire only after observing the schema wait, so password verification
-    // cannot consume a short fixture deadline before reaching this barrier.
-    admin.execute(
-        &format!("UPDATE {schema}.sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1"),
-        &[&session.id],
-    ).await.unwrap();
-    blocker.commit().await.unwrap();
-    assert_eq!(request.await.unwrap().status(), StatusCode::UNAUTHORIZED);
-    assert!(
-        db.query_one(
-            "SELECT disabled_at IS NULL FROM accounts WHERE id=$1",
-            &[&a.account_id]
-        )
-        .await
-        .unwrap()
-        .get::<_, bool>(0)
-    );
-    assert_eq!(
-        db.query_one(
-            "SELECT count(*) FROM messages WHERE account_id=$1",
-            &[&a.account_id]
-        )
-        .await
-        .unwrap()
-        .get::<_, i64>(0),
-        2
-    );
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated synthetic schema"]
-async fn execution_record_wait_holds_owner_lock_and_expiry_rolls_back_all_deletes() {
-    let (admin, mut db, database_url, schema) = migrated_schema("exec_expiry").await;
-    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
-    let handler_database_url = handler_url(&database_url, "zt_execution_record_expiry");
-    let (a, session, _b, _bsession, app) =
-        fixture(&mut db, &hasher, &handler_database_url, None).await;
-    db.execute(
-        "UPDATE sessions SET last_used_at=clock_timestamp() WHERE id=$1",
-        &[&session.id],
-    )
-    .await
-    .unwrap();
-    let pid = db
-        .query_one("SELECT pg_backend_pid()", &[])
-        .await
-        .unwrap()
-        .get::<_, i32>(0);
-    let blocker = db.transaction().await.unwrap();
-    blocker
-        .batch_execute("LOCK TABLE conversation_execution_records IN EXCLUSIVE MODE")
-        .await
-        .unwrap();
-    let token = session.token.clone();
-    let csrf = session.csrf_token.clone();
-    let request = tokio::spawn(async move {
-        app.oneshot(erasure_post(
-            Some(&token),
-            Some(&csrf),
-            Some(ORIGIN),
-            &crate::test_keys::password(1),
-            None,
-        ))
-        .await
-        .unwrap()
-    });
-    wait_until_handler_is_blocked_by(&admin, "zt_execution_record_expiry", pid).await;
-    // EXCLUSIVE permits plain SELECT queries but blocks the exact FOR UPDATE record
-    // acquisition. Observe the known blocker while the owner is still live.
-    let waiting:String=admin.query_one("SELECT query FROM pg_stat_activity WHERE application_name='zt_execution_record_expiry' AND $1=ANY(pg_blocking_pids(pid))",&[&pid]).await.unwrap().get(0);
-    assert!(waiting.contains("SELECT message_id FROM conversation_execution_records"));
-    assert!(
-        admin
-            .query_one(
-                &format!("SELECT expires_at>clock_timestamp() FROM {schema}.sessions WHERE id=$1"),
-                &[&session.id]
-            )
-            .await
-            .unwrap()
-            .get::<_, bool>(0)
-    );
-    let account_lock = admin
-        .query_one(
-            &format!("SELECT id FROM {schema}.accounts WHERE id=$1 FOR UPDATE NOWAIT"),
-            &[&a.account_id],
-        )
-        .await
-        .unwrap_err();
-    assert_eq!(
-        account_lock.code(),
-        Some(&tokio_postgres::error::SqlState::LOCK_NOT_AVAILABLE)
-    );
-    // Arm expiry only after proving the record wait and prior owner/account lock.
-    // No session lock or approval is acquired before the final complete fence.
-    admin.execute(&format!("UPDATE {schema}.sessions SET expires_at=clock_timestamp()+interval '500 milliseconds' WHERE id=$1"), &[&session.id]).await.unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            if admin
-                .query_one(
-                    &format!(
-                        "SELECT expires_at<=clock_timestamp() FROM {schema}.sessions WHERE id=$1"
-                    ),
-                    &[&session.id],
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; current stock runtime fixture"]
+async fn current_sealed_setup_storage_succeeds_and_missing_storage_refuses_without_changes() {
+    for missing in [false, true] {
+        current_case(async |db, admin, database_url| {
+            let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
+            let (a, session, _, _, app) = fixture(db, &hasher, database_url, None).await;
+            crate::hosted_runtime_identity::require(&*db).await.unwrap();
+            assert!(
+                db.query_one(
+                    "SELECT to_regclass('sealed_line_activation_exchanges') IS NOT NULL",
+                    &[]
                 )
                 .await
                 .unwrap()
                 .get::<_, bool>(0)
-            {
-                break;
+            );
+            if missing {
+                admin
+                    .batch_execute("DROP TABLE sealed_line_activation_exchanges CASCADE")
+                    .await
+                    .unwrap();
+                assert!(crate::hosted_runtime_identity::require(&*db).await.is_err());
             }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap();
-    blocker.commit().await.unwrap();
-    assert_eq!(request.await.unwrap().status(), StatusCode::UNAUTHORIZED);
-    assert!(
-        db.query_one(
-            "SELECT disabled_at IS NULL FROM accounts WHERE id=$1",
-            &[&a.account_id]
-        )
-        .await
-        .unwrap()
-        .get::<_, bool>(0)
-    );
-    assert_eq!(
-        db.query_one(
-            "SELECT count(*) FROM messages WHERE account_id=$1",
-            &[&a.account_id]
-        )
-        .await
-        .unwrap()
-        .get::<_, i64>(0),
-        2
-    );
-    crate::sealed_manifest_store::tests::cleanup::drop_fixture(&db, &schema)
-        .await
-        .unwrap();
+            let response = app
+                .oneshot(erasure_post(
+                    Some(&session.token),
+                    Some(&session.csrf_token),
+                    Some(ORIGIN),
+                    &crate::test_keys::password(1),
+                    None,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                if missing {
+                    StatusCode::SERVICE_UNAVAILABLE
+                } else {
+                    StatusCode::OK
+                }
+            );
+            for (table, column, retained) in [
+                ("accounts", "id", 1),
+                ("messages", "account_id", 2),
+                ("sessions", "account_id", 1),
+            ] {
+                assert_eq!(
+                    rows(
+                        &*db,
+                        &format!("SELECT count(*) FROM {table} WHERE {column}=$1"),
+                        a.account_id
+                    )
+                    .await,
+                    if missing { retained } else { 0 }
+                );
+            }
+            if missing {
+                assert!(
+                    db.query_one(
+                        "SELECT disabled_at IS NULL FROM accounts WHERE id=$1",
+                        &[&a.account_id]
+                    )
+                    .await
+                    .unwrap()
+                    .get::<_, bool>(0)
+                );
+            }
+        })
+        .await;
+    }
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated synthetic schema"]
-async fn execution_partial_schema_erasure_fails_without_disabling_or_deleting_account_data() {
-    let (admin, mut db, database_url, schema) = migrated_schema("execution_partial").await;
-    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
-    let (a, session, _b, _bsession, app) = fixture(&mut db, &hasher, &database_url, None).await;
-    db.batch_execute("DROP TABLE conversation_execution_records CASCADE")
-        .await
-        .unwrap();
-    let snapshot = "SELECT jsonb_build_object('accounts',(SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM accounts a), \
-        'messages',(SELECT jsonb_agg(to_jsonb(m) ORDER BY m.id) FROM messages m), \
-        'attempts',(SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM message_attempts a), \
-        'fences',(SELECT jsonb_agg(to_jsonb(f) ORDER BY f.attempt_id) FROM dispatch_fences f), \
-        'devices',(SELECT jsonb_agg(to_jsonb(d) ORDER BY d.id) FROM devices d), \
-        'sessions',(SELECT jsonb_agg(id ORDER BY id) FROM sessions), \
-        'users',(SELECT jsonb_agg(id ORDER BY id) FROM users), \
-        'memberships',(SELECT jsonb_agg(to_jsonb(member) ORDER BY member.account_id,member.user_id) FROM memberships member), \
-        'confirmation',(SELECT jsonb_agg(to_jsonb(p) ORDER BY p.message_id) FROM conversation_confirmation_records p))::text";
-    let before: String = db.query_one(snapshot, &[]).await.unwrap().get(0);
-    let response = app
-        .oneshot(erasure_post(
-            Some(&session.token),
-            Some(&session.csrf_token),
-            Some(ORIGIN),
-            &crate::test_keys::password(1),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let after: String = db.query_one(snapshot, &[]).await.unwrap().get(0);
-    assert_eq!(after, before);
-    assert!(
-        db.query_one(
-            "SELECT disabled_at IS NULL FROM accounts WHERE id=$1",
-            &[&a.account_id]
-        )
-        .await
-        .unwrap()
-        .get::<_, bool>(0)
-    );
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated synthetic schema"]
-async fn optional_sealed_setup_absence_preserves_ordinary_account_erasure() {
-    let (admin, mut db, url, schema) =
-        migrated_schema_with_optional_setup("optional_setup_absent", true, false).await;
-    assert!(
-        !db.query_one(
-            "SELECT to_regclass('sealed_line_activation_exchanges') IS NOT NULL",
-            &[]
-        )
-        .await
-        .unwrap()
-        .get::<_, bool>(0)
-    );
-    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
-    let (a, session, _, _, app) = fixture(&mut db, &hasher, &url, None).await;
-    let response = app
-        .oneshot(erasure_post(
-            Some(&session.token),
-            Some(&session.csrf_token),
-            Some(ORIGIN),
-            &crate::test_keys::password(1),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        db.query_one(
-            "SELECT count(*) FROM accounts WHERE id=$1",
-            &[&a.account_id]
-        )
-        .await
-        .unwrap()
-        .get::<_, i64>(0),
-        0
-    );
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
-#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL with CREATEDB/CREATEROLE; current real sealed-exchange producer"]
 async fn optional_sealed_setup_exchange_remains_an_erasure_blocker() {
     use crate::http_owner_conversations::sealed_line_setup::tests::Case;
     use crate::sealed_inbound::line_activation::sealed_exchange;
-    let c = Case::new().await;
-    let registration = c.register(1).await;
-    let (challenge, _) = sealed_exchange::open(
-        &mut c.owner.f.connect().await,
-        &c.owner.principal,
-        c.line,
-        c.device,
-        registration,
-    )
-    .await
-    .unwrap();
-    let password = crate::test_keys::password(1);
-    let mut db = c.owner.f.connect().await;
-    let verifier_source = register(
-        &mut db,
-        &c.owner.hasher,
-        "erasure-verifier@example.test",
-        &password,
-    )
-    .await
-    .unwrap();
-    let verifier: String = db
-        .query_one(
-            "SELECT password_hash FROM users WHERE id=$1",
-            &[&verifier_source.user_id],
-        )
-        .await
-        .unwrap()
-        .get(0);
-    db.execute(
-        "UPDATE users SET password_hash=$1 WHERE id=$2",
-        &[&verifier, &c.owner.principal.user_id],
-    )
-    .await
-    .unwrap();
-    let owner = c.state().owner;
-    let app = router(OwnerErasureState {
-        database_url: owner.database_url,
-        auth_hasher: owner.auth_hasher,
-        canonical_origin: owner.canonical_origin,
-        mfa_cipher: None,
-    });
-    let factor = c.factor().await;
-    let response = app
-        .oneshot(erasure_post(
-            Some(&c.owner.token),
-            Some(&c.owner.csrf),
+    use futures_util::FutureExt;
+    use std::panic::{AssertUnwindSafe, resume_unwind};
+    async fn retained(db: &tokio_postgres::Client, account: Uuid) -> Vec<String> {
+        let mut rows = Vec::new();
+        for table in [
+            "sealed_line_key_challenges",
+            "sealed_line_key_receipts",
+            "sealed_line_activation_exchanges",
+            "sealed_manifest_authorities",
+            "line_owner_approval_keys",
+            "device_keys",
+            "owner_mfa",
+            "owner_mfa_recovery_codes",
+        ] {
+            rows.push(db.query_one(&format!("SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text),'[]'::jsonb)::text FROM {table} t WHERE account_id=$1"), &[&account]).await.unwrap().get(0));
+        }
+        rows
+    }
+    let c = Case::current().await;
+    let result = AssertUnwindSafe(async {
+        crate::hosted_runtime_identity::require(&c.owner.f.db).await.unwrap();
+        let account = c.owner.principal.tenant.account_id();
+        let before = c.owner.f.db.query_one("SELECT count(*),count(*) FILTER(WHERE used_at IS NOT NULL) FROM owner_mfa_recovery_codes WHERE account_id=$1", &[&account]).await.unwrap();
+        assert_eq!(before.get::<_,i64>(0), 1);
+        assert_eq!(before.get::<_,i64>(1), 0);
+        // Real issue/signatures/completion consume their own one-use factor.
+        let registration = c.register(1).await;
+        let after = c.owner.f.db.query_one("SELECT count(*),count(*) FILTER(WHERE used_at IS NOT NULL) FROM owner_mfa_recovery_codes WHERE account_id=$1", &[&account]).await.unwrap();
+        assert_eq!(after.get::<_,i64>(0), 2);
+        assert_eq!(after.get::<_,i64>(1), 1);
+        crate::hosted_runtime_identity::require(&c.owner.f.db).await.unwrap();
+        let mut db = c.owner.f.connect().await;
+        let (challenge, _) = sealed_exchange::open(
+            &mut db, &c.owner.principal, c.line, c.device, registration,
+        ).await.unwrap();
+        crate::hosted_runtime_identity::require(&db).await.unwrap();
+        let password = crate::test_keys::password(1);
+        let verifier_source = register(&mut db, &c.owner.hasher,
+            "erasure-verifier@example.test", &password).await.unwrap();
+        let verifier: String = db.query_one("SELECT password_hash FROM users WHERE id=$1", &[&verifier_source.user_id]).await.unwrap().get(0);
+        assert_eq!(db.execute("UPDATE users SET password_hash=$1 WHERE id=$2", &[&verifier,&c.owner.principal.user_id]).await.unwrap(), 1);
+        let owner = c.state().owner;
+        let app = router(OwnerErasureState {
+            database_url: owner.database_url,
+            auth_hasher: owner.auth_hasher,
+            canonical_origin: owner.canonical_origin,
+            // Blocker admission is before erasure's MFA fence. It must not
+            // consume this fresh factor or require a cipher to report409.
+            mfa_cipher: None,
+        });
+        let factor = c.factor().await;
+        let before = retained(&db, account).await;
+        let response = app.oneshot(erasure_post(
+            Some(&c.owner.token), Some(&c.owner.csrf),
             Some(crate::http_owner_conversations::sealed_line_setup::tests::ORIGIN),
-            &password,
-            Some(&factor),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    assert_eq!(
-        blocked_count(&body(response).await, "sealed_line_activation_exchanges"),
-        1
-    );
-    assert_eq!(
-        db.query_one(
-            "SELECT count(*) FROM accounts WHERE id=$1",
-            &[&c.owner.principal.tenant.account_id()]
-        )
-        .await
-        .unwrap()
-        .get::<_, i64>(0),
-        1
-    );
-    assert_eq!(
-        db.query_one(
-            "SELECT count(*) FROM sealed_line_activation_exchanges WHERE challenge_id=$1",
-            &[&challenge.id]
-        )
-        .await
-        .unwrap()
-        .get::<_, i64>(0),
-        1
-    );
+            &password, Some(&factor),
+        )).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(blocked_count(&body(response).await, "sealed_line_activation_exchanges"), 1);
+        assert_eq!(retained(&db, account).await, before);
+        let factors = db.query_one("SELECT count(*),count(*) FILTER(WHERE used_at IS NOT NULL) FROM owner_mfa_recovery_codes WHERE account_id=$1", &[&account]).await.unwrap();
+        assert_eq!(factors.get::<_,i64>(0), 3);
+        assert_eq!(factors.get::<_,i64>(1), 1);
+        assert_eq!(db.query_one("SELECT count(*) FROM accounts WHERE id=$1 AND disabled_at IS NULL", &[&account]).await.unwrap().get::<_,i64>(0), 1);
+        assert_eq!(db.query_one("SELECT count(*) FROM sealed_line_activation_exchanges WHERE challenge_id=$1", &[&challenge.id]).await.unwrap().get::<_,i64>(0), 1);
+        for other in [c.owner.f.account, verifier_source.account_id] {
+            assert_eq!(db.query_one("SELECT count(*) FROM accounts WHERE id=$1", &[&other]).await.unwrap().get::<_,i64>(0), 1);
+        }
+        assert!(authenticate_session(&db, &c.owner.hasher, &c.owner.token).await.is_ok());
+        // Local client must leave before current cleanup joins its owned driver.
+        drop(db);
+    }).catch_unwind().await;
     c.cleanup().await;
+    if let Err(panic) = result {
+        resume_unwind(panic);
+    }
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated synthetic schema"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE; current stock runtime fixture"]
 async fn optional_sealed_setup_malformed_relation_fails_erasure_closed() {
-    let (admin, mut db, url, schema) =
-        migrated_schema_with_optional_setup("optional_setup_malformed", true, false).await;
+    current_case(async |db, admin, url| {
     let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
-    let (a, session, _, _, app) = fixture(&mut db, &hasher, &url, None).await;
-    db.batch_execute("CREATE TABLE sealed_line_activation_exchanges(wrong_column uuid)")
+    let (a, session, _, _, app) = fixture(db, &hasher, url, None).await;
+    crate::hosted_runtime_identity::require(&*db).await.unwrap();
+    admin.batch_execute("DROP TABLE sealed_line_activation_exchanges CASCADE; CREATE TABLE public.sealed_line_activation_exchanges(wrong_column uuid)")
         .await
         .unwrap();
+    assert!(crate::hosted_runtime_identity::require(&*db).await.is_err());
     let response = app
         .oneshot(erasure_post(
             Some(&session.token),
@@ -4096,31 +4157,30 @@ async fn optional_sealed_setup_malformed_relation_fails_erasure_closed() {
                 > 0
         );
     }
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await
-        .unwrap();
+    }).await;
 }
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; real owner erasure and isolated synthetic schema"]
-async fn optional_android_proposals_absence_empty_install_and_schema_drift_keep_erasure_atomic() {
+async fn current_android_proposals_complete_erases_and_changed_graph_refuses_atomically() {
     for shape in ["absent", "complete", "partial", "drift"] {
-        let (admin, mut db, url, schema) = migrated_schema("android_proposal_erase").await;
+        current_case(async |db, admin, url| {
         let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
-        let (a, session, _, _, app) = fixture(&mut db, &hasher, &url, None).await;
+        let (a, session, _, _, app) = fixture(db, &hasher, url, None).await;
+        crate::hosted_runtime_identity::require(&*db).await.unwrap();
         if matches!(shape, "absent" | "partial") {
-            db.batch_execute("DROP TABLE owner_android_proposals; DROP FUNCTION reject_owner_android_proposal_update()")
+            admin.batch_execute("DROP TABLE owner_android_proposals; DROP FUNCTION reject_owner_android_proposal_update()")
                 .await.unwrap();
         }
         if shape == "partial" {
-            db.batch_execute("CREATE TABLE owner_android_proposals(account_id uuid)")
+            admin.batch_execute("CREATE TABLE public.owner_android_proposals(account_id uuid)")
                 .await
                 .unwrap();
         } else if shape == "drift" {
-            db.batch_execute("ALTER TABLE owner_android_proposals DISABLE TRIGGER owner_android_proposals_immutable")
+            admin.batch_execute("ALTER TABLE owner_android_proposals DISABLE TRIGGER owner_android_proposals_immutable")
                 .await.unwrap();
         }
+        assert_eq!(crate::hosted_runtime_identity::require(&*db).await.is_ok(), shape == "complete");
         let response = app
             .oneshot(erasure_post(
                 Some(&session.token),
@@ -4131,7 +4191,7 @@ async fn optional_android_proposals_absence_empty_install_and_schema_drift_keep_
             ))
             .await
             .unwrap();
-        if matches!(shape, "partial" | "drift") {
+        if shape != "complete" {
             assert_eq!(
                 response.status(),
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -4182,77 +4242,71 @@ async fn optional_android_proposals_absence_empty_install_and_schema_drift_keep_
                 0
             );
         }
-        admin
-            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-            .await
-            .unwrap();
+        }).await;
     }
 }
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; immutable line history remains an erasure blocker"]
 async fn pending_android_proposal_does_not_bypass_immutable_line_erasure_blockers() {
-    // Use the allowlisted erasure fixture family; each schema remains UUID-unique.
-    let (admin, mut db, url, schema) = migrated_schema("execution_erase").await;
-    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
-    let (a, session, _, _, app) = fixture(&mut db, &hasher, &url, None).await;
-    let device: Uuid = db
-        .query_one(
-            "SELECT id FROM devices WHERE account_id=$1 LIMIT 1",
-            &[&a.account_id],
-        )
-        .await
-        .unwrap()
-        .get(0);
-    let line = Uuid::new_v4();
-    // This is an SQL storage fixture, not valid proposal issuance, device proof,
-    // root enrollment or production consent. Its required binding is immutable.
-    db.execute("INSERT INTO phone_lines(id,account_id,state,approved_at,current_binding_generation,last_issued_generation) VALUES($1,$2,'active',now(),1,1)", &[&line,&a.account_id]).await.unwrap();
-    db.execute("INSERT INTO device_line_bindings(account_id,line_id,device_id,generation,state,owner_approval_digest,device_confirmation_digest,activated_at,purpose) VALUES($1,$2,$3,1,'active',$4,$5,now(),'sealed')", &[&a.account_id,&line,&device,&vec![2u8;32],&vec![3u8;32]]).await.unwrap();
-    db.execute("INSERT INTO owner_android_proposals(account_id,kind,user_id,session_id,proposal_sha256,proposal,expected_context,origin,root_fingerprint,checkpoint_version,device_id,line_id,binding_generation,peer,paired_fingerprint,connection_epoch,deployment_epoch,site_id,instance_id,issued_ms,expires_ms) VALUES($1,3,$2,$3,$4,$5,'{}'::jsonb,$6,$4,0,$7,$8,1,'+12',$4,1,1,'fixture','fixture',1,2)", &[&a.account_id,&a.user_id,&session.id,&vec![2u8;32],&vec![1u8],&ORIGIN,&device,&line]).await.unwrap();
-    let before: String = db
-        .query_one(
-            "SELECT row_to_json(p)::text FROM owner_android_proposals p WHERE account_id=$1",
-            &[&a.account_id],
-        )
-        .await
-        .unwrap()
-        .get(0);
-    let response = app
-        .oneshot(erasure_post(
-            Some(&session.token),
-            Some(&session.csrf_token),
-            Some(ORIGIN),
-            &crate::test_keys::password(1),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    let report = body(response).await;
-    assert_eq!(blocked_count(&report, "device_line_bindings"), 1);
-    assert_eq!(
-        db.query_one(
-            "SELECT row_to_json(p)::text FROM owner_android_proposals p WHERE account_id=$1",
-            &[&a.account_id]
-        )
-        .await
-        .unwrap()
-        .get::<_, String>(0),
-        before
-    );
-    assert_eq!(
-        db.query_one(
-            "SELECT count(*) FROM accounts WHERE id=$1",
-            &[&a.account_id]
-        )
-        .await
-        .unwrap()
-        .get::<_, i64>(0),
-        1
-    );
-    crate::sealed_manifest_store::tests::cleanup::drop_fixture(&db, &schema)
-        .await
-        .unwrap();
-    drop(admin);
+    current_case(async |db, _admin, url| {
+        // Use the allowlisted erasure fixture family; each schema remains UUID-unique.
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
+        let (a, session, _, _, app) = fixture(db, &hasher, url, None).await;
+        let device: Uuid = db
+            .query_one(
+                "SELECT id FROM devices WHERE account_id=$1 LIMIT 1",
+                &[&a.account_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        let line = Uuid::new_v4();
+        // This is an SQL storage fixture, not valid proposal issuance, device proof,
+        // root enrollment or production consent. Its required binding is immutable.
+        db.execute("INSERT INTO phone_lines(id,account_id,state,approved_at,current_binding_generation,last_issued_generation) VALUES($1,$2,'active',now(),1,1)", &[&line,&a.account_id]).await.unwrap();
+        db.execute("INSERT INTO device_line_bindings(account_id,line_id,device_id,generation,state,owner_approval_digest,device_confirmation_digest,activated_at,purpose) VALUES($1,$2,$3,1,'active',$4,$5,now(),'sealed')", &[&a.account_id,&line,&device,&vec![2u8;32],&vec![3u8;32]]).await.unwrap();
+        db.execute("INSERT INTO owner_android_proposals(account_id,kind,user_id,session_id,proposal_sha256,proposal,expected_context,origin,root_fingerprint,checkpoint_version,device_id,line_id,binding_generation,peer,paired_fingerprint,connection_epoch,deployment_epoch,site_id,instance_id,issued_ms,expires_ms) VALUES($1,3,$2,$3,$4,$5,'{}'::jsonb,$6,$4,0,$7,$8,1,'+12',$4,1,1,'fixture','fixture',1,2)", &[&a.account_id,&a.user_id,&session.id,&vec![2u8;32],&vec![1u8],&ORIGIN,&device,&line]).await.unwrap();
+        let before: String = db
+            .query_one(
+                "SELECT row_to_json(p)::text FROM owner_android_proposals p WHERE account_id=$1",
+                &[&a.account_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        let response = app
+            .oneshot(erasure_post(
+                Some(&session.token),
+                Some(&session.csrf_token),
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let report = body(response).await;
+        assert_eq!(blocked_count(&report, "device_line_bindings"), 1);
+        assert_eq!(
+            db.query_one(
+                "SELECT row_to_json(p)::text FROM owner_android_proposals p WHERE account_id=$1",
+                &[&a.account_id]
+            )
+            .await
+            .unwrap()
+            .get::<_, String>(0),
+            before
+        );
+        assert_eq!(
+            db.query_one(
+                "SELECT count(*) FROM accounts WHERE id=$1",
+                &[&a.account_id]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+            1
+        );
+    }).await;
 }

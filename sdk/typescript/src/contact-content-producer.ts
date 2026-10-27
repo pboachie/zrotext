@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 /** Dormant historical commitment production. No recovery, custody, storage or current authority. */
+import {canonicalContactOrigin01} from './contact-origin.js';
 import {canonicalSignature02} from './draft02-manifest.js';
 import {verifiedContactReaderStatementIdentity01,type VerifiedContactReaderStatement,type ContactReaderStatementIdentity01} from './contact-reader-statement.js';
 import {encodeContactFieldUnsigned01,encodeContactMutationUnsigned01,verifyContactField01,verifyContactMutation01,verifyContactTransition01,verifiedContactFieldIdentity01,verifiedContactTransitionIdentity01,type ContactMutationUnsigned01,type ContactSlot01,type VerifiedHistoricalField,type VerifiedHistoricalTransition} from './contact-content-contract.js';
@@ -20,7 +21,7 @@ function data(v:unknown,names:readonly string[]):Record<string,any>{
 }
 function bytes(v:unknown,n:number,zero=false){if(!(v instanceof Uint8Array)||v.length!==n||!zero&&v.every(x=>x===0))fail();return Uint8Array.from(v);}
 function integer(v:unknown,zero=false):bigint{if(typeof v!=='bigint'||v<(zero?0n:1n)||v>max)fail();return v;}
-function origin(v:unknown):string{if(typeof v!=='string'||v.length<9||v.length>512||/[^\x21-\x7e]/.test(v))fail();let u:URL;try{u=new URL(v);}catch{return fail();}if(u.protocol!=='https:'||u.origin!==v||u.username||u.password||u.pathname!=='/'||u.search||u.hash)fail();return v;}
+function origin(v:unknown):string{return canonicalContactOrigin01(v);}
 function expected(v:unknown,legacy=false){const e=data(v,['accountId','origin','rootFingerprint','contactId','routingDigest',...(legacy?['legacyGeneration']:[])]);return {accountId:bytes(e.accountId,16),origin:origin(e.origin),rootFingerprint:bytes(e.rootFingerprint,32),contactId:bytes(e.contactId,16),routingDigest:bytes(e.routingDigest,32),legacyGeneration:legacy?integer(e.legacyGeneration,true):0n};}
 function key(v:unknown):CryptoKey{
  // Native getters perform their runtime CryptoKey brand checks without invoking

@@ -577,9 +577,30 @@ pub(crate) async fn next_challenge(
     purpose: Purpose,
 ) -> Result<Option<Challenge>> {
     let tx = client.transaction().await?;
+    // Freeze hints before taking authority locks. Registered proof processing
+    // locks root before account; polling must not hold phone_live's account
+    // SHARE while waiting for that root, even with mixed legacy candidates.
+    let candidates = observation_store::candidates(&tx, s, purpose, &[]).await?;
+    let needs_root = candidates
+        .iter()
+        .any(|p| !p.approved && p.lease.matches(s) && p.registration.is_some());
+    let root_present = if needs_root {
+        tx.query_opt(
+            "SELECT account_id FROM sealed_manifest_authorities WHERE account_id=$1 FOR UPDATE",
+            &[&s.account_id],
+        )
+        .await?
+        .is_some()
+    } else {
+        false
+    };
+    // The prelock is ordering, not authentication. Recheck the actual socket
+    // after any wait, and retain every original registration/clock check below.
     phone_live(&tx, s).await?;
-    for p in observation_store::candidates(&tx, s, purpose, &[]).await? {
-        if p.approved || !p.lease.matches(s) {
+    for p in candidates {
+        // An absent root cannot be locked. Do not acquire a concurrently
+        // inserted replacement after account SHARE; a later poll may retry.
+        if p.approved || !p.lease.matches(s) || p.registration.is_some() && !root_present {
             continue;
         }
         match unapproved(&tx, &p).await {

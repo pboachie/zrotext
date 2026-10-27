@@ -54,12 +54,17 @@ impl Provider {
     }
     #[cfg(test)]
     pub fn fake(base: String) -> Self {
+        Self::fake_with_timeout(base, Duration::from_secs(2))
+    }
+    #[cfg(test)]
+    pub fn fake_with_timeout(base: String, request_timeout: Duration) -> Self {
+        assert!(!request_timeout.is_zero() && request_timeout <= Duration::from_secs(30));
         Self {
             http: Client::builder()
                 .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
                 .retry(reqwest::retry::never())
-                .timeout(Duration::from_secs(2))
+                .timeout(request_timeout)
                 .build()
                 .unwrap(),
             base,
@@ -654,3 +659,6 @@ pub(super) async fn resolve_risk(
     result.attributed = true;
     Ok(result)
 }
+
+#[cfg(test)]
+mod fake_tests;

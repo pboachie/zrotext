@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zrotext.com/protocol/v1/profile03-fetch-permission-v2.schema.json",
+  "title": "Closed current profile03 ciphertext fetch reply with explicit reviewed-intent V2",
+  "description": "Structural shape only. Explicit ZTRI02 bytes replace no historical ZTRI01 value. The unchanged outer ten fields and current forty fields still require actual retained Grant03/Fetch362 correlation, all original signatures, current manifest ancestry, original owner/session, installed consent, physical lease and current mapping authority. Both permission deadlines must equal the retained grant deadline and comparison times must match. Schema does not verify crypto, canonical trailing bits, scalar ranges, duplicate members or currentness. Total reply bound remains192KiB.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "v", "envelope", "reviewed_intent", "reviewed_signature", "accepted_ms",
+    "interval_starts_ms", "interval_expires_ms", "selection_epoch", "current", "interval_permission"
+  ],
+  "properties": {
+    "v": {"const": 1},
+    "envelope": {"type": "string", "pattern": "^[A-Za-z0-9_-]+$", "minLength": 743, "maxLength": 45618},
+    "reviewed_intent": {"type": "string", "pattern": "^WlRSSQIDAw[A-D][A-Za-z0-9_-]*$", "minLength": 790, "maxLength": 1071},
+    "reviewed_signature": {"type": "string", "pattern": "^[A-Za-z0-9_-]+$", "minLength": 86, "maxLength": 86},
+    "accepted_ms": {"type": "string", "pattern": "^[1-9][0-9]{0,18}$"},
+    "interval_starts_ms": {"type": "string", "pattern": "^[1-9][0-9]{0,18}$"},
+    "interval_expires_ms": {"type": "string", "pattern": "^[1-9][0-9]{0,18}$"},
+    "selection_epoch": {"const": "1"},
+    "current": {"$ref": "https://zrotext.com/protocol/v1/profile03-fetch-permission.schema.json#/$defs/current"},
+    "interval_permission": {"$ref": "https://zrotext.com/protocol/v1/profile03-fetch-permission.schema.json#/$defs/interval_permission"}
+  }
+}

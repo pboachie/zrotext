@@ -574,6 +574,7 @@ async fn loopback_journal_bridge() {
         .as_chunks::<149>()
         .0
         .iter()
+        .map(|chunk| chunk.as_slice())
         .map(|r| r.to_vec())
         .collect();
     records.iter_mut().find(|r| r[0] == 2).unwrap()[130..132].copy_from_slice(&12u16.to_be_bytes());

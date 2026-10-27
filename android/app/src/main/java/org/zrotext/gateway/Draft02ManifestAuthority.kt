@@ -58,6 +58,17 @@ internal class Draft02ManifestAuthority private constructor(
         init { require(id.size == 32) { "Reader ID" } }
     }
 
+    /** Historical payload reader only. E500 enrollment authentication is independent of the
+     * manifest's role04 inbound-event signer; message-direction signer checks stay in context(). */
+    internal fun requireElectionReader(device: ByteArray, line: ByteArray, readerId: ByteArray,
+        readerPoint: ByteArray, acceptedMs: Long) {
+        require(device.size == 16 && line.size == 16 && readerId.size == 32)
+        window(issued, expires, acceptedMs)
+        val key = records.singleOrNull { it.role == 1 && same(it.id, readerId) }
+        require(key != null && key.active(acceptedMs) && key.scope == 4 &&
+            same(key.device, device) && same(key.line, line) && same(key.point, readerPoint)) { "Original selected reader" }
+    }
+
     /** Caller-selected routing, never inferred from a relay's manifest directory. */
     class Request(
         val direction: Direction, accountId: ByteArray, messageId: ByteArray,

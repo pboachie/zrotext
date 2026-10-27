@@ -320,7 +320,9 @@ async fn inactivity_uses_real_last_activity_or_creation_and_refuses_stale_window
         .await
         .unwrap();
     let tx = f.reader.transaction().await.unwrap();
-    assert!(lock(&tx, s.selector).await.is_ok());
+    lock(&tx, s.selector)
+        .await
+        .expect("fresh actual activity with old creation must retain owner records");
     tx.rollback().await.unwrap();
     f.finish().await;
 }

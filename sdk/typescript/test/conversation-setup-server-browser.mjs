@@ -3,6 +3,7 @@
 // fixture custody and authenticated phone methods; this module invents none.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import {setupStep,finishSetupCleanup} from './setup-failure-fixture.mjs';
 
 const digest = (...parts) => createHash('sha256').update(Buffer.concat(parts.map(part => Buffer.from(part)))).digest('hex');
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -73,6 +74,12 @@ async function artifact(page, host) {
   return readPublicDownload(download,root?663:1024);
 }
 const upload = (page,id,name,bytes) => page.locator(`#${id}`).setInputFiles({name,mimeType:'application/octet-stream',buffer:Buffer.from(bytes)});
+export function displayedLineApprovalFingerprint(text){
+  assert.ok(typeof text==='string'&&Buffer.byteLength(text)<=4096,'Bounded displayed line approval required');
+  assert.equal(text.split('Line approval fingerprint: ').length,2,'Exactly one displayed line approval required');
+  const match=/^Line approval fingerprint: ([0-9a-f]{64})\. Existing paired phone fingerprint: [0-9a-f]{64}\.(?: [^\r\n]*)?(?:(?:\r?\n){1,2}Download public RootLineRegister packet for existing offline approval)?$/.exec(text);
+  assert.ok(match,'Exact displayed line approval required');return match[1];
+}
 
 /**
  * Caller starts the compiled fixture and supplies an existing Playwright Browser.
@@ -93,8 +100,8 @@ const upload = (page,id,name,bytes) => page.locator(`#${id}`).setInputFiles({nam
 export async function runSetupServerAcceptance(input) {
   validateAcceptanceProviders(input); const f=copyAcceptanceFixture(input.fixture);
   const before=counters(await input.snapshot());
-  const context=await input.browser.newContext({ignoreHTTPSErrors:true,acceptDownloads:true});
-  let noOriginExport=0; const completions=[];
+  const context=await setupStep('browser-context',()=>input.browser.newContext({ignoreHTTPSErrors:true,acceptDownloads:true}));
+  let noOriginExport=0,failed=false,failure; const completions=[];
   try {
     await context.addCookies(f.cookies);
     await context.route('**/*', route => new URL(route.request().url()).origin === f.origin ? route.continue() : route.abort());
@@ -108,8 +115,8 @@ export async function runSetupServerAcceptance(input) {
     });
     const exports=[];
     page.on('response', response => { if(response.request().method()==='GET' && new URL(response.url()).pathname==='/v1/auth/sealed-root') exports.push((async()=>{const headers=await response.request().allHeaders();const text=await response.text();assert.ok(Buffer.byteLength(text)<=4096,'Bounded custody export required');return {origin:headers.origin,status:response.status(),published:JSON.parse(text)};})()); });
-    async function selection(){await page.goto(f.origin+'/owner/conversation');await page.locator('#owner-enabled').check();for(const [id,value]of [['owner-account',f.accountId],['owner-device',f.deviceId],['owner-line',f.lineId],['owner-generation',f.nextGeneration],['owner-fingerprint',f.rootFingerprintHex],['root-origin',f.origin]])await page.locator('#'+id).fill(value);}
-    async function rootBegin(){await selection();await page.locator('#root-backup-id').fill(f.backupId);await upload(page,'root-backup-file','fixture.backup',f.rootBackup);await upload(page,'root-card-file','fixture.card',f.publicCard);await page.locator('#root-publication-consent').check();await page.locator('#root-begin').click();return artifact(page,'root-artifacts');}
+    async function selection(){return setupStep('browser-navigation',async()=>{await page.goto(f.origin+'/owner/conversation');await page.locator('#owner-enabled').check();for(const [id,value]of [['owner-account',f.accountId],['owner-device',f.deviceId],['owner-line',f.lineId],['owner-generation',f.nextGeneration],['owner-fingerprint',f.rootFingerprintHex],['root-origin',f.origin]])await page.locator('#'+id).fill(value);});}
+    async function rootBegin(){return setupStep('root-challenge',async()=>{await selection();await page.locator('#root-backup-id').fill(f.backupId);await upload(page,'root-backup-file','fixture.backup',f.rootBackup);await upload(page,'root-card-file','fixture.card',f.publicCard);await page.locator('#root-publication-consent').check();await page.locator('#root-begin').click();return artifact(page,'root-artifacts');});}
     const expected={accountId:f.accountId,userId:f.userId,sessionId:f.sessionId,deviceId:f.deviceId,lineId:f.lineId,nextGeneration:f.nextGeneration,origin:f.origin,rootFingerprintHex:f.rootFingerprintHex,rootPin:Uint8Array.from(f.rootPin),backupId:f.backupId,pairedFingerprintHex:f.pairedFingerprintHex,lease:{...f.lease}};
     async function cancelHeld(id,button,bytes,name){const count=completions.length;await upload(page,id,name,bytes);await page.evaluate(name=>{fixtureFileGate.name=name;},name);await page.locator('#'+button).click();await page.waitForFunction(()=>fixtureFileGate.held);await page.locator('#clear').click();await page.evaluate(()=>fixtureFileGate.release());await page.waitForFunction(()=>document.querySelector('#status').textContent.startsWith('Action unavailable.'));assert.equal(await page.locator('#root-mfa').inputValue(),'');assert.equal(await page.locator('#line-mfa').inputValue(),'');assert.equal(completions.length,count);assert.equal(await page.locator('#root-artifacts a').count()+await page.locator('#line-artifacts a').count(),0);}
     const bounded=(bytes,min,max)=>{assert.ok(bytes instanceof Uint8Array&&bytes.length>=min&&bytes.length<=max,'Bounded public signer output required');return Uint8Array.from(bytes);};
@@ -118,7 +125,7 @@ export async function runSetupServerAcceptance(input) {
     await page.locator('#root-mfa').fill(f.rootFactor);await cancelHeld('root-signatures-file','root-complete',signatures,'held-root-signatures.txt');assert.deepEqual(counters(await input.snapshot()),before);
     packet=await rootBegin();signatures=await input.signRootCustody({unsigned:packet,expected:structuredClone(expected),encryptedBackup:Uint8Array.from(f.rootBackup),publicCard:Uint8Array.from(f.publicCard)});
     signatures=bounded(signatures,296,512);await upload(page,'root-signatures-file','root-signatures.txt',signatures);await page.locator('#root-mfa').fill(f.rootFactor);await page.locator('#root-complete').click();await page.waitForFunction(()=>document.querySelector('#status').textContent.includes('custody enrolled and independently reread'));for(const exported of await Promise.all(exports)){assert.equal(exported.origin,undefined,'Ordinary GET must not spoof Origin');assert.equal(exported.status,200);noOriginExport++;}assert.equal(noOriginExport,1);const published=(await Promise.all(exports))[0].published;
-    async function lineBegin(){await selection();await page.locator('#line-paired-fingerprint').fill(f.pairedFingerprintHex);await upload(page,'line-phone-point-file','paired-public.sec1',f.pairedPoint);await page.locator('#line-session-consent').check();await page.locator('#line-begin').click();const unsigned=await artifact(page,'line-artifacts');const text=await page.locator('#line-artifacts').innerText();const match=/New session approval fingerprint: ([0-9a-f]{64})/.exec(text);assert.ok(match);return bounded(await input.signLineRegistration({unsigned,expected:{...structuredClone(expected),approvalFingerprintHex:match[1]}}),64,64);}
+    async function lineBegin(){return setupStep('line-challenge',async()=>{await selection();await page.locator('#line-paired-fingerprint').fill(f.pairedFingerprintHex);await upload(page,'line-phone-point-file','paired-public.sec1',f.pairedPoint);await page.locator('#line-session-consent').check();await page.locator('#line-begin').click();const unsigned=await artifact(page,'line-artifacts');const text=await page.locator('#line-artifacts').innerText();const approvalFingerprintHex=displayedLineApprovalFingerprint(text);return bounded(await input.signLineRegistration({unsigned,expected:{...structuredClone(expected),approvalFingerprintHex}}),64,64);});}
     let lineSignature=await lineBegin();assert.ok(lineSignature instanceof Uint8Array && lineSignature.length===64);await page.locator('#line-mfa').fill(f.lineFactor);const rooted=counters(await input.snapshot());await cancelHeld('line-root-signature-file','line-complete',lineSignature,'held-line-signature.bin');assert.deepEqual(counters(await input.snapshot()),rooted);
     lineSignature=await lineBegin();await upload(page,'line-root-signature-file','line-signature.bin',lineSignature);await page.locator('#line-mfa').fill(f.lineFactor);await page.locator('#line-complete').click();await page.locator('#line-open').waitFor({state:'visible'});await page.waitForFunction(()=>!document.querySelector('#line-open').disabled);
     async function lineClick(id){await page.evaluate(()=>{globalThis.fixtureLineResult=false;const observer=new MutationObserver(()=>{globalThis.fixtureLineResult=true;observer.disconnect();});observer.observe(document.querySelector('#line-status'),{childList:true,characterData:true,subtree:true});});await page.locator('#'+id).click();await page.waitForFunction(()=>fixtureLineResult);}
@@ -128,5 +135,6 @@ export async function runSetupServerAcceptance(input) {
     await assertContentInert(page);assert.deepEqual(await page.evaluate(()=>fixtureGeneratedKeys),[{algorithm:'ECDSA',extractable:false,usages:['sign']}]);assert.equal(await page.evaluate(()=>localStorage.length+sessionStorage.length),0);const after=counters(await input.snapshot());for(const key of Object.keys(before))assert.equal(after[key],before[key]+1);assert.equal(completions.length,3);assert.ok(completions.every(c=>c.status>=200&&c.status<300));
     if(input.consumePublishedRoot){assert.equal(typeof input.consumePublishedRoot,'function');await input.consumePublishedRoot({published:structuredClone(published),expected:structuredClone(expected)});}
     return Object.freeze({rootEnrollmentReread:true,noOriginExport:true,cancelZeroCompletion:true,lineRegistration:true,activationDistinctFromPhoneAck:true,contentAuthorityGranted:false});
-  } finally {await context.close();}
+  }catch(error){failed=true;failure=error;throw error;}
+  finally {await finishSetupCleanup(failed,failure,()=>setupStep('browser-context-close',async()=>{await context.close();}));}
 }

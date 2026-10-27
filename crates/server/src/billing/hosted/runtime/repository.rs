@@ -21,7 +21,10 @@ pub(super) async fn now(tx: &Transaction<'_>) -> Result<i64, Error> {
 }
 pub(super) async fn marker(db: &mut Client) -> Result<Marker, Error> {
     let tx = db.transaction().await?;
-    let rows=tx.query("SELECT namespace_id,mode,provider_account,policy_revision,enabled,old_binary_fenced FROM hosted_billing_namespaces FOR SHARE",&[]).await?;
+    // Startup metadata precedes HMAC setup and grants no paid/content scope.
+    // It must still select the actual public installation, never an operator
+    // search_path substitute with a matching namespace/revision.
+    let rows=tx.query("SELECT namespace_id,mode,provider_account,policy_revision,enabled,old_binary_fenced FROM public.hosted_billing_namespaces FOR SHARE",&[]).await?;
     if rows.len() != 1 || !rows[0].get::<_, bool>(5) {
         return Err(Error::Identity);
     }

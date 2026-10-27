@@ -51,7 +51,12 @@ jobs:
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '21.0.13+9'
+          check-latest: true
+      - name: Prepare job-local Java TLS trust
+        run: python scripts/prepare_java_ci_trust.py --major 21
+      - name: Verify patched Java runtime and trust roots
+        run: python scripts/check_java_toolchain.py --major 21
       - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
       - name: Install Android SDK platform and APK inspection tools
         run: |

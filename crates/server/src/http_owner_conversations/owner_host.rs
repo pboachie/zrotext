@@ -133,7 +133,7 @@ async fn bootstrap(
         .as_chunks::<149>()
         .0
         .iter()
-        .map(|record| record.as_slice())
+        .map(|chunk| chunk.as_slice())
         .collect();
     let active = |r: &&[u8]| {
         r[148] == 1

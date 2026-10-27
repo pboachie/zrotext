@@ -132,6 +132,7 @@ async fn enrollment_case() -> (Fixture, SessionPrincipal, Value) {
             .as_chunks::<149>()
             .0
             .iter()
+            .map(|chunk| chunk.as_slice())
             .position(|r| r[0] == 6)
             .unwrap()
             * 149;

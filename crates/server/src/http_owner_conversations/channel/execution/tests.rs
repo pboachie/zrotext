@@ -1198,6 +1198,7 @@ async fn execution_raw_sql_requires_actual_envelope_reader_not_another_live_key(
         .as_chunks::<149>()
         .0
         .iter()
+        .map(|chunk| chunk.as_slice())
         .find(|entry| entry[0] == 1 && entry[1..33] != case.phone_reader.key_id)
         .unwrap()[1..33]
         .to_vec();

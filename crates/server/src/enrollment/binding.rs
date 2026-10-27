@@ -66,7 +66,14 @@ pub fn parse_fingerprint(value: &str) -> Result<[u8; 32], EnrollmentError> {
         return Err(EnrollmentError::InvalidInput);
     }
     let mut bytes = [0; 32];
-    for (i, pair) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
+    for (i, pair) in value
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|chunk| chunk.as_slice())
+        .enumerate()
+    {
         let hex = |b: u8| {
             if b.is_ascii_digit() {
                 b - b'0'

@@ -70,6 +70,7 @@ async fn candidate() -> (Fixture, SessionPrincipal, Enrollment, Vec<u8>) {
             .as_chunks::<149>()
             .0
             .iter()
+            .map(|chunk| chunk.as_slice())
             .position(|r| r[0] == 6)
             .unwrap()
             * 149;

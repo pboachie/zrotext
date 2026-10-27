@@ -147,6 +147,7 @@ fn unhex(text: &str) -> Vec<u8> {
         .as_chunks::<2>()
         .0
         .iter()
+        .map(|chunk| chunk.as_slice())
         .map(|pair| digit(pair[0]) * 16 + digit(pair[1]))
         .collect()
 }

@@ -16,6 +16,7 @@ fn hex(value: &str) -> Vec<u8> {
         .as_chunks::<2>()
         .0
         .iter()
+        .map(|chunk| chunk.as_slice())
         .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
         .collect()
 }
@@ -265,7 +266,8 @@ fn genuinely_accepted_replacement_reader_does_not_make_retired_reader_valid() {
         .as_chunks::<149>()
         .0
         .iter()
-        .map(|record| record.to_vec())
+        .map(|chunk| chunk.as_slice())
+        .map(<[u8]>::to_vec)
         .collect();
     records[1][148] = 2;
     let mut scalar = [0; 32];

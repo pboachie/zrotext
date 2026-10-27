@@ -16,6 +16,7 @@ internal class SealedSocketTime(private val account: UUID, private val device: U
     private var lastElapsed = -1L
     private var lastUtc = 0L
     private var previousUpper = 0L
+    private var previousLower = 0L
     private var previousSent = 0L
     private var previousReceived = 0L
     private var samples = 0
@@ -79,10 +80,16 @@ internal class SealedSocketTime(private val account: UUID, private val device: U
             // Keep the earlier conservative bound so resampling never restores
             // lifetime to an operation that the prior estimate already expired.
             val upper = maxOf(sampledUpper, floor)
+            // A capture occurrence needs an honest interval, unlike expiry's
+            // conservative upper estimate. Keep the strongest old lower too:
+            // replacing it with the latest send time alone can double the
+            // uncertainty when successive network paths are asymmetric.
+            val lower = if (prior == null) sent else maxOf(sent,
+                Math.addExact(previousLower, now - previousReceived))
             val next = prior ?: SealedDispatchExecutor.Session(account, device, epoch, deployment, identity, originHash)
             anchor = checkNotNull(SealedSessionClock.establish(epoch, upper, now))
             session = next
-            previousUpper = upper; previousSent = sent; previousReceived = now; lastUtc = upper
+            previousUpper = upper; previousLower = lower; previousSent = sent; previousReceived = now; lastUtc = upper
             samples++
         } catch (error: Exception) { close(); throw error }
     }
@@ -99,7 +106,28 @@ internal class SealedSocketTime(private val account: UUID, private val device: U
     @Synchronized fun snapshot(): Pair<SealedDispatchExecutor.Session, SealedSessionClock>? =
         if (trustedNow() == null) null else currentSession()?.let { it to checkNotNull(anchor) }
 
-    @Synchronized fun close() { closed = true; waiting = null; anchor = null; session = null }
+    /** Metadata only, from ONE monotonic reading and the same authenticated nonce anchors.
+     * This does not grant capture or replace any caller's conservative expiry clock.
+     * A missing first-entry sample cannot be completed later for that receipt. */
+    class CaptureBounds internal constructor(val session: SealedDispatchExecutor.Session,
+        val lowerMs: Long, val upperMs: Long, val elapsedMs: Long)
+
+    @Synchronized fun captureBounds(): CaptureBounds? {
+        if (closed) return null
+        val identity = session ?: return null
+        val clock = anchor ?: return null
+        return try {
+            val at = monotonic()
+            val upper = clock.nowMs(at) ?: return null
+            check(upper >= lastUtc)
+            val lower = Math.addExact(previousLower, at - previousReceived)
+            check(lower > 0 && lower <= upper && upper - lower <= MAX_RTT_MS)
+            lastUtc = upper
+            CaptureBounds(identity, lower, upper, at)
+        } catch (_: Exception) { close(); null }
+    }
+
+    @Synchronized fun close() { closed = true; waiting = null; anchor = null; session = null; previousLower = 0 }
     override fun toString() = "SealedSocketTime(redacted)"
 
     companion object {

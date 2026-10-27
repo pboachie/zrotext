@@ -105,7 +105,7 @@ before the password is hashed, on every attempt including a wrong password, so
 it also bounds password guesses; a wrong code spends the MFA step-up failure
 budget and an exhausted budget answers 429. Cancel and remove only narrow
 access, so a session and CSRF are enough for them. Invitations expire after
-seven days, are bound to one address, are unique per account and address (a
+seven elapsed 24-hour days, are bound to one address, are unique per account and address (a
 repeat invitation from the same account replaces the earlier one, and an
 expired one never blocks the address), and are bounded to ten open invitations
 and ten live observer seats per account. Acceptance claims the invitation row
@@ -290,7 +290,8 @@ trail the true last use by up to 15 minutes, and a session can lapse up to 15
 minutes before 72 hours after its true last request. The owner key list
 (`GET /v1/auth/api-keys`) returns `last_used_at_ms` (`null` if never used) so
 owners can find and revoke keys no integration uses. An API key lives for its
-requested `lifetime_days` (1 to 365); omitting it applies the 365-day default.
+requested `lifetime_days` (1 to 365), measured as elapsed 24-hour days
+regardless of the database timezone; omitting it applies the 365-day default.
 `"lifetime_days": null` is the explicit never-expire opt-in: it leaves
 `expires_at` NULL, exactly as keys created before the default existed carry,
 and is discouraged — a stolen never-expiring key stays valid until an owner
