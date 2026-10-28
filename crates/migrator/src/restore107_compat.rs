@@ -16,6 +16,12 @@ const MIGRATION_108_SHA: [u8; 32] = [
     0x0d, 0xd0, 0xb6, 0x83, 0xe0, 0xd0, 0x4e, 0x7e, 0xa8, 0x1c, 0x95, 0xf6, 0xdc, 0xef, 0xae, 0x3f,
     0xfd, 0x71, 0xbf, 0x35, 0x9f, 0x41, 0x8e, 0x9e, 0xc8, 0xdf, 0xc9, 0xbe, 0xbd, 0xf1, 0x3d, 0x78,
 ];
+// Exactly the two whole-function graphs observed before and after restoring
+// the historical 095 function's session-derived search_path for migration 108.
+const RESTORED_FUNCTION_GRAPH: &str =
+    "8fa5a44263c4d6666ab340fe2caf50bdbb73edbc862be07bdb1373c702ff861f";
+const CANONICAL_FUNCTION_GRAPH: &str =
+    "8f81bbd4036e73f08f326aec4511d9affc50cced5c70a218aeac9d2befd097a9";
 const EXPECTED_GRAPH: &str = "d2348d448965a4c8fa28116a89571fa932bf8f05dc5eb5927c8aceb308c78d2b";
 const RESTORED_GRAPH: &str = "3fb2f2389eb67957c58f5845752bf904c083110cd3afde1ff9be58cc4f5cbaec";
 const HISTORICAL_107_INVENTORY_SHA: [u8; 32] = [
@@ -116,6 +122,122 @@ async fn constraint_metadata(tx: &Transaction<'_>) -> Result<Vec<String>, Migrat
     Ok(rows.into_iter().map(|row| row.get(2)).collect())
 }
 
+// Exact historical 108 input, including every public function except the two
+// temporary verifier helpers. Do not normalize any source or configuration.
+const FUNCTION_GRAPH: &str = r#"
+SELECT pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(
+  public.payload_profile_writer_json(pg_catalog.json_agg(pg_catalog.json_build_array(
+    p.proname, pg_catalog.oidvectortypes(p.proargtypes),
+    pg_catalog.format_type(p.prorettype,NULL), p.proretset, p.provolatile,
+    p.proisstrict, p.prosecdef, p.proparallel, l.lanname, p.proconfig, p.prosrc)
+    ORDER BY p.proname COLLATE "C", pg_catalog.oidvectortypes(p.proargtypes) COLLATE "C")),
+  'UTF8')), 'hex')
+FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_language l ON l.oid=p.prolang
+WHERE p.pronamespace='public'::pg_catalog.regnamespace
+  AND p.proname NOT IN ('payload_profile_writer_json','payload_profile_writer_prior_graph')
+"#;
+
+// Compare the complete catalog row except proconfig, and every directly
+// attached comment, label, initial privilege and inbound/outbound dependency.
+// OIDs are meaningful here because both snapshots occur in one transaction.
+const FUNCTION_METADATA: &str = r#"
+SELECT p.oid::bigint, pg_catalog.array_to_json(p.proconfig)::text,
+  pg_catalog.jsonb_build_array(
+    pg_catalog.to_jsonb(p) - 'proconfig',
+    (SELECT pg_catalog.jsonb_agg(pg_catalog.to_jsonb(d) ORDER BY pg_catalog.to_jsonb(d)::text COLLATE "C")
+       FROM pg_catalog.pg_description d WHERE d.classoid='pg_catalog.pg_proc'::pg_catalog.regclass AND d.objoid=p.oid),
+    (SELECT pg_catalog.jsonb_agg(pg_catalog.to_jsonb(s) ORDER BY pg_catalog.to_jsonb(s)::text COLLATE "C")
+       FROM pg_catalog.pg_seclabel s WHERE s.classoid='pg_catalog.pg_proc'::pg_catalog.regclass AND s.objoid=p.oid),
+    (SELECT pg_catalog.jsonb_agg(pg_catalog.to_jsonb(i) ORDER BY pg_catalog.to_jsonb(i)::text COLLATE "C")
+       FROM pg_catalog.pg_init_privs i WHERE i.classoid='pg_catalog.pg_proc'::pg_catalog.regclass AND i.objoid=p.oid),
+    (SELECT pg_catalog.jsonb_agg(pg_catalog.to_jsonb(d) ORDER BY pg_catalog.to_jsonb(d)::text COLLATE "C")
+       FROM pg_catalog.pg_depend d WHERE (d.classid='pg_catalog.pg_proc'::pg_catalog.regclass AND d.objid=p.oid)
+         OR (d.refclassid='pg_catalog.pg_proc'::pg_catalog.regclass AND d.refobjid=p.oid)),
+    (SELECT pg_catalog.jsonb_agg(pg_catalog.to_jsonb(d) ORDER BY pg_catalog.to_jsonb(d)::text COLLATE "C")
+       FROM pg_catalog.pg_shdepend d WHERE (d.classid='pg_catalog.pg_proc'::pg_catalog.regclass AND d.objid=p.oid)
+         OR (d.refclassid='pg_catalog.pg_proc'::pg_catalog.regclass AND d.refobjid=p.oid))
+  )::text
+FROM pg_catalog.pg_proc p
+WHERE p.oid='public.device_session_line_activation_version_guard()'::pg_catalog.regprocedure
+"#;
+
+struct FunctionSnapshot {
+    oid: i64,
+    config: String,
+    metadata: String,
+}
+
+pub(crate) struct Prepared {
+    original_function: Option<FunctionSnapshot>,
+}
+
+async fn function_graph(tx: &Transaction<'_>) -> Result<String, MigrationError> {
+    Ok(tx.query_one(FUNCTION_GRAPH, &[]).await?.get(0))
+}
+
+async fn function_snapshot(tx: &Transaction<'_>) -> Result<FunctionSnapshot, MigrationError> {
+    let row = tx.query_one(FUNCTION_METADATA, &[]).await?;
+    let config: Option<String> = row.get(1);
+    Ok(FunctionSnapshot {
+        oid: row.get(0),
+        config: config.ok_or(MigrationError::Restore107Compatibility(
+            "the historical trigger function has no search path",
+        ))?,
+        metadata: row.get(2),
+    })
+}
+
+fn same_function_except_config(a: &FunctionSnapshot, b: &FunctionSnapshot) -> bool {
+    a.oid == b.oid && a.metadata == b.metadata
+}
+
+/// Restore the exact original function setting before the 108 transaction may
+/// commit. Migration 108 normalizes these two settings in its recorded graph;
+/// independently prove equality to that recorded graph both before and after.
+pub(crate) async fn finish(tx: &Transaction<'_>, prepared: Prepared) -> Result<(), MigrationError> {
+    let Some(original) = prepared.original_function else {
+        return Ok(());
+    };
+    let temporary = function_snapshot(tx).await?;
+    if temporary.config != r#"["search_path=public"]"#
+        || !same_function_except_config(&original, &temporary)
+    {
+        return Err(MigrationError::Restore107Compatibility(
+            "the temporary function setting or metadata changed during migration 108",
+        ));
+    }
+    let before: Vec<u8> = tx
+        .query_one("SELECT public.payload_profile_writer_graph()", &[])
+        .await?
+        .get(0);
+    let recorded: Vec<u8> = tx.query_one(
+        "SELECT graph_sha256 FROM public.payload_profile_writer_catalog WHERE singleton AND migration_version=108",
+        &[],
+    ).await?.get(0);
+    if before != recorded {
+        return Err(MigrationError::Restore107Compatibility(
+            "migration 108 graph differs from its recorded baseline",
+        ));
+    }
+    tx.batch_execute("ALTER FUNCTION public.device_session_line_activation_version_guard() SET search_path TO pg_catalog, public").await?;
+    let restored = function_snapshot(tx).await?;
+    if restored.config != original.config || !same_function_except_config(&original, &restored) {
+        return Err(MigrationError::Restore107Compatibility(
+            "the original function setting or metadata was not preserved",
+        ));
+    }
+    let after: Vec<u8> = tx
+        .query_one("SELECT public.payload_profile_writer_graph()", &[])
+        .await?
+        .get(0);
+    if after != before || after != recorded {
+        return Err(MigrationError::Restore107Compatibility(
+            "restoring the function setting changed the recorded 108 graph",
+        ));
+    }
+    Ok(())
+}
+
 /// Prepare the exact PostgreSQL 18.6 logical-restore representation for 108.
 ///
 /// The caller must hold the migrator advisory lock, have checked the complete
@@ -125,7 +247,7 @@ pub(crate) async fn prepare(
     tx: &Transaction<'_>,
     migration_sql: &str,
     migrations: &[Migration],
-) -> Result<(), MigrationError> {
+) -> Result<Prepared, MigrationError> {
     // The caller's ledger validation alone only binds it to the supplied
     // directory. Bind that directory's full applied prefix independently to
     // the immutable 001-107 inventory before changing any database object.
@@ -267,6 +389,72 @@ pub(crate) async fn prepare(
         }
     }
 
+    // Only the exact observed complete 107 function graph is eligible. Any
+    // unknown graph is left for the unchanged migration 108 to reject.
+    let mut original_function = None;
+    if graph == EXPECTED_GRAPH || graph == RESTORED_GRAPH {
+        let digest = function_graph(tx).await?;
+        if digest == RESTORED_FUNCTION_GRAPH {
+            let version: i32 = tx
+                .query_one("SELECT current_setting('server_version_num')::integer", &[])
+                .await?
+                .get(0);
+            if version != 180006 {
+                return Err(MigrationError::Restore107Compatibility(
+                    "function compatibility requires PostgreSQL 18.6",
+                ));
+            }
+            let original = function_snapshot(tx).await?;
+            if original.config != r#"["search_path=pg_catalog, public"]"# {
+                return Err(MigrationError::Restore107Compatibility(
+                    "the historical function setting is not the reviewed value",
+                ));
+            }
+            // Tests may hold this advisory lock to deterministically exercise DDL
+            // races at the exact boundary between the snapshot and tuple update.
+            #[cfg(test)]
+            if tx
+                .query_one(
+                    "SELECT current_setting('zrotext.restore107_test_barrier', true) = 'enabled'",
+                    &[],
+                )
+                .await?
+                .get::<_, Option<bool>>(0)
+                == Some(true)
+            {
+                tx.batch_execute("SELECT pg_catalog.pg_advisory_xact_lock(107108095)")
+                    .await?;
+            }
+            // A no-op ALTER does not serialize against concurrent proconfig edits.
+            // Rename away and back in this transaction to acquire the pg_proc tuple
+            // update lock without changing settings; a collision or concurrent DDL
+            // fails closed. Recheck the full inventory and every target field after
+            // the lock, before touching the search path. Both renames roll back on
+            // any error and neither is visible to other transactions.
+            tx.batch_execute("ALTER FUNCTION public.device_session_line_activation_version_guard() RENAME TO zrotext_restore107_function_lock; ALTER FUNCTION public.zrotext_restore107_function_lock() RENAME TO device_session_line_activation_version_guard").await?;
+            let locked = function_snapshot(tx).await?;
+            if locked.config != original.config
+                || !same_function_except_config(&original, &locked)
+                || function_graph(tx).await? != RESTORED_FUNCTION_GRAPH
+            {
+                return Err(MigrationError::Restore107Compatibility(
+                    "the function graph changed before the target lock was acquired",
+                ));
+            }
+            tx.batch_execute("ALTER FUNCTION public.device_session_line_activation_version_guard() SET search_path TO public").await?;
+            let temporary = function_snapshot(tx).await?;
+            if temporary.config != r#"["search_path=public"]"#
+                || !same_function_except_config(&original, &temporary)
+                || function_graph(tx).await? != CANONICAL_FUNCTION_GRAPH
+            {
+                return Err(MigrationError::Restore107Compatibility(
+                    "temporary function normalization did not match the pinned graph",
+                ));
+            }
+            original_function = Some(original);
+        }
+    }
+
     // All other graphs are left untouched and must pass the historical 108
     // guards themselves. In particular, this does not bless unknown shapes.
     // The actual historical file must create and run these functions itself;
@@ -277,5 +465,5 @@ pub(crate) async fn prepare(
          SET LOCAL search_path TO public, pg_temp;",
     )
     .await?;
-    Ok(())
+    Ok(Prepared { original_function })
 }
