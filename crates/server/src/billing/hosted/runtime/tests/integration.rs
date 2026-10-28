@@ -394,6 +394,8 @@ async fn protected_backend_proof_rejects_forged_settings_wrong_keys_shadow_table
             .is_err()
     );
     drop(db);
+    // Finish this fixture's queued resets before taking the configuration fence.
+    crate::runtime_db::settle_fixture_resets(&f.app_url).await;
     f.database
         .owner
         .execute(

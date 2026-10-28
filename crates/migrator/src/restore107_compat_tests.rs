@@ -305,12 +305,295 @@ async fn restored_107_graph_is_normalized_atomically_without_blessing_unknown_sh
         .unwrap();
     assert_eq!(graph(&mut owner).await, RESTORED_GRAPH);
 
+    // Reproduce the restored 095 session-derived setting. A competing owner
+    // changes it while compatibility is paused after its snapshot: the
+    // migration must fail and the competing value must survive.
+    owner.batch_execute("ALTER FUNCTION public.device_session_line_activation_version_guard() SET search_path TO pg_catalog, public; SET zrotext.restore107_test_barrier = 'enabled'").await.unwrap();
+    owner.batch_execute("COMMENT ON FUNCTION public.device_session_line_activation_version_guard() IS 'synthetic preserved comment'").await.unwrap();
+    let comment_sql = "SELECT pg_catalog.obj_description('public.device_session_line_activation_version_guard()'::pg_catalog.regprocedure, 'pg_proc')";
+    let dependency_sql = "SELECT COALESCE(pg_catalog.jsonb_agg(pg_catalog.to_jsonb(d) ORDER BY pg_catalog.to_jsonb(d)::text COLLATE \"C\"), '[]'::jsonb)::text FROM pg_catalog.pg_depend d WHERE (d.classid='pg_catalog.pg_proc'::pg_catalog.regclass AND d.objid='public.device_session_line_activation_version_guard()'::pg_catalog.regprocedure) OR (d.refclassid='pg_catalog.pg_proc'::pg_catalog.regclass AND d.refobjid='public.device_session_line_activation_version_guard()'::pg_catalog.regprocedure)";
+    let original_comment: Option<String> = owner.query_one(comment_sql, &[]).await.unwrap().get(0);
+    assert_eq!(
+        original_comment.as_deref(),
+        Some("synthetic preserved comment")
+    );
+    let original_dependencies: String = owner.query_one(dependency_sql, &[]).await.unwrap().get(0);
+    assert_ne!(
+        original_dependencies, "[]",
+        "fixture must have actual pg_depend edges"
+    );
+    let metadata_sql = "SELECT pg_catalog.to_jsonb(p)::text FROM pg_catalog.pg_proc p WHERE p.oid='public.device_session_line_activation_version_guard()'::pg_catalog.regprocedure";
+    let original_metadata: String = owner.query_one(metadata_sql, &[]).await.unwrap().get(0);
+    // A historical guard failure after normalization must roll back the
+    // temporary function setting and all CHECK repairs with the ledger.
+    owner
+        .batch_execute("GRANT UPDATE ON public.devices TO PUBLIC")
+        .await
+        .unwrap();
+    let guarded = apply(&mut owner, &directory, false).await.unwrap_err();
+    assert!(
+        matches!(guarded, MigrationError::Database(ref db) if db.code() == Some(&tokio_postgres::error::SqlState::CHECK_VIOLATION) && db.as_db_error().is_some_and(|e| e.message() == "public application write/read grants are unsupported")),
+        "historical 108 grant guard must remain authoritative: {guarded}"
+    );
+    let unchanged_config: String = owner.query_one("SELECT pg_catalog.array_to_json(proconfig)::text FROM pg_catalog.pg_proc WHERE oid='public.device_session_line_activation_version_guard()'::pg_catalog.regprocedure", &[]).await.unwrap().get(0);
+    assert_eq!(unchanged_config, r#"["search_path=pg_catalog, public"]"#);
+    assert_eq!(ledger(&owner).await, before_ledger);
+    assert_eq!(checks(&owner).await, restored_checks);
+    let metadata_after_guard: String = owner.query_one(metadata_sql, &[]).await.unwrap().get(0);
+    assert_eq!(metadata_after_guard, original_metadata);
+    let comment_after_guard: Option<String> =
+        owner.query_one(comment_sql, &[]).await.unwrap().get(0);
+    let dependencies_after_guard: String =
+        owner.query_one(dependency_sql, &[]).await.unwrap().get(0);
+    assert_eq!(comment_after_guard, original_comment);
+    assert_eq!(dependencies_after_guard, original_dependencies);
+    owner
+        .batch_execute("REVOKE ALL ON public.devices FROM PUBLIC")
+        .await
+        .unwrap();
+
+    // A preexisting temporary-name collision is an unreviewed function graph,
+    // so the unchanged 108 function guard refuses before any normalization.
+    owner.batch_execute("CREATE FUNCTION public.zrotext_restore107_function_lock() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END'").await.unwrap();
+    let collision = apply(&mut owner, &directory, false).await.unwrap_err();
+    assert!(
+        matches!(collision, MigrationError::Database(ref db) if db.code() == Some(&tokio_postgres::error::SqlState::CHECK_VIOLATION) && db.as_db_error().is_some_and(|e| e.message() == "unreviewed pre-writer function bodies")),
+        "historical 108 function guard must refuse a collision: {collision}"
+    );
+    assert_eq!(ledger(&owner).await, before_ledger);
+    assert_eq!(checks(&owner).await, restored_checks);
+    owner
+        .batch_execute("DROP FUNCTION public.zrotext_restore107_function_lock()")
+        .await
+        .unwrap();
+
+    let (racer, racer_connection) = config.connect(NoTls).await.unwrap();
+    let racer_driver = tokio::spawn(racer_connection);
+    racer
+        .query_one("SELECT pg_catalog.pg_advisory_lock(107108095)", &[])
+        .await
+        .unwrap();
+    let owner_pid: i32 = owner
+        .query_one("SELECT pg_catalog.pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    {
+        let attempt = apply(&mut owner, &directory, false);
+        tokio::pin!(attempt);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            tokio::select! {
+                result = &mut attempt => panic!("apply ended before the test barrier: {result:?}"),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+            }
+            let waiting: bool = racer.query_one("SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_locks WHERE pid=$1 AND locktype='advisory' AND classid=0 AND objid=107108095 AND objsubid=1 AND NOT granted)", &[&owner_pid]).await.unwrap().get(0);
+            if waiting {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "apply never reached the race barrier"
+            );
+        }
+        racer.batch_execute("BEGIN; ALTER FUNCTION public.device_session_line_activation_version_guard() SET search_path TO pg_catalog, public, pg_temp").await.unwrap();
+        let unlocked: bool = racer
+            .query_one("SELECT pg_catalog.pg_advisory_unlock(107108095)", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert!(unlocked);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), &mut attempt)
+            .await
+            .expect("raced apply did not stop");
+        assert!(
+            matches!(result, Err(MigrationError::Database(ref db)) if db.code() == Some(&tokio_postgres::error::SqlState::LOCK_NOT_AVAILABLE)),
+            "concurrent proconfig update must hit the bounded tuple-lock timeout: {result:?}"
+        );
+    }
+    racer.batch_execute("COMMIT").await.unwrap();
+    let config_after: String = racer.query_one("SELECT pg_catalog.array_to_json(proconfig)::text FROM pg_catalog.pg_proc WHERE oid='public.device_session_line_activation_version_guard()'::pg_catalog.regprocedure", &[]).await.unwrap().get(0);
+    assert_eq!(
+        config_after,
+        r#"["search_path=pg_catalog, public, pg_temp"]"#
+    );
+    assert_eq!(ledger(&owner).await, before_ledger);
+    assert_eq!(checks(&owner).await, restored_checks);
+    owner.batch_execute("RESET zrotext.restore107_test_barrier; ALTER FUNCTION public.device_session_line_activation_version_guard() SET search_path TO pg_catalog, public").await.unwrap();
+    // The other ordering also matters: a completed change between the
+    // original snapshot and rename must be detected by the locked recheck.
+    owner
+        .batch_execute("SET zrotext.restore107_test_barrier = 'enabled'")
+        .await
+        .unwrap();
+    racer
+        .query_one("SELECT pg_catalog.pg_advisory_lock(107108095)", &[])
+        .await
+        .unwrap();
+    {
+        let attempt = apply(&mut owner, &directory, false);
+        tokio::pin!(attempt);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            tokio::select! {
+                result = &mut attempt => panic!("apply ended before the committed-race barrier: {result:?}"),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+            }
+            let waiting: bool = racer.query_one("SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_locks WHERE pid=$1 AND locktype='advisory' AND classid=0 AND objid=107108095 AND objsubid=1 AND NOT granted)", &[&owner_pid]).await.unwrap().get(0);
+            if waiting {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "apply never reached the committed-race barrier"
+            );
+        }
+        racer.batch_execute("ALTER FUNCTION public.device_session_line_activation_version_guard() SET search_path TO pg_catalog, public, pg_temp").await.unwrap();
+        let unlocked: bool = racer
+            .query_one("SELECT pg_catalog.pg_advisory_unlock(107108095)", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert!(unlocked);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), &mut attempt)
+            .await
+            .expect("committed-race apply did not stop");
+        assert!(
+            matches!(
+                result,
+                Err(MigrationError::Restore107Compatibility(
+                    "the function graph changed before the target lock was acquired"
+                ))
+            ),
+            "committed config change must be detected after lock: {result:?}"
+        );
+    }
+    let committed_config: String = racer.query_one("SELECT pg_catalog.array_to_json(proconfig)::text FROM pg_catalog.pg_proc WHERE oid='public.device_session_line_activation_version_guard()'::pg_catalog.regprocedure", &[]).await.unwrap().get(0);
+    assert_eq!(
+        committed_config,
+        r#"["search_path=pg_catalog, public, pg_temp"]"#
+    );
+    assert_eq!(ledger(&owner).await, before_ledger);
+    assert_eq!(checks(&owner).await, restored_checks);
+    owner.batch_execute("RESET zrotext.restore107_test_barrier; ALTER FUNCTION public.device_session_line_activation_version_guard() SET search_path TO pg_catalog, public").await.unwrap();
+    // Competing identity and whole-inventory changes after the snapshot are
+    // also refused; their committed changes remain intact until explicitly
+    // repaired by the fixture owner.
+    racer
+        .batch_execute("CREATE SCHEMA synthetic_race")
+        .await
+        .unwrap();
+    for (mutation, repair, identity_moved) in [
+        (
+            "ALTER FUNCTION public.device_session_line_activation_version_guard() SET SCHEMA synthetic_race",
+            "ALTER FUNCTION synthetic_race.device_session_line_activation_version_guard() SET SCHEMA public",
+            true,
+        ),
+        (
+            "ALTER FUNCTION public.device_session_line_activation_version_guard() RENAME TO synthetic_original_guard; CREATE FUNCTION public.device_session_line_activation_version_guard() RETURNS trigger LANGUAGE plpgsql SET search_path TO pg_catalog, public AS 'BEGIN RETURN NEW; END'",
+            "DROP FUNCTION public.device_session_line_activation_version_guard(); ALTER FUNCTION public.synthetic_original_guard() RENAME TO device_session_line_activation_version_guard",
+            false,
+        ),
+        (
+            "CREATE FUNCTION public.synthetic_other_function() RETURNS integer LANGUAGE sql AS 'SELECT 1'",
+            "DROP FUNCTION public.synthetic_other_function()",
+            false,
+        ),
+    ] {
+        owner
+            .batch_execute("SET zrotext.restore107_test_barrier = 'enabled'")
+            .await
+            .unwrap();
+        racer
+            .query_one("SELECT pg_catalog.pg_advisory_lock(107108095)", &[])
+            .await
+            .unwrap();
+        {
+            let attempt = apply(&mut owner, &directory, false);
+            tokio::pin!(attempt);
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+            loop {
+                tokio::select! {
+                    result = &mut attempt => panic!("apply ended before the identity-race barrier: {result:?}"),
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+                }
+                let waiting: bool = racer.query_one("SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_locks WHERE pid=$1 AND locktype='advisory' AND classid=0 AND objid=107108095 AND objsubid=1 AND NOT granted)", &[&owner_pid]).await.unwrap().get(0);
+                if waiting {
+                    break;
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "apply never reached the identity-race barrier"
+                );
+            }
+            racer.batch_execute(mutation).await.unwrap();
+            let unlocked: bool = racer
+                .query_one("SELECT pg_catalog.pg_advisory_unlock(107108095)", &[])
+                .await
+                .unwrap()
+                .get(0);
+            assert!(unlocked);
+            let result = tokio::time::timeout(std::time::Duration::from_secs(10), &mut attempt)
+                .await
+                .expect("identity-race apply did not stop");
+            if identity_moved {
+                assert!(
+                    matches!(result, Err(MigrationError::Database(ref db)) if db.code() == Some(&tokio_postgres::error::SqlState::UNDEFINED_FUNCTION)),
+                    "moved target must refuse: {result:?}"
+                );
+            } else {
+                assert!(
+                    matches!(
+                        result,
+                        Err(MigrationError::Restore107Compatibility(
+                            "the function graph changed before the target lock was acquired"
+                        ))
+                    ),
+                    "changed identity/inventory must refuse: {result:?}"
+                );
+            }
+        }
+        assert_eq!(ledger(&owner).await, before_ledger);
+        assert_eq!(checks(&owner).await, restored_checks);
+        racer.batch_execute(repair).await.unwrap();
+        let metadata_after_race: String = owner.query_one(metadata_sql, &[]).await.unwrap().get(0);
+        assert_eq!(metadata_after_race, original_metadata);
+    }
+    owner
+        .batch_execute("RESET zrotext.restore107_test_barrier")
+        .await
+        .unwrap();
+    racer
+        .batch_execute("DROP SCHEMA synthetic_race")
+        .await
+        .unwrap();
+    drop(racer);
+    racer_driver.await.unwrap().unwrap();
+
     // An attacker-controlled session search path must not shadow builtins used
     // by the compatibility or migration guards.
     owner.batch_execute("CREATE SCHEMA untrusted; CREATE FUNCTION untrusted.length(text) RETURNS integer LANGUAGE sql IMMUTABLE AS 'SELECT 0'; SET search_path TO untrusted, public").await.unwrap();
-    let applied = apply(&mut owner, &directory, false).await.unwrap();
-    assert_eq!(applied.first().unwrap().version, 108);
-    assert_eq!(applied.last().unwrap().version, 119);
+    let applied_108 = apply_locked(&mut owner, &all[..=position], false)
+        .await
+        .unwrap();
+    assert_eq!(applied_108.first().unwrap().version, 108);
+    assert_eq!(applied_108.last().unwrap().version, 108);
+    let original_config: String = owner.query_one("SELECT pg_catalog.array_to_json(proconfig)::text FROM pg_catalog.pg_proc WHERE oid='public.device_session_line_activation_version_guard()'::pg_catalog.regprocedure", &[]).await.unwrap().get(0);
+    assert_eq!(original_config, r#"["search_path=pg_catalog, public"]"#);
+    let graphs_match: bool = owner.query_one("SELECT public.payload_profile_writer_graph() = graph_sha256 FROM public.payload_profile_writer_catalog WHERE singleton AND migration_version=108", &[]).await.unwrap().get(0);
+    let metadata_after_108: String = owner.query_one(metadata_sql, &[]).await.unwrap().get(0);
+    assert_eq!(metadata_after_108, original_metadata);
+    let comment_after_108: Option<String> = owner.query_one(comment_sql, &[]).await.unwrap().get(0);
+    let dependencies_after_108: String = owner.query_one(dependency_sql, &[]).await.unwrap().get(0);
+    assert_eq!(comment_after_108, original_comment);
+    assert_eq!(dependencies_after_108, original_dependencies);
+    assert!(
+        graphs_match,
+        "109 and later migrations preserve the 108 recorded graph"
+    );
+    let applied_tail = apply(&mut owner, &directory, false).await.unwrap();
+    assert_eq!(applied_tail.first().unwrap().version, 109);
+    assert_eq!(applied_tail.last().unwrap().version, 119);
     let after_ledger = ledger(&owner).await;
     assert_eq!(&after_ledger[..107], &before_ledger);
     assert_eq!(after_ledger.len(), 119);

@@ -492,16 +492,21 @@ async fn apply_locked(
             prepare_conversation_erasure_fk_indexes(client).await?;
         }
         let tx = client.transaction().await?;
-        if migration.version == 108
+        let compatibility = if migration.version == 108
             && migration.filename == "108_payload_profile_writer_fences.sql"
             && ledger.len() == 107
             && (1..=107).all(|version| ledger.contains_key(&version))
         {
-            restore107_compat::prepare(&tx, &migration.sql, migrations).await?;
-        }
+            Some(restore107_compat::prepare(&tx, &migration.sql, migrations).await?)
+        } else {
+            None
+        };
         if let Err(error) = tx.batch_execute(&migration.sql).await {
             // Dropping the transaction closes it without committing the failed file.
             return Err(MigrationError::Database(error));
+        }
+        if let Some(prepared) = compatibility {
+            restore107_compat::finish(&tx, prepared).await?;
         }
         tx.execute(
             "INSERT INTO schema_migrations (version, filename, checksum_sha256, kind)
