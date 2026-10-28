@@ -310,10 +310,10 @@ async fn restored_107_graph_is_normalized_atomically_without_blessing_unknown_sh
     owner.batch_execute("CREATE SCHEMA untrusted; CREATE FUNCTION untrusted.length(text) RETURNS integer LANGUAGE sql IMMUTABLE AS 'SELECT 0'; SET search_path TO untrusted, public").await.unwrap();
     let applied = apply(&mut owner, &directory, false).await.unwrap();
     assert_eq!(applied.first().unwrap().version, 108);
-    assert_eq!(applied.last().unwrap().version, 119);
+    assert_eq!(applied.last().unwrap().version, 120);
     let after_ledger = ledger(&owner).await;
     assert_eq!(&after_ledger[..107], &before_ledger);
-    assert_eq!(after_ledger.len(), 119);
+    assert_eq!(after_ledger.len(), 120);
     assert_eq!(checks(&owner).await, original_checks);
     assert_eq!(
         owner
