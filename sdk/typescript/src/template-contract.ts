@@ -47,7 +47,8 @@ export function validateTemplate(template: string): void {
   boundedText(template, templateLimits.template);
   for (let index = 0; index < template.length; ) {
     if (template[index] === "{") {
-      const rest = template.slice(index);
+      // Bound the slice length to maximum token size (36) to avoid O(N^2) memory allocations on large strings
+      const rest = template.slice(index, index + 36);
       const match = /^\{\{([A-Za-z_][A-Za-z0-9_]{0,31})\}\}/.exec(rest);
       if (!match || !validKey(match[1])) {
         throw new Error(
@@ -55,13 +56,18 @@ export function validateTemplate(template: string): void {
         );
       }
       index += match[0].length;
+    } else if (template[index] === "}") {
+      throw new Error(
+        "Use only {{identifier}} variables; braces must form a complete variable.",
+      );
     } else {
-      if (template[index] === "}") {
-        throw new Error(
-          "Use only {{identifier}} variables; braces must form a complete variable.",
-        );
-      }
-      index += 1;
+      // Use native indexOf to fast-forward instead of slow character-by-character JS loops
+      let nextOpen = template.indexOf("{", index);
+      let nextClose = template.indexOf("}", index);
+      let next = template.length;
+      if (nextOpen !== -1 && nextOpen < next) next = nextOpen;
+      if (nextClose !== -1 && nextClose < next) next = nextClose;
+      index = next;
     }
   }
 }
