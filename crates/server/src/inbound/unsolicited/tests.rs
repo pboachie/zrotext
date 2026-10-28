@@ -200,6 +200,8 @@ async fn signed_unsolicited_stop_is_attempt_free_line_bound_and_serialized() {
             )
             .unwrap()
                 + 60_000,
+            line_label: None,
+            no_fallback: false,
         })
         .await
         .unwrap();

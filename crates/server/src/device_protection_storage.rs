@@ -28,6 +28,25 @@ fn body(name: &str) -> Result<&'static str> {
     .ok_or(ProtectionSchemaError::Invalid)
 }
 fn body_for(name: &str, version: i64) -> Result<&'static str> {
+    if version == 120
+        && matches!(
+            name,
+            "payload_profile_writer_version"
+                | "payload_profile_writer_ready"
+                | "hosted_runtime_native_schema_valid"
+                | "hosted_runtime_identity_ready"
+                | "hosted_runtime_scope"
+                | "device_protection_ready"
+        )
+    {
+        return zrotext_delivery_store::hosted_runtime_identity::declared_function_body(
+            include_str!("../../../deploy/compose/migrations/120_messages_line.sql"),
+            name,
+            "$function$",
+        )
+        .ok_or(ProtectionSchemaError::Invalid);
+    }
+
     if version == 119
         && matches!(
             name,
@@ -539,7 +558,7 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
         )
         .await?
         .try_get(0)?;
-    if !matches!(version, 118..=119) {
+    if !matches!(version, 118..=120) {
         return Err(ProtectionSchemaError::Invalid);
     }
     functions(db, version).await?;

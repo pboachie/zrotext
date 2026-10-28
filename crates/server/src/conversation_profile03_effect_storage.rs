@@ -900,7 +900,7 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
         return Err(EffectSchemaError::Invalid);
     }
     crate::hosted_runtime_identity::require(db).await?;
-    if !crate::payload_profile_writer::optional(db,"public.accounts").await? || db.query_one("SELECT migration_version FROM public.payload_profile_writer_catalog WHERE singleton",&[]).await?.try_get::<_,i64>(0)?!=119 {return Err(EffectSchemaError::Invalid);}
+    if !crate::payload_profile_writer::optional(db,"public.accounts").await? || db.query_one("SELECT migration_version FROM public.payload_profile_writer_catalog WHERE singleton",&[]).await?.try_get::<_,i64>(0)?!=120 {return Err(EffectSchemaError::Invalid);}
     functions(db).await?;
     tables(db).await?;
     if !db

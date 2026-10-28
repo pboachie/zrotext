@@ -1172,6 +1172,8 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
             )
             .unwrap()
                 + 60_000,
+            line_label: None,
+            no_fallback: false,
         })
         .await
         .unwrap();
@@ -1744,7 +1746,9 @@ async fn signed_inbound_is_tenant_bound_deduplicated_and_queues_once() {
                     idempotency_key: "suppression-race", recipient_e164: "+15551234567",
                     synthetic_payload: b"synthetic", expires_at_ms: SystemTime::now()
                         .duration_since(UNIX_EPOCH).unwrap().as_millis() as i64 + 60_000,
-                }
+                        line_label: None,
+                        no_fallback: false,
+                        }
             ),
             async {
                 loop {
@@ -2075,6 +2079,8 @@ async fn signed_stop_after_content_retention_still_suppresses_recipient() {
                 recipient_e164: "+15551234567",
                 synthetic_payload: b"synthetic",
                 expires_at_ms,
+                line_label: None,
+                no_fallback: false,
             })
             .await,
         Err(zrotext_delivery_store::StoreError::RecipientSuppressed)
@@ -2111,6 +2117,8 @@ async fn signed_stop_after_content_retention_still_suppresses_recipient() {
             recipient_e164: "+15551234567",
             synthetic_payload: b"synthetic",
             expires_at_ms,
+            line_label: None,
+            no_fallback: false,
         })
         .await
         .unwrap();
@@ -3117,6 +3125,8 @@ async fn account_lock_serializes_only_consent_ingest_with_admission() {
                             .unwrap()
                             .as_millis() as i64
                             + 60_000,
+                        line_label: None,
+                        no_fallback: false,
                     })
                     .await
                     .unwrap();

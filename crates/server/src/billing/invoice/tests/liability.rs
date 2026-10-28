@@ -50,6 +50,8 @@ async fn catalog_only_terminal_projection_closes_original_invoice_liability_once
                 recipient_e164: "+15551234567",
                 synthetic_payload: b"synthetic invoice trigger fixture",
                 expires_at_ms: case.end * 1000,
+                line_label: None,
+                no_fallback: false,
             })
             .await
             .unwrap()

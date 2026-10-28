@@ -688,6 +688,8 @@ async fn lost_intent_ack_across_hubs_needs_no_radio_proof_before_regrant() {
         recipient_e164: recipient,
         synthetic_payload: b"ZROtext synthetic test: lost_ack",
         expires_at_ms: expiry,
+        line_label: None,
+        no_fallback: false,
     };
     DeliveryStore::new(&mut client)
         .accept(input())
@@ -1074,6 +1076,8 @@ async fn writer_claim_replay_epoch_and_revocation() {
             recipient_e164: "+15555550101",
             synthetic_payload: b"ZROtext synthetic test: socket_case",
             expires_at_ms: now_ms() + 10 * 60 * 1000,
+            line_label: None,
+            no_fallback: false,
         })
         .await
         .unwrap();
@@ -1244,6 +1248,8 @@ async fn writer_claim_replay_epoch_and_revocation() {
             recipient_e164: "+15555550101",
             synthetic_payload: b"ZROtext synthetic test: next_case",
             expires_at_ms: now_ms() + 10 * 60 * 1000,
+            line_label: None,
+            no_fallback: false,
         })
         .await
         .unwrap();
@@ -1300,6 +1306,8 @@ async fn writer_claim_replay_epoch_and_revocation() {
             recipient_e164: "+15555550102",
             synthetic_payload: b"ZROtext synthetic test: stale_policy",
             expires_at_ms: now_ms() + 10 * 60 * 1000,
+            line_label: None,
+            no_fallback: false,
         })
         .await
         .unwrap();

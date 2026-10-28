@@ -364,6 +364,8 @@ async fn failed_payment_and_late_paid_event_follow_current_test_subscription() {
         recipient_e164: "+15551234567",
         synthetic_payload: b"synthetic billing fixture",
         expires_at_ms: expiry,
+        line_label: None,
+        no_fallback: false,
     };
 
     // These are locally signed virtual Stripe TEST fixtures. Only the
@@ -479,6 +481,8 @@ async fn failed_payment_and_late_paid_event_follow_current_test_subscription() {
                 recipient_e164: "+15551234567",
                 synthetic_payload: b"synthetic billing fixture",
                 expires_at_ms: expiry,
+                line_label: None,
+                no_fallback: false,
             })
             .await
     });
@@ -1333,6 +1337,8 @@ async fn verified_refund_and_dispute_hold_active_metered_accounts() {
         recipient_e164: "+15551234567",
         synthetic_payload: b"synthetic test",
         expires_at_ms: expiry,
+        line_label: None,
+        no_fallback: false,
     };
     let first = Uuid::new_v4();
     assert!(
@@ -1625,6 +1631,8 @@ async fn noncard_py_refunds_and_disputes_hold_metered_accounts() {
         recipient_e164: "+15551234567",
         synthetic_payload: b"synthetic billing fixture",
         expires_at_ms: expiry,
+        line_label: None,
+        no_fallback: false,
     };
     assert!(
         DeliveryStore::new(&mut db)
@@ -1917,6 +1925,8 @@ async fn reconciled_test_subscription_controls_metered_reservations() {
         recipient_e164: "+15551234567",
         synthetic_payload: b"synthetic test",
         expires_at_ms: expiry,
+        line_label: None,
+        no_fallback: false,
     };
     {
         let mut store = DeliveryStore::new(&mut db);
