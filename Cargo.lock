@@ -3313,7 +3313,7 @@ dependencies = [
 
 [[package]]
 name = "zrotext-server"
-version = "1.0.3-rc.3"
+version = "1.0.3"
 dependencies = [
  "aes-gcm",
  "argon2",
