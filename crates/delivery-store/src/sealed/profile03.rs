@@ -76,7 +76,7 @@ impl AccountAdmission<'_, '_> {
             {
                 return Err(StoreError::MessageIdConflict);
             }
-            return Ok(AcceptOutcome { message_id: input.message_id, created: false });
+            return Ok(AcceptOutcome { message_id: input.message_id, created: false, line_label: None });
         }
         let counts = tx.query_one(
             "SELECT COUNT(*) FILTER (WHERE device_id=$2),COUNT(*) FROM messages \
@@ -114,6 +114,7 @@ impl AccountAdmission<'_, '_> {
         Ok(AcceptOutcome {
             message_id: input.message_id,
             created: true,
+            line_label: None,
         })
     }
 }

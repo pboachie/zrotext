@@ -4,7 +4,7 @@ use super::*;
 // delivery fixtures deliberately stop at107; actual108+ public/ledger/runtime
 // coverage lives in current_schema_tests and uses the genuine migrator.
 const LEGACY_ISOLATED_MIGRATIONS: usize = 107;
-const TEST_MIGRATIONS: [(&str, &str); 119] = [
+pub(crate) const TEST_MIGRATIONS: [(&str, &str); 120] = [
     (
         "001_foundation.sql",
         include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -499,6 +499,10 @@ const TEST_MIGRATIONS: [(&str, &str); 119] = [
         "119_conversation_profile03_effects.sql",
         include_str!("../../../deploy/compose/migrations/119_conversation_profile03_effects.sql"),
     ),
+    (
+        "120_messages_line.sql",
+        include_str!("../../../deploy/compose/migrations/120_messages_line.sql"),
+    ),
 ];
 
 #[path = "current_schema_tests.rs"]
@@ -654,7 +658,7 @@ fn admission_fixture_tracks_numbered_migrations() {
         .map(|(name, _)| name.to_string())
         .collect::<Vec<_>>();
     assert_eq!(discovered, embedded, "update the embedded migration list");
-    assert_eq!(TEST_MIGRATIONS.len(), 119);
+    assert_eq!(TEST_MIGRATIONS.len(), 120);
     assert_eq!(
         TEST_MIGRATIONS[LEGACY_ISOLATED_MIGRATIONS - 1].0,
         "107_registration_browser_intents.sql"
@@ -698,6 +702,8 @@ async fn radio_timestamp_rejection_preserves_state_and_accepts_offline_evidence(
             recipient_e164: "+15551234567",
             synthetic_payload: b"synthetic regression",
             expires_at_ms: now_ms() + 60_000,
+            line_label: None,
+            no_fallback: false,
         })
         .await
         .unwrap();
@@ -854,6 +860,8 @@ async fn released_attempt_cannot_change_a_new_grant() {
             recipient_e164: "+15551234567",
             synthetic_payload: b"synthetic regression",
             expires_at_ms: now_ms() + 60_000,
+            line_label: None,
+            no_fallback: false,
         })
         .await
         .unwrap();
@@ -1003,6 +1011,8 @@ async fn expired_message_replay_keeps_identity_without_new_dispatch() {
         recipient_e164: "+15551234567",
         synthetic_payload: b"test only",
         expires_at_ms: expiry,
+        line_label: None,
+        no_fallback: false,
     };
     assert!(
         DeliveryStore::new(&mut fixture.runtime)
@@ -1122,9 +1132,11 @@ async fn exact_alpha_replay_survives_customer_binding_without_new_work() {
         recipient_e164: "+15551234567",
         synthetic_payload: b"fixture",
         expires_at_ms: expiry,
+        line_label: None,
+        no_fallback: false,
     };
     let first = DeliveryStore::new(&mut fixture.runtime)
-        .accept_alpha(input(), false)
+        .accept_alpha(input(), false, None)
         .await
         .unwrap();
     assert!(first.created);
@@ -1139,7 +1151,7 @@ async fn exact_alpha_replay_survives_customer_binding_without_new_work() {
         .unwrap();
     for billing_enabled in [false, true] {
         let replay = DeliveryStore::new(&mut fixture.runtime)
-            .accept_alpha(input(), billing_enabled)
+            .accept_alpha(input(), billing_enabled, None)
             .await
             .unwrap();
         assert_eq!(replay.message_id, first.message_id);
@@ -1153,6 +1165,7 @@ async fn exact_alpha_replay_survives_customer_binding_without_new_work() {
                     ..input()
                 },
                 false,
+                None,
             )
             .await,
         Err(StoreError::IdempotencyConflict)
@@ -1165,6 +1178,7 @@ async fn exact_alpha_replay_survives_customer_binding_without_new_work() {
                     ..input()
                 },
                 false,
+                None,
             )
             .await,
         Err(StoreError::MessageIdConflict | StoreError::IdempotencyConflict)
@@ -1178,6 +1192,7 @@ async fn exact_alpha_replay_survives_customer_binding_without_new_work() {
                     ..input()
                 },
                 false,
+                None,
             )
             .await,
         Err(StoreError::QuotaNotConfigured)
@@ -1242,6 +1257,8 @@ async fn parallel_acceptance_respects_pending_queue_capacity() {
                     recipient_e164: "+15551234567",
                     synthetic_payload: b"test only",
                     expires_at_ms: now_ms() + 300_000,
+                    line_label: None,
+                    no_fallback: false,
                 })
                 .await;
             peer.finish().await;
@@ -1295,6 +1312,8 @@ async fn parallel_acceptance_respects_pending_queue_capacity() {
                 recipient_e164: "+15551234567",
                 synthetic_payload: b"test only",
                 expires_at_ms: expiry,
+                line_label: None,
+                no_fallback: false,
             })
             .await
             .unwrap()
@@ -1323,6 +1342,8 @@ async fn parallel_acceptance_respects_pending_queue_capacity() {
                     recipient_e164: "+15551234567",
                     synthetic_payload: b"test only",
                     expires_at_ms: now_ms() + 300_000,
+                    line_label: None,
+                    no_fallback: false,
                 })
                 .await
                 .unwrap();
@@ -1345,6 +1366,8 @@ async fn parallel_acceptance_respects_pending_queue_capacity() {
         recipient_e164: "+15551234567",
         synthetic_payload: b"test only",
         expires_at_ms: now_ms() + 300_000,
+        line_label: None,
+        no_fallback: false,
     };
     assert!(matches!(
         DeliveryStore::new(&mut replay.client).accept(extra()).await,
@@ -1407,6 +1430,8 @@ async fn postgres_fences_unknown_and_tenant_idempotency() {
         recipient_e164: "+15551234567",
         synthetic_payload: b"test only",
         expires_at_ms: expiry,
+        line_label: None,
+        no_fallback: false,
     };
     {
         let mut store = DeliveryStore::new(&mut fixture.runtime);
@@ -1739,6 +1764,8 @@ async fn postgres_fences_unknown_and_tenant_idempotency() {
                 recipient_e164: "+15551234567",
                 synthetic_payload: b"test only",
                 expires_at_ms: expiry,
+                line_label: None,
+                no_fallback: false,
             })
             .await
             .unwrap();
@@ -1802,6 +1829,8 @@ async fn postgres_fences_unknown_and_tenant_idempotency() {
                 recipient_e164: "+15551234567",
                 synthetic_payload: b"test only",
                 expires_at_ms: expiry,
+                line_label: None,
+                no_fallback: false,
             })
             .await
             .unwrap();
@@ -1865,6 +1894,8 @@ async fn postgres_fences_unknown_and_tenant_idempotency() {
                 recipient_e164: "+15551234567",
                 synthetic_payload: b"test only",
                 expires_at_ms: expiry,
+                line_label: None,
+                no_fallback: false,
             })
             .await
             .unwrap();
@@ -2031,6 +2062,8 @@ async fn postgres_fences_unknown_and_tenant_idempotency() {
                 recipient_e164: "+15551234567",
                 synthetic_payload: b"test only",
                 expires_at_ms: expiry,
+                line_label: None,
+                no_fallback: false,
             })
             .await
             .unwrap();
@@ -2389,6 +2422,8 @@ async fn recent_grant_precheck_is_one_bounded_index_probe() {
                 recipient_e164: "+15551234567",
                 synthetic_payload: b"synthetic regression",
                 expires_at_ms: now_ms() + 60_000,
+                line_label: None,
+                no_fallback: false,
             })
             .await
             .unwrap();
@@ -2786,6 +2821,8 @@ async fn admission_pays_one_round_trip_per_statement() {
             recipient_e164: "+15551234567",
             synthetic_payload: b"synthetic wire count",
             expires_at_ms: now_ms() + 60_000,
+            line_label: None,
+            no_fallback: false,
         })
         .await
         .unwrap();
@@ -2834,8 +2871,11 @@ async fn admission_pays_one_round_trip_per_statement() {
                 recipient_e164: "+15551234567",
                 synthetic_payload: b"synthetic billed wire count",
                 expires_at_ms: now_ms() + 60_000,
+                line_label: None,
+                no_fallback: false,
             },
             true,
+            None,
         )
         .await
         .unwrap();
@@ -2905,6 +2945,8 @@ async fn one_evidence_aggregate_keeps_conflict_segment_and_proof_rules() {
             recipient_e164: "+15551234567",
             synthetic_payload: b"synthetic regression",
             expires_at_ms: now_ms() + 60_000,
+            line_label: None,
+            no_fallback: false,
         })
         .await
         .unwrap();

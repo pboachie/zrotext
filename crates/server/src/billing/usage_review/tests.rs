@@ -56,6 +56,8 @@ async fn exact_live_owner_review_is_immutable_and_revoked_cached_session_cannot_
             recipient_e164: "+15551234567",
             synthetic_payload: b"synthetic only",
             expires_at_ms: now + 60_000,
+            line_label: None,
+            no_fallback: false,
         })
         .await
         .unwrap();

@@ -229,6 +229,9 @@ fn map_store(error: StoreError) -> SealedHttpError {
         | StoreError::DeviceBusy
         | StoreError::EventIdConflict => SealedHttpError::IdempotencyConflict,
         StoreError::NotFound | StoreError::Revoked => SealedHttpError::Forbidden,
+        // Sealed admission never addresses a line by label; reaching these
+        // arms means an unreadable policy row, which fails closed.
+        StoreError::PolicyCorrupt | StoreError::LineNotReady { .. } => SealedHttpError::Forbidden,
         StoreError::Database(_)
         | StoreError::DispatchDisabled
         | StoreError::StaleFence

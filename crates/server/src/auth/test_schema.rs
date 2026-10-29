@@ -33,6 +33,13 @@ pub(crate) async fn apply_pre_runtime_invoice_contract(db: &Client) {
     );
     assert_eq!(LEGACY_MIGRATIONS[PREFIX].0, "106_hosted_runtime.sql");
     apply_selected(db, &LEGACY_MIGRATIONS[..PREFIX], false, None).await;
+    // The admission implementation uses the current messages column even in
+    // this deliberately pre-runtime fixture. Do not run the public ceremony.
+    let line_schema = include_str!("../../../../deploy/compose/migrations/120_messages_line.sql")
+        .split_once("-- Writer-graph ceremony")
+        .expect("migration 120 line schema boundary")
+        .0;
+    db.batch_execute(line_schema).await.unwrap();
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

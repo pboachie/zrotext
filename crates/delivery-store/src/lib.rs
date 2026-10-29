@@ -20,7 +20,9 @@ mod status;
 pub use status::message_status;
 mod usage_projection;
 pub use usage_projection::{USAGE_PAGE_MAX, UsageHistoryPage, UsagePeriodView, usage_history};
+mod line_admission;
 pub mod line_policy;
+pub use line_admission::{LineAdmission, LineRefusal, RouteOutcome};
 pub mod sealed;
 
 /// See [`DeliveryStore::synthetic_grant_may_be_due`]. Public so plan tests
@@ -56,6 +58,13 @@ pub enum StoreError {
     QueueFull,
     #[error("message state does not permit this evidence")]
     InvalidTransition,
+    #[error("line policy columns are unreadable")]
+    PolicyCorrupt,
+    #[error("the addressed line is not ready under its policy")]
+    LineNotReady {
+        code: &'static str,
+        label: Option<String>,
+    },
     #[error("event ID was reused for different evidence")]
     EventIdConflict,
     #[error("outbound quota policy is not configured")]
@@ -101,12 +110,20 @@ pub struct NewMessage<'a> {
     /// public sealed-content endpoint or use with real customer content.
     pub synthetic_payload: &'a [u8],
     pub expires_at_ms: i64,
+    /// Owner-named line label (ADR 0004). `None` keeps line-free routing.
+    pub line_label: Option<&'a str>,
+    /// The request declines fallback for this message even when the line's
+    /// policy names one.
+    pub no_fallback: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AcceptOutcome {
     pub message_id: Uuid,
     pub created: bool,
+    /// The resolved label of the line that will actually send, when the
+    /// request addressed a line by label.
+    pub line_label: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -118,6 +135,9 @@ pub struct MessageSnapshot {
     pub state_version: i64,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+    /// The sending line's current label, when the message was admitted with
+    /// one; presentation only - identity stays immutable in messages.line_id.
+    pub line_label: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -229,7 +249,7 @@ impl<'a> DeliveryStore<'a> {
     /// No HTTP 202 should be returned until this transaction commits.
     pub async fn accept(&mut self, input: NewMessage<'_>) -> Result<AcceptOutcome, StoreError> {
         let message_id = input.client_message_id;
-        self.accept_inner(input, message_id, MeteringTime::Unmetered)
+        self.accept_inner(input, message_id, MeteringTime::Unmetered, None)
             .await
     }
 
@@ -241,7 +261,7 @@ impl<'a> DeliveryStore<'a> {
         input: NewMessage<'_>,
     ) -> Result<AcceptOutcome, StoreError> {
         let message_id = input.client_message_id;
-        self.accept_inner(input, message_id, MeteringTime::Database)
+        self.accept_inner(input, message_id, MeteringTime::Database, None)
             .await
     }
 
@@ -256,10 +276,16 @@ impl<'a> DeliveryStore<'a> {
         &mut self,
         input: NewMessage<'_>,
         billing_enabled: bool,
+        allowed_device: Option<Uuid>,
     ) -> Result<AcceptOutcome, StoreError> {
         let message_id = alpha_message_id(input.account_id, input.client_message_id);
-        self.accept_inner(input, message_id, MeteringTime::Alpha { billing_enabled })
-            .await
+        self.accept_inner(
+            input,
+            message_id,
+            MeteringTime::Alpha { billing_enabled },
+            allowed_device,
+        )
+        .await
     }
 
     #[cfg(test)]
@@ -269,7 +295,7 @@ impl<'a> DeliveryStore<'a> {
         unix_ms: i64,
     ) -> Result<AcceptOutcome, StoreError> {
         let message_id = input.client_message_id;
-        self.accept_inner(input, message_id, MeteringTime::UnixMillis(unix_ms))
+        self.accept_inner(input, message_id, MeteringTime::UnixMillis(unix_ms), None)
             .await
     }
 
@@ -281,6 +307,7 @@ impl<'a> DeliveryStore<'a> {
         input: NewMessage<'_>,
         message_id: Uuid,
         metering: MeteringTime,
+        allowed_device: Option<Uuid>,
     ) -> Result<AcceptOutcome, StoreError> {
         validate_message(&input)?;
         let digest = request_digest(&input);
@@ -376,10 +403,12 @@ impl<'a> DeliveryStore<'a> {
             {
                 return Err(StoreError::IdempotencyConflict);
             }
+            let line_label = message_line_label(&tx, input.account_id, message_id).await?;
             tx.commit().await?;
             return Ok(AcceptOutcome {
                 message_id,
                 created: false,
+                line_label,
             });
         }
 
@@ -388,16 +417,50 @@ impl<'a> DeliveryStore<'a> {
         // returning here rolls the uncommitted key insertion back as well.
         validate_new_expiry(input.expires_at_ms, metering)?;
 
+        // Label addressing resolves to immutable line identity here, inside
+        // the admission transaction and after the suppression check, so a
+        // refusal creates no message, job, idempotency or unknown outcome
+        // (the whole transaction rolls back). Routing runs only on the create
+        // path: an exact replay keeps its original outcome even if the line's
+        // policy changed meanwhile.
+        let (line_id, line_device_id, line_label) = match input.line_label {
+            Some(label) => match line_admission::route_line(
+                &tx,
+                input.account_id,
+                input.device_id,
+                label,
+                input.no_fallback,
+                allowed_device,
+            )
+            .await?
+            {
+                RouteOutcome::Admitted(admission) => (
+                    Some(admission.line_id),
+                    admission.device_id,
+                    admission.label,
+                ),
+                RouteOutcome::Refused(refusal) => {
+                    return Err(StoreError::LineNotReady {
+                        code: refusal.code,
+                        label: refusal.label,
+                    });
+                }
+            },
+            None => (None, input.device_id, None),
+        };
+
         // Every new acceptance for this account takes the same row lock. The
         // counts and insert are in one transaction, so parallel API instances
         // cannot each observe one remaining slot and overfill the queue.
+        // A fallback routing may have moved the send to the fallback line's
+        // bound device, so the per-device budget follows the effective device.
         let counts = tx
             .query_typed_one(
                 "SELECT COUNT(*) FILTER (WHERE device_id=$2), COUNT(*) FROM messages \
              WHERE account_id=$1 AND state IN ('queued','claimed') AND expires_at>now()",
                 &[
                     (&input.account_id, Type::UUID),
-                    (&input.device_id, Type::UUID),
+                    (&line_device_id, Type::UUID),
                 ],
             )
             .await?;
@@ -409,13 +472,13 @@ impl<'a> DeliveryStore<'a> {
 
         let created = tx
             .query_typed_opt(
-                "INSERT INTO messages (id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) \
-                 VALUES ($1,$2,$3,$4,$5,'synthetic_alpha',$6,$7,'queued',to_timestamp($8::double precision / 1000)) \
+                "INSERT INTO messages (id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at,line_id) \
+                 VALUES ($1,$2,$3,$4,$5,'synthetic_alpha',$6,$7,'queued',to_timestamp($8::double precision / 1000),$9) \
                  ON CONFLICT (id) DO NOTHING RETURNING id",
                 &[(&message_id, Type::UUID), (&input.account_id, Type::UUID),
-                  (&input.device_id, Type::UUID), (&input.recipient_e164, Type::TEXT),
+                  (&line_device_id, Type::UUID), (&input.recipient_e164, Type::TEXT),
                   (&recipient_digest, Type::BYTEA), (&input.synthetic_payload, Type::BYTEA),
-                  (&digest, Type::BYTEA), (&expiry, Type::FLOAT8)],
+                  (&digest, Type::BYTEA), (&expiry, Type::FLOAT8), (&line_id, Type::UUID)],
             )
             .await?;
         if created.is_none() {
@@ -434,10 +497,12 @@ impl<'a> DeliveryStore<'a> {
             {
                 return Err(StoreError::IdempotencyConflict);
             }
+            let line_label = message_line_label(&tx, input.account_id, message_id).await?;
             tx.commit().await?;
             return Ok(AcceptOutcome {
                 message_id,
                 created: false,
+                line_label,
             });
         }
         match metering {
@@ -459,7 +524,7 @@ impl<'a> DeliveryStore<'a> {
             &[
                 (&message_id, Type::UUID),
                 (&input.account_id, Type::UUID),
-                (&input.device_id, Type::UUID),
+                (&line_device_id, Type::UUID),
             ],
         )
         .await?;
@@ -467,6 +532,7 @@ impl<'a> DeliveryStore<'a> {
         Ok(AcceptOutcome {
             message_id,
             created: true,
+            line_label,
         })
     }
 
@@ -655,6 +721,22 @@ impl<'a> DeliveryStore<'a> {
                      AND m.state IN ('queued','claimed') AND m.expires_at>now() \
                      AND m.transport_mode='synthetic_alpha' \
                      AND d.revoked_at IS NULL \
+                     AND (m.line_id IS NULL OR EXISTS( \
+                       SELECT 1 FROM line_readiness_observations o \
+                       JOIN phone_lines l ON l.account_id=o.account_id AND l.id=o.line_id \
+                       WHERE o.account_id=m.account_id AND o.line_id=m.line_id \
+                         AND o.device_id=j.device_id AND o.kind='ready' \
+                         AND l.state='active' \
+                         AND o.binding_generation=l.current_binding_generation \
+                         AND EXISTS(SELECT 1 FROM device_line_bindings b \
+                           WHERE b.account_id=l.account_id AND b.line_id=l.id \
+                             AND b.device_id=j.device_id AND b.generation=l.current_binding_generation \
+                             AND b.state='active') \
+                         AND o.since_observation_ms IS NOT NULL \
+                         AND (l.offline_not_ready_after_seconds=0 \
+                              OR greatest(0, extract(epoch FROM (clock_timestamp()-o.hub_received_at))*1000) \
+                                 + o.since_observation_ms::numeric \
+                                 < l.offline_not_ready_after_seconds::numeric*1000))) \
                      AND ($2::uuid IS NULL OR j.account_id=$2) \
                      AND ($3::uuid IS NULL OR j.device_id=$3) \
                      AND ($4::bytea IS NULL OR m.recipient_digest=$4) \
@@ -1769,6 +1851,24 @@ pub fn alpha_message_id(account_id: Uuid, client_message_id: Uuid) -> Uuid {
     uuid::Builder::from_custom_bytes(bytes).into_uuid()
 }
 
+/// The line's current label for a recorded message; presentation only, so a
+/// rename is reflected here while the stored line identity stays immutable.
+async fn message_line_label(
+    tx: &Transaction<'_>,
+    account_id: Uuid,
+    message_id: Uuid,
+) -> Result<Option<String>, StoreError> {
+    Ok(tx
+        .query_opt(
+            "SELECT l.label FROM messages m JOIN phone_lines l \
+             ON l.account_id=m.account_id AND l.id=m.line_id \
+             WHERE m.account_id=$1 AND m.id=$2",
+            &[&account_id, &message_id],
+        )
+        .await?
+        .map(|row| row.get(0)))
+}
+
 fn request_digest(input: &NewMessage<'_>) -> Vec<u8> {
     let mut hash = Sha256::new();
     hash.update(input.account_id.as_bytes());
@@ -1779,6 +1879,13 @@ fn request_digest(input: &NewMessage<'_>) -> Vec<u8> {
     hash.update((input.synthetic_payload.len() as u64).to_be_bytes());
     hash.update(input.synthetic_payload);
     hash.update(input.expires_at_ms.to_be_bytes());
+    if let Some(label) = input.line_label {
+        hash.update((label.len() as u64).to_be_bytes());
+        hash.update(label.as_bytes());
+    } else {
+        hash.update(0u64.to_be_bytes());
+    }
+    hash.update([input.no_fallback as u8]);
     hash.finalize().to_vec()
 }
 
@@ -2058,6 +2165,9 @@ mod usage_projection_tests;
 
 #[cfg(test)]
 mod alpha_id_tests;
+
+#[cfg(test)]
+mod line_admission_tests;
 
 #[cfg(test)]
 mod test_database;

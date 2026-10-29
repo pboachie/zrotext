@@ -449,6 +449,8 @@ async fn owner_holds_and_review_decisions_are_owner_bound_tenant_scoped_and_audi
             recipient_e164: "+15550202000",
             synthetic_payload: b"synthetic queued message",
             expires_at_ms: now_ms().unwrap() + 60_000,
+            line_label: None,
+            no_fallback: false,
         })
         .await
         .unwrap();

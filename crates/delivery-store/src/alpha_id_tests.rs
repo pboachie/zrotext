@@ -46,10 +46,16 @@ async fn alpha_client_message_ids_are_scoped_per_account() {
         recipient_e164: "+15551234567",
         synthetic_payload: b"fixture",
         expires_at_ms: expiry,
+        line_label: None,
+        no_fallback: false,
     };
 
     let first_a = DeliveryStore::new(&mut fixture.runtime)
-        .accept_alpha(input(account_a, device_a, shared, "shared-key"), false)
+        .accept_alpha(
+            input(account_a, device_a, shared, "shared-key"),
+            false,
+            None,
+        )
         .await
         .unwrap();
     assert!(first_a.created);
@@ -58,7 +64,11 @@ async fn alpha_client_message_ids_are_scoped_per_account() {
     // Another account reusing the same client ID and key is ordinary new work,
     // not a conflict that would reveal account A's message.
     let first_b = DeliveryStore::new(&mut fixture.runtime)
-        .accept_alpha(input(account_b, device_b, shared, "shared-key"), false)
+        .accept_alpha(
+            input(account_b, device_b, shared, "shared-key"),
+            false,
+            None,
+        )
         .await
         .unwrap();
     assert!(first_b.created);
@@ -70,6 +80,7 @@ async fn alpha_client_message_ids_are_scoped_per_account() {
         .accept_alpha(
             input(account_b, device_b, first_a.message_id, "probe-key"),
             false,
+            None,
         )
         .await
         .unwrap();
@@ -78,14 +89,18 @@ async fn alpha_client_message_ids_are_scoped_per_account() {
 
     // Within one account the client ID still names one message.
     let replay_a = DeliveryStore::new(&mut fixture.runtime)
-        .accept_alpha(input(account_a, device_a, shared, "shared-key"), false)
+        .accept_alpha(
+            input(account_a, device_a, shared, "shared-key"),
+            false,
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(replay_a.message_id, first_a.message_id);
     assert!(!replay_a.created);
     assert!(matches!(
         DeliveryStore::new(&mut fixture.runtime)
-            .accept_alpha(input(account_a, device_a, shared, "other-key"), false)
+            .accept_alpha(input(account_a, device_a, shared, "other-key"), false, None)
             .await,
         Err(StoreError::MessageIdConflict)
     ));

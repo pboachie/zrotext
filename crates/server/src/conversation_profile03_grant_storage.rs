@@ -28,7 +28,17 @@ pub enum GrantSchemaError {
 }
 type Result<T> = std::result::Result<T, GrantSchemaError>;
 fn body(name: &str, version: i64) -> Result<&'static str> {
-    let source = if version == 119
+    let source = if version == 120
+        && matches!(
+            name,
+            "payload_profile_writer_version"
+                | "payload_profile_writer_ready"
+                | "hosted_runtime_native_schema_valid"
+                | "hosted_runtime_identity_ready"
+                | "hosted_runtime_scope"
+        ) {
+        include_str!("../../../deploy/compose/migrations/120_messages_line.sql")
+    } else if matches!(version, 119..=120)
         && matches!(
             name,
             "conversation_profile03_grant_issue"
@@ -38,7 +48,8 @@ fn body(name: &str, version: i64) -> Result<&'static str> {
                 | "payload_profile_writer_version"
                 | "payload_profile_writer_ready"
                 | "conversation_profile03_interval_ready"
-        ) {
+        )
+    {
         include_str!("../../../deploy/compose/migrations/119_conversation_profile03_effects.sql")
     } else if version == 118
         && matches!(
@@ -49,7 +60,7 @@ fn body(name: &str, version: i64) -> Result<&'static str> {
         )
     {
         include_str!("../../../deploy/compose/migrations/118_device_protection_origins.sql")
-    } else if matches!(version, 117..=119)
+    } else if matches!(version, 117..=120)
         && matches!(
             name,
             "payload_profile_writer_version"
@@ -60,7 +71,7 @@ fn body(name: &str, version: i64) -> Result<&'static str> {
         )
     {
         include_str!("../../../deploy/compose/migrations/117_explicit_reviewed_intent_v2.sql")
-    } else if matches!(version, 116..=119)
+    } else if matches!(version, 116..=120)
         && matches!(
             name,
             "payload_profile_writer_version"
@@ -462,7 +473,7 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
         )
         .await?
         .try_get(0)?;
-    if !matches!(version, 115..=119) {
+    if !matches!(version, 115..=120) {
         return Err(GrantSchemaError::Invalid);
     }
     functions(db, version).await?;

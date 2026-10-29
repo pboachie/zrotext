@@ -76,6 +76,12 @@ pub struct LineFacts {
 }
 
 impl LineFacts {
+    /// The caller's readiness view of the line: `None` means ready, so no
+    /// not-ready decision is needed and routing proceeds on this line.
+    pub fn not_ready(&self, offline_threshold_ms: u64) -> Option<ReadinessReason> {
+        self.not_ready_reason(offline_threshold_ms)
+    }
+
     fn not_ready_reason(&self, offline_threshold_ms: u64) -> Option<ReadinessReason> {
         if !self.line_active {
             Some(ReadinessReason::Inactive)

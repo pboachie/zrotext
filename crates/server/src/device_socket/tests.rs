@@ -617,6 +617,20 @@ async fn lost_intent_ack_across_hubs_needs_no_radio_proof_before_regrant() {
     ] {
         client.batch_execute(sql).await.unwrap();
     }
+    // Install the production line schema without the public writer ceremony in this isolated schema.
+    for sql in [
+        include_str!("../../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
+        include_str!(
+            "../../../../deploy/compose/migrations/098_line_labels_and_not_ready_policy.sql"
+        ),
+        include_str!("../../../../deploy/compose/migrations/099_line_readiness_observations.sql"),
+        include_str!("../../../../deploy/compose/migrations/120_messages_line.sql")
+            .split_once("-- Writer-graph ceremony")
+            .unwrap()
+            .0,
+    ] {
+        client.batch_execute(sql).await.unwrap();
+    }
     let account_id = Uuid::new_v4();
     let device_id = Uuid::new_v4();
     let message_id = Uuid::new_v4();
@@ -688,6 +702,8 @@ async fn lost_intent_ack_across_hubs_needs_no_radio_proof_before_regrant() {
         recipient_e164: recipient,
         synthetic_payload: b"ZROtext synthetic test: lost_ack",
         expires_at_ms: expiry,
+        line_label: None,
+        no_fallback: false,
     };
     DeliveryStore::new(&mut client)
         .accept(input())
@@ -863,6 +879,20 @@ async fn writer_claim_replay_epoch_and_revocation() {
         include_str!(
             "../../../../deploy/compose/migrations/095_device_session_line_activation_version.sql"
         ),
+    ] {
+        client.batch_execute(sql).await.unwrap();
+    }
+    // Install the production line schema without the public writer ceremony in this isolated schema.
+    for sql in [
+        include_str!("../../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
+        include_str!(
+            "../../../../deploy/compose/migrations/098_line_labels_and_not_ready_policy.sql"
+        ),
+        include_str!("../../../../deploy/compose/migrations/099_line_readiness_observations.sql"),
+        include_str!("../../../../deploy/compose/migrations/120_messages_line.sql")
+            .split_once("-- Writer-graph ceremony")
+            .unwrap()
+            .0,
     ] {
         client.batch_execute(sql).await.unwrap();
     }
@@ -1074,6 +1104,8 @@ async fn writer_claim_replay_epoch_and_revocation() {
             recipient_e164: "+15555550101",
             synthetic_payload: b"ZROtext synthetic test: socket_case",
             expires_at_ms: now_ms() + 10 * 60 * 1000,
+            line_label: None,
+            no_fallback: false,
         })
         .await
         .unwrap();
@@ -1244,6 +1276,8 @@ async fn writer_claim_replay_epoch_and_revocation() {
             recipient_e164: "+15555550101",
             synthetic_payload: b"ZROtext synthetic test: next_case",
             expires_at_ms: now_ms() + 10 * 60 * 1000,
+            line_label: None,
+            no_fallback: false,
         })
         .await
         .unwrap();
@@ -1300,6 +1334,8 @@ async fn writer_claim_replay_epoch_and_revocation() {
             recipient_e164: "+15555550102",
             synthetic_payload: b"ZROtext synthetic test: stale_policy",
             expires_at_ms: now_ms() + 10 * 60 * 1000,
+            line_label: None,
+            no_fallback: false,
         })
         .await
         .unwrap();

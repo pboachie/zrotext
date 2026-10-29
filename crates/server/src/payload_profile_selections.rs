@@ -20,11 +20,22 @@ pub enum SelectionSchemaError {
 }
 type Result<T> = std::result::Result<T, SelectionSchemaError>;
 fn body(name: &str, version: i64) -> Result<&'static str> {
-    let source = if version == 119
+    let source = if version == 120
+        && matches!(
+            name,
+            "payload_profile_writer_version"
+                | "payload_profile_writer_ready"
+                | "hosted_runtime_native_schema_valid"
+                | "hosted_runtime_identity_ready"
+                | "hosted_runtime_scope"
+        ) {
+        include_str!("../../../deploy/compose/migrations/120_messages_line.sql")
+    } else if matches!(version, 119..=120)
         && matches!(
             name,
             "payload_profile_writer_version" | "payload_profile_writer_ready"
-        ) {
+        )
+    {
         include_str!("../../../deploy/compose/migrations/119_conversation_profile03_effects.sql")
     } else if version == 118
         && matches!(
@@ -33,14 +44,14 @@ fn body(name: &str, version: i64) -> Result<&'static str> {
         )
     {
         include_str!("../../../deploy/compose/migrations/118_device_protection_origins.sql")
-    } else if matches!(version, 117..=119)
+    } else if matches!(version, 117..=120)
         && matches!(
             name,
             "payload_profile_writer_version" | "payload_profile_writer_ready"
         )
     {
         include_str!("../../../deploy/compose/migrations/117_explicit_reviewed_intent_v2.sql")
-    } else if matches!(version, 116..=119)
+    } else if matches!(version, 116..=120)
         && matches!(
             name,
             "payload_profile_writer_version"
@@ -51,7 +62,7 @@ fn body(name: &str, version: i64) -> Result<&'static str> {
         include_str!(
             "../../../deploy/compose/migrations/116_hosted_native_transaction_identity.sql"
         )
-    } else if matches!(version, 115..=119)
+    } else if matches!(version, 115..=120)
         && matches!(
             name,
             "payload_profile_writer_version" | "payload_profile_writer_ready"
@@ -72,7 +83,7 @@ fn body(name: &str, version: i64) -> Result<&'static str> {
         )
     {
         include_str!("../../../deploy/compose/migrations/113_conversation_profile03_intervals.sql")
-    } else if matches!(version, 112..=119)
+    } else if matches!(version, 112..=120)
         && matches!(
             name,
             "payload_profile_selection_scope"
@@ -278,7 +289,7 @@ async fn functions<C: GenericClient + Sync>(db: &C, version: i64) -> Result<()> 
             || !row.try_get::<_, bool>(2)?
             || row.try_get::<_, String>(3)? != language
             || row.try_get::<_, String>(4)?
-                != if matches!(version, 112..=119) && name == "payload_profile_selection_same_scope"
+                != if matches!(version, 112..=120) && name == "payload_profile_selection_same_scope"
                 {
                     "s"
                 } else {
@@ -287,7 +298,7 @@ async fn functions<C: GenericClient + Sync>(db: &C, version: i64) -> Result<()> 
             || row.try_get::<_, bool>(5)? != strict
             || row.try_get::<_, bool>(6)?
                 != (definer
-                    || matches!(version, 112..=119)
+                    || matches!(version, 112..=120)
                         && name == "payload_profile_selection_same_scope")
             || row.try_get::<_, bool>(7)? != set
             || row.try_get::<_, Option<Vec<String>>>(8)?.as_ref() != Some(&config)
@@ -336,7 +347,7 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
         )
         .await?
         .try_get(0)?;
-    if !matches!(version, 111..=119) {
+    if !matches!(version, 111..=120) {
         return Err(SelectionSchemaError::Invalid);
     }
     functions(db, version).await?;
