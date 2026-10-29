@@ -220,7 +220,27 @@ jobs:
           ZT_REGISTERED_OWNER_MFA_DATABASE_URL: postgresql://zt_registered_control@localhost:5432/zt_registered_mfa
         # Retain all workspace packages and features, including the complete
         # server PostgreSQL suite. External fixtures retain their original routes.
-        run: python3 scripts/ci_rust_postgresql.py run --suite conversation --lane '${{ matrix.lane }}' --receipt "$RUNNER_TEMP/conversation-postgresql-${{ matrix.lane }}/coverage.json"
+        run: |
+          if [[ "${{ matrix.lane }}" == "remaining" ]]; then
+            # This graph-fence test needs its own cluster: owner names are part of
+            # the signed graph and unrelated transactions must not overlap.
+            restore_container_id="$(docker run -d --rm --memory=1g --cpus=2 --pids-limit=128 \
+              -e POSTGRES_USER=zrotext -e POSTGRES_DB=postgres -e POSTGRES_HOST_AUTH_METHOD=trust \
+              -p 127.0.0.1::5432 docker.io/library/postgres:18.6-bookworm@sha256:afc7e2d441324c0388fa80c3d24f733b4194a4eb7f47dd8ee2b08eb1a24a647c \
+              -c max_prepared_transactions=5 -c max_locks_per_transaction=256)"
+            trap 'docker rm -f "$restore_container_id" >/dev/null 2>&1 || true' EXIT
+            for attempt in {1..30}; do
+              if docker exec "$restore_container_id" pg_isready -U zrotext; then break; fi
+              sleep 1
+            done
+            docker exec "$restore_container_id" pg_isready -U zrotext
+            test "$(docker exec "$restore_container_id" psql -U zrotext -d postgres -Atc 'SHOW max_prepared_transactions')" = '5'
+            restore_port="$(docker port "$restore_container_id" 5432/tcp)"
+            restore_port="${restore_port##*:}"
+            [[ "$restore_port" =~ ^[0-9]+$ ]]
+            export ZT_RESTORE119_TEST_DATABASE_URL="postgresql://zrotext@127.0.0.1:${restore_port}/postgres"
+          fi
+          python3 scripts/ci_rust_postgresql.py run --suite conversation --lane '${{ matrix.lane }}' --receipt "$RUNNER_TEMP/conversation-postgresql-${{ matrix.lane }}/coverage.json"
 
       - name: Preserve verified simulator-feature library coverage
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
