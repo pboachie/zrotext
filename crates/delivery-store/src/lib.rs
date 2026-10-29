@@ -733,10 +733,9 @@ impl<'a> DeliveryStore<'a> {
                              AND b.device_id=j.device_id AND b.generation=l.current_binding_generation \
                              AND b.state='active') \
                          AND o.since_observation_ms IS NOT NULL \
-                         AND (l.offline_not_ready_after_seconds=0 \
-                              OR greatest(0, extract(epoch FROM (clock_timestamp()-o.hub_received_at))*1000) \
-                                 + o.since_observation_ms::numeric \
-                                 < l.offline_not_ready_after_seconds::numeric*1000))) \
+                         AND greatest(0, extract(epoch FROM (clock_timestamp()-o.hub_received_at))*1000) \
+                             + o.since_observation_ms::numeric \
+                             < l.offline_not_ready_after_seconds::numeric*1000)) \
                      AND ($2::uuid IS NULL OR j.account_id=$2) \
                      AND ($3::uuid IS NULL OR j.device_id=$3) \
                      AND ($4::bytea IS NULL OR m.recipient_digest=$4) \

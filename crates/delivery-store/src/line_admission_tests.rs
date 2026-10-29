@@ -352,6 +352,27 @@ async fn line_labels_resolve_route_and_hold_across_every_not_ready_mode() {
         "a fresh report with stale underlying evidence must not release the queue"
     );
     observe(&client, account, backup, "ready").await;
+    client
+        .execute(
+            "UPDATE phone_lines SET offline_not_ready_after_seconds=0 WHERE id=$1",
+            &[&backup],
+        )
+        .await
+        .unwrap();
+    assert!(
+        DeliveryStore::new(&mut client)
+            .claim_due("worker-zero-threshold")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    client
+        .execute(
+            "UPDATE phone_lines SET offline_not_ready_after_seconds=300 WHERE id=$1",
+            &[&backup],
+        )
+        .await
+        .unwrap();
     let claimed = DeliveryStore::new(&mut client)
         .claim_due("worker-release")
         .await
