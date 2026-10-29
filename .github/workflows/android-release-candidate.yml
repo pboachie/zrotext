@@ -5,8 +5,7 @@ on:
   release:
     types: [published]
 permissions:
-  # write: attach the unsigned APK asset to the published release.
-  contents: write
+  contents: read
   id-token: write
   attestations: write
 concurrency:
@@ -83,21 +82,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 android/tools/release_candidate.py verify-unsigned
-      # The release carries exactly two assets: this unsigned APK and the
-      # server zip attached by the release image workflow. Nothing signed is
-      # ever attached here; signing stays local to the maintainer.
-      - name: Attach the unsigned APK to the release
-        if: github.event_name == 'release'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          UNSIGNED_DIR: ${{ steps.release_paths.outputs.unsigned }}
-          TAG: ${{ github.event.release.tag_name }}
-        run: |
-          set -euo pipefail
-          asset="$RUNNER_TEMP/zrotext-$TAG-unsigned.apk"
-          cp "$UNSIGNED_DIR/unsigned.apk" "$asset"
-          sha256sum "$asset"
-          gh release upload "$TAG" "$asset" --repo pboachie/zrotext --clobber
       # Actions artifacts from this public repository are publicly readable.
       # Keep signing keys and signed candidates in an approved private channel;
       # nothing signed is ever produced or attached here.

@@ -154,7 +154,7 @@ The Android app keeps its own independent version: `{app_name}`, version code `{
 
 ## Release artifacts
 
-- `zrotext-{tag}-unsigned.apk` — unsigned release APK built from this tag's source; attached by the `Android unsigned candidate` workflow. Signing, installation and distribution remain maintainer-side.
+- `zrotext-{tag}-unsigned.apk` — unsigned release APK built from this tag's source by the `Android unsigned candidate` workflow and attached here by the `Release server image` workflow. Signing, installation and distribution remain maintainer-side.
 - `zrotext-server-{tag}-linux-amd64.zip` — server bundle (binaries, migrations, notices, Compose files) extracted from the attested release image; attached by the `Release server image` workflow.
 - The attested container image for this tag is published to `ghcr.io/pboachie/zrotext` by the `Release server image` workflow; its immutable digest is recorded in that workflow's image-receipt artifact.
 

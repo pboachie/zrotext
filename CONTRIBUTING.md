@@ -272,12 +272,14 @@ the release line. Publishing uses the maintainer `RELEASE_LANE_TOKEN` secret
 because the tag ruleset only admits the maintainer account; the default
 `GITHUB_TOKEN` neither passes that ruleset nor triggers the release workflows.
 
-The published release then drives the existing workflows unchanged: `Release
-server image` builds, attests and rehearses the container image and attaches the
-`zrotext-server-<tag>-linux-amd64.zip` bundle extracted from that exact image,
-and `Android unsigned candidate` attaches `zrotext-<tag>-unsigned.apk`. These
-two assets are the complete release download; no checksum, SBOM or receipt files
-are attached to the release. If an asset workflow fails, re-run that workflow —
+The published release then drives the existing workflows unchanged: `Android
+unsigned candidate` stays read-only and secret-free and stores the unsigned APK
+as a workflow artifact; `Release server image` builds, attests and rehearses the
+container image, attaches the `zrotext-server-<tag>-linux-amd64.zip` bundle
+extracted from that exact image, waits for the candidate workflow's artifact,
+and attaches it as `zrotext-<tag>-unsigned.apk`. These two assets are the
+complete release download; no checksum, SBOM or receipt files are attached to
+the release. If an asset workflow fails, re-run that workflow —
 never re-tag. Release tags are annotated, point at `main` commits, and are
 immutable; private deployment automation promotes verified image digests.
 
