@@ -41,20 +41,42 @@ jobs:
       - name: Decide whether this merge releases
         id: decide
         run: python3 scripts/release_lane.py check | tee -a "$GITHUB_OUTPUT"
+      - name: Resolve the publication action
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.decide.outputs.version }}
+          DECISION: ${{ steps.decide.outputs.decision }}
+        run: |
+          set -euo pipefail
+          if [[ "$DECISION" == "tag" ]]; then
+            echo "action=publish" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A previous run may have tagged this version and crashed before
+          # publishing the release; heal that instead of waiting for the next
+          # version bump.
+          if gh release view "v$VERSION" --repo pboachie/zrotext >/dev/null 2>&1; then
+            echo "action=none" >> "$GITHUB_OUTPUT"
+            echo "Release v$VERSION already exists; nothing to publish."
+          else
+            echo "action=publish" >> "$GITHUB_OUTPUT"
+            echo "Tag v$VERSION exists without a release; recovering the publication."
+          fi
       - name: Require the release lane token
-        if: steps.decide.outputs.decision == 'tag'
+        if: steps.resolve.outputs.action == 'publish'
         env:
           RELEASE_LANE_TOKEN: ${{ secrets.RELEASE_LANE_TOKEN }}
         run: |
           if [[ -z "$RELEASE_LANE_TOKEN" ]]; then
-            echo '::error::A new server version was merged, but the RELEASE_LANE_TOKEN secret is not set. Create a fine-grained maintainer PAT with Contents read+write for pboachie/zrotext and add it as the RELEASE_LANE_TOKEN secret; the tag ruleset only admits the maintainer account.' >&2
+            echo '::error::This merge publishes a release, but the RELEASE_LANE_TOKEN secret is not set. Create a fine-grained maintainer PAT with Contents read+write for pboachie/zrotext and add it as the RELEASE_LANE_TOKEN secret; the tag ruleset only admits the maintainer account.' >&2
             exit 1
           fi
       - name: Compose the release notes
-        if: steps.decide.outputs.decision == 'tag'
+        if: steps.resolve.outputs.action == 'publish'
         run: python3 scripts/release_lane.py notes > "$RUNNER_TEMP/release-body.md"
-      - name: Create the annotated release tag
-        if: steps.decide.outputs.decision == 'tag'
+      - name: Create or verify the release tag
+        if: steps.resolve.outputs.action == 'publish'
         env:
           GH_TOKEN: ${{ secrets.RELEASE_LANE_TOKEN }}
           VERSION: ${{ steps.decide.outputs.version }}
@@ -62,43 +84,50 @@ jobs:
           set -euo pipefail
           ref="repos/pboachie/zrotext/git/ref/tags/v$VERSION"
           if gh api "$ref" >/dev/null 2>&1; then
-            echo "refs/tags/v$VERSION already exists; continuing with the existing tag."
+            echo "refs/tags/v$VERSION already exists; verifying it is an annotated main tag."
+            git fetch --quiet origin main:refs/remotes/origin/main "refs/tags/v$VERSION:refs/tags/v$VERSION"
+            test "$(git cat-file -t "v$VERSION")" = tag
+            git merge-base --is-ancestor "v$VERSION" refs/remotes/origin/main
           else
             # Create the annotated tag object first, then its ref; the ref must
             # point at the tag object, not the commit.
-            tag_object=$(gh api repos/pboachie/zrotext/git/tags \
-              -f "tag=v$VERSION" \
-              -f "message=ZROtext v$VERSION" \
-              -f "object=$GITHUB_SHA" \
-              -f "type=commit" \
-              -f "tagger[name]=ZROtext release lane" \
-              -f 'tagger[email]=41898282+github-actions[bot]@users.noreply.github.com' \
-              --jq .sha)
-            # A concurrent lane run may have created the same ref first; the
-            # commit check below rejects any mismatched tag either way.
-            gh api repos/pbochie/zrotext/git/refs \
-              -f "ref=refs/tags/v$VERSION" -f "sha=$tag_object" >/dev/null 2>&1 || true
-          fi
-          tagged_commit=$(gh api "repos/pboachie/zrotext/commits/v$VERSION" --jq .sha)
-          if [[ "$tagged_commit" != "$GITHUB_SHA" ]]; then
-            echo "::error::refs/tags/v$VERSION resolves to commit $tagged_commit, not this merge commit $GITHUB_SHA." >&2
-            exit 1
+            tag_object=$(gh api repos/pboachie/zrotext/git/tags               -f "tag=v$VERSION"               -f "message=ZROtext v$VERSION"               -f "object=$GITHUB_SHA"               -f "type=commit"               -f "tagger[name]=ZROtext release lane"               -f 'tagger[email]=41898282+github-actions[bot]@users.noreply.github.com'               --jq .sha)
+            created=""
+            for attempt in 1 2 3; do
+              if err=$(gh api repos/pboachie/zrotext/git/refs                   -f "ref=refs/tags/v$VERSION" -f "sha=$tag_object" 2>&1 >/dev/null); then
+                created=yes
+                break
+              fi
+              if ! grep -qi "already exists" <<<"$err"; then
+                echo "refs/tags/v$VERSION creation attempt $attempt failed: $err" >&2
+              fi
+              sleep 5
+            done
+            if [[ -z "$created" ]] && ! gh api "$ref" >/dev/null 2>&1; then
+              echo "::error::Could not create refs/tags/v$VERSION." >&2
+              exit 1
+            fi
+            tagged_commit=$(gh api "repos/pbochie/zrotext/commits/v$VERSION" --jq .sha)
+            if [[ "$tagged_commit" != "$GITHUB_SHA" ]]; then
+              echo "::error::refs/tags/v$VERSION resolves to $tagged_commit, not this merge commit $GITHUB_SHA." >&2
+              exit 1
+            fi
           fi
       - name: Publish the GitHub release
-        if: steps.decide.outputs.decision == 'tag'
+        if: steps.resolve.outputs.action == 'publish'
         env:
           GH_TOKEN: ${{ secrets.RELEASE_LANE_TOKEN }}
-          VERSION: ${{ steps.decide.outputs.version }}
+          TAG: v${{ steps.decide.outputs.version }}
         run: |
           set -euo pipefail
-          TAG="v$VERSION"
+          VERSION="${TAG#v}"
           if [[ "$VERSION" == *-rc.* ]]; then PRERELEASE=true; else PRERELEASE=false; fi
           if gh release view "$TAG" --repo pboachie/zrotext >/dev/null 2>&1; then
             echo "Release $TAG already exists; nothing to publish."
             exit 0
           fi
           args=(--repo pboachie/zrotext --title "ZROtext $TAG" --notes-file "$RUNNER_TEMP/release-body.md" --verify-tag)
-          if [[ "$PRERELEASE" == 'true' ]]; then
+          if [[ "$PRERELEASE" == "true" ]]; then
             args+=(--prerelease)
           fi
           gh release create "$TAG" "${args[@]}"
