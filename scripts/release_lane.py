@@ -162,31 +162,23 @@ No other files are attached to this release.
 """
 
 
-def write_output(line: str, announce: bool = True) -> None:
-    """Record a workflow output; the notes command keeps stdout body-only."""
-    handle = os.environ.get("GITHUB_OUTPUT")
-    if announce:
-        print(line)
-    if handle:
-        with open(handle, "a", encoding="utf-8") as sink:
-            sink.write(line + "\n")
-
-
 def command_check(root: Path) -> int:
+    """Print key=value decision lines; the workflow appends them to $GITHUB_OUTPUT."""
     try:
         version = server_version(root)
         decision, reference = decide(version, existing_tags(root))
-        write_output(f"version={version}")
-        write_output(f"decision={decision}")
-        if reference:
-            write_output(f"reference={reference}")
         if decision == TAG:
             changelog_section(root, version)
+        print(f"version={version}")
+        print(f"decision={decision}")
+        if reference:
+            print(f"reference={reference}")
+        if decision == TAG:
             print(f"Version {version} is new; this merge releases v{version} "
-                  f"(newest existing tag: {reference or 'none'}).")
+                  f"(newest existing tag: {reference or 'none'}).", file=sys.stderr)
         else:
             print(f"Version {version} is already tagged as {reference}; "
-                  "this merge does not release anything.")
+                  "this merge does not release anything.", file=sys.stderr)
     except LaneError as error:
         print(f"::error::{error}", file=sys.stderr)
         return 1
@@ -204,8 +196,6 @@ def command_notes(root: Path) -> int:
     sys.stdout.write(body)
     if not body.endswith("\n"):
         sys.stdout.write("\n")
-    write_output(f"tag=v{version}", announce=False)
-    write_output(f"prerelease={'-rc.' in version and 'true' or 'false'}", announce=False)
     return 0
 
 

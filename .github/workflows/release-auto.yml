@@ -40,7 +40,7 @@ jobs:
           persist-credentials: false
       - name: Decide whether this merge releases
         id: decide
-        run: python3 scripts/release_lane.py check
+        run: python3 scripts/release_lane.py check | tee -a "$GITHUB_OUTPUT"
       - name: Require the release lane token
         if: steps.decide.outputs.decision == 'tag'
         env:
@@ -88,10 +88,11 @@ jobs:
         if: steps.decide.outputs.decision == 'tag'
         env:
           GH_TOKEN: ${{ secrets.RELEASE_LANE_TOKEN }}
-          TAG: v${{ steps.decide.outputs.version }}
-          PRERELEASE: ${{ steps.decide.outputs.prerelease }}
+          VERSION: ${{ steps.decide.outputs.version }}
         run: |
           set -euo pipefail
+          TAG="v$VERSION"
+          if [[ "$VERSION" == *-rc.* ]]; then PRERELEASE=true; else PRERELEASE=false; fi
           if gh release view "$TAG" --repo pboachie/zrotext >/dev/null 2>&1; then
             echo "Release $TAG already exists; nothing to publish."
             exit 0
