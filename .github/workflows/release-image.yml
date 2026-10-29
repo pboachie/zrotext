@@ -13,7 +13,10 @@ jobs:
     if: github.repository == 'pboachie/zrotext'
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
+      # write: attach the release's two assets; actions read: fetch the
+      # Android candidate workflow's unsigned-APK artifact.
+      actions: read
+      contents: write
       packages: write
       attestations: write
       id-token: write
@@ -156,3 +159,83 @@ jobs:
             trivy-release.json
           if-no-files-found: error
           retention-days: 30
+      # The release carries exactly two assets: the server zip built here from
+      # the exact published (and just-attested) image, and the unsigned APK
+      # attached by the Android candidate workflow. The zip's binaries are the
+      # image's binaries, so its provenance is the image digest above.
+      - name: Bundle the server zip from the published image
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          name="zrotext-server-$tag-linux-amd64"
+          bundle="$RUNNER_TEMP/$name"
+          rm -rf "$bundle"; mkdir -p "$bundle/bin"
+          cid=$(docker create "ghcr.io/pboachie/zrotext@${IMAGE_DIGEST}")
+          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+          for binary in zrotext-server zrotext-admin zrotext-webhook-kek-rewrap zrotext-billing-risk-review zrotext-migrator; do
+            docker cp "$cid:/usr/local/bin/$binary" "$bundle/bin/$binary"
+          done
+          docker cp "$cid:/opt/zrotext/migrations" "$bundle/migrations"
+          docker cp "$cid:/usr/share/doc/zrotext" "$bundle/doc"
+          install -m 644 deploy/compose/compose.yaml deploy/compose/runtime-role.sql deploy/compose/Caddyfile deploy/compose/README.md deploy/compose/UPGRADE.md LICENSE "$bundle/"
+          cat >"$bundle/BUNDLE-README.md" <<README
+          # ZROtext server bundle $tag
+
+          Self-hosting bundle extracted from the attested release image
+          \`ghcr.io/pboachie/zrotext@${IMAGE_DIGEST}\` built from tag \`$tag\`.
+          The binaries under \`bin/\` are the image's own binaries; \`migrations/\`
+          and \`runtime-role.sql\` are the deployment's SQL sources, and
+          \`compose.yaml\`/\`Caddyfile\` are the Compose stack from the tagged
+          source. Prefer running the image directly with \`docker compose\`; this
+          bundle mirrors it for hosts that cannot pull from GHCR. Corresponding
+          source: https://github.com/pboachie/zrotext/tree/$tag (AGPL-3.0-only).
+          README
+          (cd "$RUNNER_TEMP" && zip -q -r "$name.zip" "$name")
+          sha256sum "$RUNNER_TEMP/$name.zip"
+      - name: Attach the server zip to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/zrotext-server-$GITHUB_REF_NAME-linux-amd64.zip" --repo pboachie/zrotext --clobber
+      - name: Wait for the unsigned APK candidate of this release
+        timeout-minutes: 40
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 80); do
+            runs=$(gh run list --repo pboachie/zrotext               --workflow android-release-candidate.yml --event release --limit 30               --json databaseId,headSha,conclusion)
+            state=$(jq -er --arg sha "$GITHUB_SHA" '
+              [ .[] | select(.headSha == $sha) ] |
+              if any(.[]; .conclusion == "success") then "success"
+              elif any(.[]; .conclusion == "failure") then "failure"
+              else "pending" end' <<<"$runs")
+            if [[ "$state" == success ]]; then echo 'APK candidate is ready.'; exit 0; fi
+            if [[ "$state" == failure ]]; then
+              echo '::error::The Android unsigned candidate workflow failed for this release; re-run it, then re-run this workflow. Never re-tag.' >&2
+              exit 1
+            fi
+            sleep 30
+          done
+          echo '::error::Timed out waiting for the Android unsigned candidate workflow.' >&2
+          exit 1
+      - name: Attach the unsigned APK to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          dir="$RUNNER_TEMP/android-candidate"
+          rm -rf "$dir"; mkdir -p "$dir"
+          run_id=$(gh run list --repo pboachie/zrotext             --workflow android-release-candidate.yml --event release --limit 30             --json databaseId,headSha,conclusion --jq '
+            [ .[] | select(.headSha == env.GITHUB_SHA and .conclusion == "success") ]
+            | max_by(.databaseId) | .databaseId')
+          test -n "$run_id" && test "$run_id" != null
+          gh run download "$run_id" --repo pboachie/zrotext             --name "android-unsigned-candidate-$tag" --dir "$dir"
+          asset="$RUNNER_TEMP/zrotext-$tag-unsigned.apk"
+          cp "$dir/unsigned.apk" "$asset"
+          sha256sum "$asset"
+          gh release upload "$tag" "$asset" --repo pboachie/zrotext --clobber
