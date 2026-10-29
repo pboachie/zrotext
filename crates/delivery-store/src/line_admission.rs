@@ -104,6 +104,7 @@ pub async fn route_line(
         continuity_pending: state.facts.continuity_pending,
         card_changed: state.facts.card_changed,
         since_last_seen_ms: state.facts.since_last_seen_ms,
+        offline_threshold_ms: row.offline_threshold_seconds as u64 * 1000,
         // Account-wide suppression already refused before routing;
         // per-line suppression does not exist in this model.
         recipient_suppressed: false,

@@ -30,6 +30,7 @@ fn ready_fallback() -> FallbackFacts {
         continuity_pending: false,
         card_changed: false,
         since_last_seen_ms: Some(1_000),
+        offline_threshold_ms: THRESHOLD_MS,
         recipient_suppressed: false,
     }
 }
@@ -113,6 +114,37 @@ fn fallback_sends_from_the_named_eligible_line() {
             fallback_label: Some("Personal".to_owned()),
         }
     );
+}
+
+#[test]
+fn fallback_uses_its_own_offline_threshold() {
+    let mut fallback = ready_fallback();
+    fallback.since_last_seen_ms = Some(2_000);
+    fallback.offline_threshold_ms = 1_000;
+    assert!(matches!(
+        decide_not_ready(
+            NotReadyMode::Fallback,
+            THRESHOLD_MS,
+            &not_ready(None),
+            Some(&fallback),
+            plain_request()
+        ),
+        NotReadyDecision::Refuse {
+            code: "line_not_ready_no_eligible_fallback",
+            ..
+        }
+    ));
+    fallback.offline_threshold_ms = 3_000;
+    assert!(matches!(
+        decide_not_ready(
+            NotReadyMode::Fallback,
+            1_000,
+            &not_ready(None),
+            Some(&fallback),
+            plain_request()
+        ),
+        NotReadyDecision::SendFromFallback { .. }
+    ));
 }
 
 #[test]

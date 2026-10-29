@@ -136,6 +136,8 @@ pub struct FallbackFacts {
     pub continuity_pending: bool,
     pub card_changed: bool,
     pub since_last_seen_ms: Option<u64>,
+    /// The fallback line's own configured freshness threshold.
+    pub offline_threshold_ms: u64,
     /// The fallback line's own suppression state for the recipient.
     pub recipient_suppressed: bool,
 }
@@ -208,7 +210,7 @@ pub fn decide_not_ready(
                         && !facts.card_changed
                         && facts
                             .since_last_seen_ms
-                            .is_some_and(|seen| seen < offline_threshold_ms)
+                            .is_some_and(|seen| seen < facts.offline_threshold_ms)
                         && !facts.recipient_suppressed =>
                 {
                     facts

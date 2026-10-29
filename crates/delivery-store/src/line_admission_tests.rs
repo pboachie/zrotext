@@ -443,6 +443,36 @@ async fn line_labels_resolve_route_and_hold_across_every_not_ready_mode() {
         )
         .await
         .unwrap();
+    client
+        .execute(
+            "UPDATE phone_lines SET offline_not_ready_after_seconds=1 WHERE id=$1",
+            &[&backup],
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        DeliveryStore::new(&mut client)
+            .accept_alpha(
+                NewMessage {
+                    line_label: Some("primary"),
+                    ..input(account, device, "fallback-own-threshold", expires_at_ms)
+                },
+                false,
+                None,
+            )
+            .await,
+        Err(StoreError::LineNotReady {
+            code: "line_not_ready_no_eligible_fallback",
+            ..
+        })
+    ));
+    client
+        .execute(
+            "UPDATE phone_lines SET offline_not_ready_after_seconds=300 WHERE id=$1",
+            &[&backup],
+        )
+        .await
+        .unwrap();
     let fell_back = DeliveryStore::new(&mut client)
         .accept_alpha(
             NewMessage {
