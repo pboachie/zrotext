@@ -52,7 +52,7 @@ jobs:
           fi
       - name: Compose the release notes
         if: steps.decide.outputs.decision == 'tag'
-        run: python3 scripts/release_lane.py notes --output "$RUNNER_TEMP/release-body.md"
+        run: python3 scripts/release_lane.py notes > "$RUNNER_TEMP/release-body.md"
       - name: Create the annotated release tag
         if: steps.decide.outputs.decision == 'tag'
         env:

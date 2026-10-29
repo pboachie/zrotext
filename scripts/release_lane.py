@@ -162,9 +162,11 @@ No other files are attached to this release.
 """
 
 
-def write_output(line: str) -> None:
+def write_output(line: str, announce: bool = True) -> None:
+    """Record a workflow output; the notes command keeps stdout body-only."""
     handle = os.environ.get("GITHUB_OUTPUT")
-    print(line)
+    if announce:
+        print(line)
     if handle:
         with open(handle, "a", encoding="utf-8") as sink:
             sink.write(line + "\n")
@@ -191,7 +193,7 @@ def command_check(root: Path) -> int:
     return 0
 
 
-def command_notes(root: Path, output: Path) -> int:
+def command_notes(root: Path) -> int:
     try:
         version = server_version(root)
         decide(version, existing_tags(root))
@@ -199,10 +201,11 @@ def command_notes(root: Path, output: Path) -> int:
     except LaneError as error:
         print(f"::error::{error}", file=sys.stderr)
         return 1
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(body, encoding="utf-8", newline="\n")
-    write_output(f"tag=v{version}")
-    write_output(f"prerelease={'-rc.' in version}")
+    sys.stdout.write(body)
+    if not body.endswith("\n"):
+        sys.stdout.write("\n")
+    write_output(f"tag=v{version}", announce=False)
+    write_output(f"prerelease={'-rc.' in version and 'true' or 'false'}", announce=False)
     return 0
 
 
@@ -211,13 +214,12 @@ def main() -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     check = commands.add_parser("check", help="Classify the checkout against existing tags")
     check.add_argument("--root", type=Path, default=ROOT)
-    notes = commands.add_parser("notes", help="Compose the GitHub release body")
+    notes = commands.add_parser("notes", help="Write the GitHub release body to stdout")
     notes.add_argument("--root", type=Path, default=ROOT)
-    notes.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.command == "check":
         return command_check(args.root)
-    return command_notes(args.root, args.output)
+    return command_notes(args.root)
 
 
 if __name__ == "__main__":
