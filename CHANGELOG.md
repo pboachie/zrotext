@@ -15,6 +15,24 @@ TypeScript SDK and the npm packages keep their own independent versions.
 
 - Nothing yet.
 
+## [1.0.3] - 2026-10-29
+
+### Fixed
+
+- A PostgreSQL 18.6 dump and second restore can regroup three schema 119
+  CHECK expressions, leaving the stored writer graph inconsistent with the
+  graph the stock runtime-role verifier rebuilds, so readiness fails after a
+  restore. A narrowly scoped migrator replay path now reconstructs exactly
+  those three constraints transactionally and verifies the stored graph is
+  restored; migrations 108, 109 and 119, the stored graph hash and the stock
+  role scripts are unchanged, and any other graph drift is still refused.
+
+### Notes
+
+- This final `1.0.3` collects the `1.0.3-rc` candidate series; the fix above
+  shipped as `1.0.3-rc.4`. No server behavior changed after `1.0.3-rc.4` —
+  main ahead of that tag only carries the automatic release lane itself.
+
 ## [1.0.3-rc.3] - 2026-10-28
 
 ### Added
