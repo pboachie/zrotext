@@ -1,0 +1,104 @@
+# Automatic release lane: a merged server version bump publishes itself.
+#
+# The server version is crates/server/Cargo.toml. On every push to main,
+# scripts/release_lane.py compares that version with the newest v* tag:
+#   - already tagged  -> nothing to do (ordinary merges never release);
+#   - newer version   -> create the annotated v<version> tag on the merge
+#                        commit and publish the GitHub release whose body is
+#                        the version's CHANGELOG.md section;
+#   - older version   -> fail loudly (regressed or forked release line).
+#
+# The tag and the release are created with the RELEASE_LANE_TOKEN secret, a
+# maintainer personal access token with Contents read+write. The default
+# GITHUB_TOKEN is not used for publication on purpose:
+#   1. the "Maintainer publishes tags" ruleset only allows the maintainer
+#      account to create refs/tags/*, and
+#   2. events produced by the GITHUB_TOKEN do not trigger the release
+#      workflows, while events produced by a PAT do. Publishing with the PAT
+#      keeps the existing Android candidate and server image workflows, and
+#      the release-tag validation workflow, exactly as they are.
+name: Release lane
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  # Serialize lane runs: a queued no-op run must never race a tagging run.
+  group: release-lane
+  cancel-in-progress: false
+jobs:
+  lane:
+    if: github.repository == 'pboachie/zrotext'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Decide whether this merge releases
+        id: decide
+        run: python3 scripts/release_lane.py check
+      - name: Require the release lane token
+        if: steps.decide.outputs.decision == 'tag'
+        env:
+          RELEASE_LANE_TOKEN: ${{ secrets.RELEASE_LANE_TOKEN }}
+        run: |
+          if [[ -z "$RELEASE_LANE_TOKEN" ]]; then
+            echo '::error::A new server version was merged, but the RELEASE_LANE_TOKEN secret is not set. Create a fine-grained maintainer PAT with Contents read+write for pboachie/zrotext and add it as the RELEASE_LANE_TOKEN secret; the tag ruleset only admits the maintainer account.' >&2
+            exit 1
+          fi
+      - name: Compose the release notes
+        if: steps.decide.outputs.decision == 'tag'
+        run: python3 scripts/release_lane.py notes --output "$RUNNER_TEMP/release-body.md"
+      - name: Create the annotated release tag
+        if: steps.decide.outputs.decision == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_LANE_TOKEN }}
+          VERSION: ${{ steps.decide.outputs.version }}
+        run: |
+          set -euo pipefail
+          ref="repos/pboachie/zrotext/git/ref/tags/v$VERSION"
+          if gh api "$ref" >/dev/null 2>&1; then
+            echo "refs/tags/v$VERSION already exists; continuing with the existing tag."
+          else
+            # Create the annotated tag object first, then its ref; the ref must
+            # point at the tag object, not the commit.
+            tag_object=$(gh api repos/pboachie/zrotext/git/tags \
+              -f "tag=v$VERSION" \
+              -f "message=ZROtext v$VERSION" \
+              -f "object=$GITHUB_SHA" \
+              -f "type=commit" \
+              -f "tagger[name]=ZROtext release lane" \
+              -f 'tagger[email]=41898282+github-actions[bot]@users.noreply.github.com' \
+              --jq .sha)
+            # A concurrent lane run may have created the same ref first; the
+            # commit check below rejects any mismatched tag either way.
+            gh api repos/pbochie/zrotext/git/refs \
+              -f "ref=refs/tags/v$VERSION" -f "sha=$tag_object" >/dev/null 2>&1 || true
+          fi
+          tagged_commit=$(gh api "repos/pboachie/zrotext/commits/v$VERSION" --jq .sha)
+          if [[ "$tagged_commit" != "$GITHUB_SHA" ]]; then
+            echo "::error::refs/tags/v$VERSION resolves to commit $tagged_commit, not this merge commit $GITHUB_SHA." >&2
+            exit 1
+          fi
+      - name: Publish the GitHub release
+        if: steps.decide.outputs.decision == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_LANE_TOKEN }}
+          TAG: v${{ steps.decide.outputs.version }}
+          PRERELEASE: ${{ steps.decide.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo pboachie/zrotext >/dev/null 2>&1; then
+            echo "Release $TAG already exists; nothing to publish."
+            exit 0
+          fi
+          args=(--repo pboachie/zrotext --title "ZROtext $TAG" --notes-file "$RUNNER_TEMP/release-body.md" --verify-tag)
+          if [[ "$PRERELEASE" == 'true' ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "$TAG" "${args[@]}"
+          echo "Published $TAG. The Android candidate and server image workflows attach the release assets."

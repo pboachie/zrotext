@@ -13,7 +13,8 @@ jobs:
     if: github.repository == 'pboachie/zrotext'
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
+      # write: attach the server zip asset to the published release.
+      contents: write
       packages: write
       attestations: write
       id-token: write
@@ -156,3 +157,44 @@ jobs:
             trivy-release.json
           if-no-files-found: error
           retention-days: 30
+      # The release carries exactly two assets: the server zip built here from
+      # the exact published (and just-attested) image, and the unsigned APK
+      # attached by the Android candidate workflow. The zip's binaries are the
+      # image's binaries, so its provenance is the image digest above.
+      - name: Bundle the server zip from the published image
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          name="zrotext-server-$tag-linux-amd64"
+          bundle="$RUNNER_TEMP/$name"
+          rm -rf "$bundle"; mkdir -p "$bundle/bin"
+          cid=$(docker create "ghcr.io/pboachie/zrotext@${IMAGE_DIGEST}")
+          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+          for binary in zrotext-server zrotext-admin zrotext-webhook-kek-rewrap zrotext-billing-risk-review zrotext-migrator; do
+            docker cp "$cid:/usr/local/bin/$binary" "$bundle/bin/$binary"
+          done
+          docker cp "$cid:/opt/zrotext/migrations" "$bundle/migrations"
+          docker cp "$cid:/usr/share/doc/zrotext" "$bundle/doc"
+          install -m 644 deploy/compose/compose.yaml deploy/compose/runtime-role.sql deploy/compose/Caddyfile deploy/compose/README.md deploy/compose/UPGRADE.md LICENSE "$bundle/"
+          cat >"$bundle/BUNDLE-README.md" <<README
+          # ZROtext server bundle $tag
+
+          Self-hosting bundle extracted from the attested release image
+          \`ghcr.io/pboachie/zrotext@${IMAGE_DIGEST}\` built from tag \`$tag\`.
+          The binaries under \`bin/\` are the image's own binaries; \`migrations/\`
+          and \`runtime-role.sql\` are the deployment's SQL sources, and
+          \`compose.yaml\`/\`Caddyfile\` are the Compose stack from the tagged
+          source. Prefer running the image directly with \`docker compose\`; this
+          bundle mirrors it for hosts that cannot pull from GHCR. Corresponding
+          source: https://github.com/pboachie/zrotext/tree/$tag (AGPL-3.0-only).
+          README
+          (cd "$RUNNER_TEMP" && zip -q -r "$name.zip" "$name")
+          sha256sum "$RUNNER_TEMP/$name.zip"
+      - name: Attach the server zip to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/zrotext-server-$GITHUB_REF_NAME-linux-amd64.zip" --repo pboachie/zrotext --clobber

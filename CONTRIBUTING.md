@@ -253,4 +253,32 @@ deadline covers consumer execution and server completion. An unknown mode or
 failed external consumer never falls back to automatic success. Leave the mode
 unset for bulk test runs; it is not an application or Compose setting.
 
+## Releases
+
+The server release version is the `version` field of `crates/server/Cargo.toml`.
+To release, one pull request bumps that version and adds the version's section
+to `CHANGELOG.md` (Keep a Changelog format) — the section is the GitHub release
+body, so it must exist and be non-empty before the version can be tagged. The
+Android app, the TypeScript SDK and the npm packages keep their own independent
+versions.
+
+Merging that pull request is the whole release action. The `Release lane`
+workflow compares the merged version against the newest `v*` tag: an unchanged
+version does nothing, a newer version creates the annotated `v<version>` tag on
+the merge commit and publishes the GitHub release from the changelog section
+(candidate versions like `1.0.3-rc.4` publish as pre-releases), and a version
+that does not advance the existing tags fails the check instead of regressing
+the release line. Publishing uses the maintainer `RELEASE_LANE_TOKEN` secret
+because the tag ruleset only admits the maintainer account; the default
+`GITHUB_TOKEN` neither passes that ruleset nor triggers the release workflows.
+
+The published release then drives the existing workflows unchanged: `Release
+server image` builds, attests and rehearses the container image and attaches the
+`zrotext-server-<tag>-linux-amd64.zip` bundle extracted from that exact image,
+and `Android unsigned candidate` attaches `zrotext-<tag>-unsigned.apk`. These
+two assets are the complete release download; no checksum, SBOM or receipt files
+are attached to the release. If an asset workflow fails, re-run that workflow —
+never re-tag. Release tags are annotated, point at `main` commits, and are
+immutable; private deployment automation promotes verified image digests.
+
 The public repository contains application code and public development documentation. Keep production credentials, customer data, billing operations, and private marketing material out of it.
