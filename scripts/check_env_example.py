@@ -24,6 +24,8 @@ TEST_ONLY = {
     "ZT_REFRESH_INTEROP_PROPOSAL_HEX",
     # Compiled only under cfg(test) + conversation-simulator-tests; never a server setting.
     "ZT_CONVERSATION_SIM_DIR",
+    # Only the ignored restore test reads this isolated fixture URL.
+    "ZT_RESTORE119_TEST_DATABASE_URL",
     "ZT_AUTH_TEST_DATABASE_URL",
     "ZT_DELIVERY_TEST_DATABASE_URL",
     "ZT_FAILOVER_TEST_DATABASE_URL",

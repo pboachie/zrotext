@@ -17,6 +17,7 @@ mod pending_recipient_index;
 mod radio_evidence_index;
 mod recent_attempt_index;
 mod restore107_compat;
+mod restore119_compat;
 use abuse_counters_index_drop::*;
 use admission_pending_index::*;
 use conversation_erasure_fk_indexes::*;
@@ -95,6 +96,8 @@ WHERE ns.nspname = 'public' AND idx.relname = 'messages_in_flight_updated'
 pub enum MigrationError {
     #[error("migration 107 restore compatibility refused: {0}")]
     Restore107Compatibility(&'static str),
+    #[error("migration 119 restore compatibility refused: {0}")]
+    Restore119Compatibility(&'static str),
     #[error("migration file error: {0}")]
     File(#[from] std::io::Error),
     #[error("invalid migration directory: {0}")]
@@ -357,6 +360,10 @@ async fn apply_locked(
     }
     if ledger.contains_key(&CONVERSATION_ERASURE_FK_INDEXES_MIGRATION) {
         verify_conversation_erasure_fk_indexes(client).await?;
+    }
+
+    if ledger.len() == 119 && (1..=119).all(|version| ledger.contains_key(&version)) {
+        restore119_compat::repair(client, migrations).await?;
     }
 
     for migration in migrations {
@@ -989,6 +996,8 @@ mod radio_evidence_index_tests;
 mod recent_attempt_index_tests;
 #[cfg(test)]
 mod restore107_compat_tests;
+#[cfg(test)]
+mod restore119_compat_tests;
 #[cfg(test)]
 mod review_workspace_tests;
 #[cfg(test)]
