@@ -196,6 +196,40 @@ async fn line_labels_resolve_route_and_hold_across_every_not_ready_mode() {
 
     // A ready line admits with its identity recorded and its label answered.
     observe(&client, account, primary, "ready").await;
+    // A concurrent revocation or readiness replacement must wait for the
+    // admission transaction that relied on the original facts.
+    let (other, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    other
+        .batch_execute(&format!(
+            "SET search_path TO {schema}; SET lock_timeout='250ms'"
+        ))
+        .await
+        .unwrap();
+    let tx = client.transaction().await.unwrap();
+    assert!(matches!(
+        crate::line_admission::route_line(&tx, account, device, "primary", false, None)
+            .await
+            .unwrap(),
+        crate::line_admission::RouteOutcome::Admitted(_)
+    ));
+    for statement in [
+        "UPDATE device_line_bindings SET state='revoked' WHERE account_id=$1 AND line_id=$2 AND state='active'",
+        "UPDATE line_readiness_observations SET kind='card_changed' WHERE account_id=$1 AND line_id=$2",
+    ] {
+        let error = other
+            .execute(statement, &[&account, &primary])
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.code(),
+            Some(&tokio_postgres::error::SqlState::LOCK_NOT_AVAILABLE)
+        );
+    }
+    tx.rollback().await.unwrap();
+    drop(other);
     let ready_client_id = Uuid::new_v4();
     let accepted = DeliveryStore::new(&mut client)
         .accept_alpha(

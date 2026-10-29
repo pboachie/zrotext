@@ -213,7 +213,7 @@ async fn line_state(
     let bound_device: Option<Uuid> = tx
         .query_opt(
             "SELECT device_id FROM device_line_bindings \
-             WHERE account_id=$1 AND line_id=$2 AND generation=$3 AND state='active'",
+             WHERE account_id=$1 AND line_id=$2 AND generation=$3 AND state='active' FOR SHARE",
             &[&account_id, &line.id, &line.current_binding_generation],
         )
         .await?
@@ -227,7 +227,7 @@ async fn line_state(
         .query_opt(
             "SELECT kind,since_observation_ms, \
                     (extract(epoch FROM hub_received_at)*1000)::bigint, binding_generation \
-             FROM line_readiness_observations WHERE account_id=$1 AND line_id=$2",
+             FROM line_readiness_observations WHERE account_id=$1 AND line_id=$2 FOR SHARE",
             &[&account_id, &line.id],
         )
         .await?;
