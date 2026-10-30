@@ -332,6 +332,7 @@ async fn failed_payment_and_late_paid_event_follow_current_test_subscription() {
     ] {
         db.batch_execute(sql).await.unwrap();
     }
+    crate::auth::test_schema::apply_line_routing(&db, true).await;
     let account = Uuid::new_v4();
     let device = Uuid::new_v4();
     db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
@@ -1281,6 +1282,7 @@ async fn verified_refund_and_dispute_hold_active_metered_accounts() {
     ] {
         db.batch_execute(sql).await.unwrap();
     }
+    crate::auth::test_schema::apply_line_routing(&db, false).await;
     let a = Uuid::new_v4();
     let b = Uuid::new_v4();
     let device_a = Uuid::new_v4();
@@ -1581,6 +1583,7 @@ async fn noncard_py_refunds_and_disputes_hold_metered_accounts() {
     ] {
         db.batch_execute(sql).await.unwrap();
     }
+    crate::auth::test_schema::apply_line_routing(&db, false).await;
     let account = Uuid::new_v4();
     let device = Uuid::new_v4();
     db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
@@ -1892,6 +1895,7 @@ async fn reconciled_test_subscription_controls_metered_reservations() {
     ] {
         db.batch_execute(sql).await.unwrap();
     }
+    crate::auth::test_schema::apply_line_routing(&db, false).await;
     let account = Uuid::new_v4();
     let other = Uuid::new_v4();
     let device = Uuid::new_v4();

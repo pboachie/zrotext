@@ -185,6 +185,7 @@ impl Fixture {
             }
             db.batch_execute(sql).await.unwrap();
         }
+        crate::auth::test_schema::apply_line_routing(&db, true).await;
         Self::seed(url, schema, db, purpose, provision).await
     }
     async fn seed(url: String, schema: String, db: Client, purpose: &str, provision: bool) -> Self {

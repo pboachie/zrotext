@@ -1,6 +1,30 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use tokio_postgres::Client;
 
+/// Extend a deliberately partial test schema with the actual line-routing
+/// structures, without applying migration 120's public writer ceremony.
+pub(crate) async fn apply_line_routing(db: &Client, has_line_identity: bool) {
+    if !has_line_identity {
+        db.batch_execute(include_str!(
+            "../../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"
+        ))
+        .await
+        .unwrap();
+    }
+    for sql in [
+        include_str!(
+            "../../../../deploy/compose/migrations/098_line_labels_and_not_ready_policy.sql"
+        ),
+        include_str!("../../../../deploy/compose/migrations/099_line_readiness_observations.sql"),
+        include_str!("../../../../deploy/compose/migrations/120_messages_line.sql")
+            .split_once("-- Writer-graph ceremony")
+            .expect("migration 120 line schema boundary")
+            .0,
+    ] {
+        db.batch_execute(sql).await.unwrap();
+    }
+}
+
 /// Apply the actual prefix through107 and its autocommit index preparation.
 /// The caller must provide a unique disposable schema. Tests of108+ require
 /// the genuine public installation and separate ordinary runtime fixture.
