@@ -34,7 +34,7 @@ use webhook_history_index::*;
 /// Fixed, project-specific advisory lock, held on one connection for the
 /// full migrator run. Public so every other session-level advisory-lock key
 /// (for example the failover executor's singleton lock) can be pinned
-/// distinct from this namespace — two locks sharing a key would let each
+/// distinct from this namespace â€” two locks sharing a key would let each
 /// holder defeat the other's exclusivity. The value is the big-endian ASCII
 /// of `ZROTEXT`; it must stay fixed forever, or a migrator and an executor
 /// that disagree on the key could run concurrently.
@@ -197,10 +197,18 @@ pub async fn apply(
     baseline_m0: bool,
 ) -> Result<Vec<AppliedMigration>, MigrationError> {
     let migrations = read_migrations(directory)?;
+    apply_inventory(client, &migrations, baseline_m0).await
+}
+
+async fn apply_inventory(
+    client: &mut Client,
+    migrations: &[Migration],
+    baseline_m0: bool,
+) -> Result<Vec<AppliedMigration>, MigrationError> {
     client
         .query_one("SELECT pg_advisory_lock($1)", &[&MIGRATION_LOCK])
         .await?;
-    let result = apply_locked(client, &migrations, baseline_m0).await;
+    let result = apply_locked(client, migrations, baseline_m0).await;
     let unlock = client
         .query_one("SELECT pg_advisory_unlock($1)", &[&MIGRATION_LOCK])
         .await;
