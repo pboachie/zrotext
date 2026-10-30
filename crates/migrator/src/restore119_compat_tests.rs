@@ -5,6 +5,24 @@ use postgres_protocol::escape::escape_identifier;
 use tokio_postgres::{Config, NoTls};
 use uuid::Uuid;
 
+async fn apply_historical(
+    client: &mut tokio_postgres::Client,
+    directory: &Path,
+) -> Result<Vec<AppliedMigration>, MigrationError> {
+    let migrations: Vec<_> = read_migrations(directory)?
+        .into_iter()
+        .filter(|migration| migration.version <= 119)
+        .collect();
+    assert_eq!(
+        migrations
+            .iter()
+            .map(|migration| migration.version)
+            .collect::<Vec<_>>(),
+        (1..=119).collect::<Vec<_>>()
+    );
+    apply_inventory(client, &migrations, false).await
+}
+
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB on disposable PostgreSQL 18.6"]
 async fn schema119_restore_reconstitution_is_atomic_and_replay_safe() {
@@ -28,8 +46,10 @@ async fn schema119_restore_reconstitution_is_atomic_and_replay_safe() {
     cfg.dbname(&db);
     let (mut client, driver) = cfg.connect(NoTls).await.unwrap();
     let db_driver = tokio::spawn(driver);
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
-    apply(&mut client, &dir, false).await.unwrap();
+    let current_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
+    // Exercise the pinned historical inventory through the same lock and
+    // apply path used by the complete on-disk migration directory.
+    apply_historical(&mut client, &current_dir).await.unwrap();
     let row=client.query_one("SELECT encode(graph_sha256,'hex') FROM public.payload_profile_writer_catalog WHERE singleton AND migration_version=119",&[]).await.unwrap();
     let stored: String = row.get(0);
     assert_eq!(
@@ -57,18 +77,28 @@ async fn schema119_restore_reconstitution_is_atomic_and_replay_safe() {
         .batch_execute("SET zrotext.restore119_snapshot_test_barrier='enabled'")
         .await
         .unwrap();
-    let workdir = dir.clone();
+    let workdir = current_dir.clone();
     let ledger_task = tokio::spawn(async move {
-        let result = apply(&mut client, &workdir, false).await;
+        let result = apply_historical(&mut client, &workdir).await;
         (client, result)
     });
     tokio::time::timeout(std::time::Duration::from_secs(10), async { loop { let waiting: bool = ledger_gate.query_one("SELECT EXISTS(SELECT FROM pg_locks WHERE locktype='advisory' AND classid=0 AND objid=119119096 AND NOT granted)", &[]).await.unwrap().get(0); if waiting { break; } tokio::time::sleep(std::time::Duration::from_millis(10)).await; } }).await.unwrap();
-    ledger_gate.batch_execute("UPDATE public.schema_migrations SET checksum_sha256=decode(repeat('00',32),'hex') WHERE version=119; SELECT pg_advisory_unlock(119119096)").await.unwrap();
+    // Commit the changed ledger before releasing the waiting snapshot. A
+    // single multi-statement simple query would release the session advisory
+    // lock before its implicit transaction commits.
+    ledger_gate.batch_execute("UPDATE public.schema_migrations SET checksum_sha256=decode(repeat('00',32),'hex') WHERE version=119").await.unwrap();
+    ledger_gate
+        .batch_execute("SELECT pg_advisory_unlock(119119096)")
+        .await
+        .unwrap();
     let (mut client, result) = ledger_task.await.unwrap();
-    assert!(matches!(
-        result,
-        Err(MigrationError::Restore119Compatibility("ledger mismatch"))
-    ));
+    assert!(
+        matches!(
+            result,
+            Err(MigrationError::Restore119Compatibility("ledger mismatch"))
+        ),
+        "unexpected ledger race result: {result:?}"
+    );
     client
         .batch_execute("RESET zrotext.restore119_snapshot_test_barrier")
         .await
@@ -88,7 +118,7 @@ async fn schema119_restore_reconstitution_is_atomic_and_replay_safe() {
     noop_blocker.batch_execute("BEGIN; LOCK TABLE public.schema_migrations, public.payload_profile_writer_catalog IN SHARE ROW EXCLUSIVE MODE").await.unwrap();
     let replay = tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        apply(&mut client, &dir, false),
+        apply_historical(&mut client, &current_dir),
     )
     .await
     .expect("no-op replay must not wait for ledger write locks")
@@ -145,7 +175,7 @@ ALTER TABLE public.conversation_profile03_outcomes DROP CONSTRAINT conversation_
         .unwrap()
         .get(0);
     assert!(matches!(
-        apply(&mut client, &dir, false).await,
+        apply_historical(&mut client, &current_dir).await,
         Err(MigrationError::AbuseCountersStaleIndexPresent)
     ));
     assert_eq!(
@@ -180,7 +210,9 @@ ALTER TABLE public.conversation_profile03_outcomes DROP CONSTRAINT conversation_
     // A non-superuser must not perform the repair. Give it only the reads
     // needed for the preflight, then require refusal and unchanged graph.
     client.batch_execute("CREATE ROLE synthetic_no_priv; GRANT USAGE ON SCHEMA public TO synthetic_no_priv; GRANT SELECT ON public.schema_migrations, public.payload_profile_writer_catalog TO synthetic_no_priv; SET ROLE synthetic_no_priv").await.unwrap();
-    let no_priv_error = apply(&mut client, &dir, false).await.unwrap_err();
+    let no_priv_error = apply_historical(&mut client, &current_dir)
+        .await
+        .unwrap_err();
     assert!(
         matches!(
             &no_priv_error,
@@ -202,7 +234,13 @@ ALTER TABLE public.conversation_profile03_outcomes DROP CONSTRAINT conversation_
     // An unrelated graph mutation must be refused before any compatibility DDL.
     client.batch_execute("ALTER TABLE public.conversation_profile03_outcomes ADD CONSTRAINT synthetic_extra CHECK (segment_count > 0)").await.unwrap();
     assert!(matches!(
-        apply(&mut client, &dir, false).await,
+        apply_historical(&mut client, &current_dir).await,
+        Err(MigrationError::Restore119Compatibility(
+            "unrecognized graph pair"
+        ))
+    ));
+    assert!(matches!(
+        apply(&mut client, &current_dir, false).await,
         Err(MigrationError::Restore119Compatibility(
             "unrecognized graph pair"
         ))
@@ -216,12 +254,16 @@ ALTER TABLE public.conversation_profile03_outcomes DROP CONSTRAINT conversation_
         .unwrap();
     // Operator annotations are never silently discarded by drop/recreate.
     client.batch_execute("COMMENT ON CONSTRAINT conversation_profile03_outcomes_check ON public.conversation_profile03_outcomes IS 'synthetic annotation'").await.unwrap();
-    assert!(matches!(
-        apply(&mut client, &dir, false).await,
-        Err(MigrationError::Restore119Compatibility(
-            "unsafe CHECK metadata"
-        ))
-    ));
+    let annotation_error = apply_historical(&mut client, &current_dir)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            &annotation_error,
+            MigrationError::Restore119Compatibility("unsafe CHECK metadata")
+        ),
+        "unexpected annotation refusal: {annotation_error:?}"
+    );
     let comment:Option<String>=client.query_one("SELECT obj_description(oid,'pg_constraint') FROM pg_constraint WHERE conname='conversation_profile03_outcomes_check' AND conrelid='public.conversation_profile03_outcomes'::regclass",&[]).await.unwrap().get(0);
     assert_eq!(comment.as_deref(), Some("synthetic annotation"));
     client.batch_execute("COMMENT ON CONSTRAINT conversation_profile03_outcomes_check ON public.conversation_profile03_outcomes IS NULL").await.unwrap();
@@ -233,7 +275,9 @@ ALTER TABLE public.conversation_profile03_outcomes DROP CONSTRAINT conversation_
         .batch_execute("BEGIN; CREATE TABLE public.synthetic_inflight_ddl(id integer)")
         .await
         .unwrap();
-    let inflight_error = apply(&mut client, &dir, false).await.unwrap_err();
+    let inflight_error = apply_historical(&mut client, &current_dir)
+        .await
+        .unwrap_err();
     assert!(matches!(
         inflight_error,
         MigrationError::Restore119Compatibility("concurrent or prepared transaction present")
@@ -256,7 +300,9 @@ ALTER TABLE public.conversation_profile03_outcomes DROP CONSTRAINT conversation_
     let (prepared, prepared_driver) = cfg.connect(NoTls).await.unwrap();
     let prepared_driver = tokio::spawn(prepared_driver);
     prepared.batch_execute("BEGIN; CREATE TABLE public.synthetic_prepared_ddl(id integer); PREPARE TRANSACTION 'zt_synthetic_119'").await.unwrap();
-    let prepared_error = apply(&mut client, &dir, false).await.unwrap_err();
+    let prepared_error = apply_historical(&mut client, &current_dir)
+        .await
+        .unwrap_err();
     assert!(
         matches!(
             &prepared_error,
@@ -282,7 +328,7 @@ ALTER TABLE public.conversation_profile03_outcomes DROP CONSTRAINT conversation_
         .await
         .unwrap();
     assert!(
-        matches!(apply(&mut client,&dir,false).await,Err(MigrationError::Database(e)) if e.code()==Some(&tokio_postgres::error::SqlState::LOCK_NOT_AVAILABLE))
+        matches!(apply_historical(&mut client,&current_dir).await,Err(MigrationError::Database(e)) if e.code()==Some(&tokio_postgres::error::SqlState::LOCK_NOT_AVAILABLE))
     );
     blocker.batch_execute("ROLLBACK").await.unwrap();
     drop(blocker);
@@ -303,7 +349,7 @@ ALTER TABLE public.conversation_profile03_outcomes DROP CONSTRAINT conversation_
         .await
         .unwrap();
     assert!(matches!(
-        apply(&mut client, &dir, false).await,
+        apply_historical(&mut client, &current_dir).await,
         Err(MigrationError::Restore119Compatibility(
             "synthetic interruption"
         ))
@@ -345,7 +391,9 @@ ALTER TABLE public.conversation_profile03_outcomes DROP CONSTRAINT conversation_
         .batch_execute("BEGIN; CREATE ROLE synthetic_preexisting_cross_role")
         .await
         .unwrap();
-    let cross_busy = apply(&mut client, &dir, false).await.unwrap_err();
+    let cross_busy = apply_historical(&mut client, &current_dir)
+        .await
+        .unwrap_err();
     assert!(
         matches!(
             &cross_busy,
@@ -366,9 +414,9 @@ ALTER TABLE public.conversation_profile03_outcomes DROP CONSTRAINT conversation_
         .batch_execute("SET zrotext.restore119_test_barrier='enabled'")
         .await
         .unwrap();
-    let workdir = dir.clone();
+    let workdir = current_dir.clone();
     let task = tokio::spawn(async move {
-        let result = apply(&mut client, &workdir, false).await;
+        let result = apply_historical(&mut client, &workdir).await;
         (client, result)
     });
     tokio::time::timeout(std::time::Duration::from_secs(10),async {
@@ -479,7 +527,38 @@ ALTER TABLE public.conversation_profile03_outcomes DROP CONSTRAINT conversation_
     assert_eq!(after, stored);
     let ledger=client.query("SELECT version,filename,checksum_sha256,kind,applied_at::text FROM public.schema_migrations ORDER BY version",&[]).await.unwrap().into_iter().map(|r|(r.get::<_,i64>(0),r.get::<_,String>(1),r.get::<_,Vec<u8>>(2),r.get::<_,String>(3),r.get::<_,String>(4))).collect::<Vec<_>>();
     assert_eq!(before, ledger);
-    assert!(apply(&mut client, &dir, false).await.unwrap().is_empty());
+    assert!(
+        apply_historical(&mut client, &current_dir)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let expected_tail: Vec<_> = read_migrations(&current_dir)
+        .unwrap()
+        .into_iter()
+        .filter(|migration| migration.version > 119)
+        .map(|migration| migration.version)
+        .collect();
+    assert_eq!(expected_tail.first(), Some(&120));
+    // Exercise a restored schema directly against the current directory:
+    // repair must still run before a later migration changes the graph.
+    client.batch_execute(r#"ALTER TABLE public.conversation_profile03_closure_challenges DROP CONSTRAINT conversation_profile03_closure_challenges_check4, ADD CONSTRAINT conversation_profile03_closure_challenges_check4 CHECK (octet_length(proof_site_id)>=1 AND octet_length(proof_site_id)<=256 AND (octet_length(proof_instance_id)>=1 AND octet_length(proof_instance_id)<=256));
+ALTER TABLE public.conversation_profile03_closure_records DROP CONSTRAINT conversation_profile03_closure_records_check, ADD CONSTRAINT conversation_profile03_closure_records_check CHECK (segment_count>=1 AND segment_count<=6 AND closed_from IN(0,1) AND closed_ms>=submit_observed_ms);
+ALTER TABLE public.conversation_profile03_outcomes DROP CONSTRAINT conversation_profile03_outcomes_check, ADD CONSTRAINT conversation_profile03_outcomes_check CHECK (segment_count>=1 AND segment_count<=6 AND (evidence>=0 AND evidence<=5));"#).await.unwrap();
+    let upgraded = apply(&mut client, &current_dir, false).await.unwrap();
+    assert_eq!(
+        upgraded
+            .iter()
+            .map(|migration| migration.version)
+            .collect::<Vec<_>>(),
+        expected_tail
+    );
+    assert!(
+        apply(&mut client, &current_dir, false)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     drop(client);
     db_driver.await.unwrap().unwrap();
     admin

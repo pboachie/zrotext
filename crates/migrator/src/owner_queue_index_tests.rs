@@ -230,10 +230,10 @@ async fn owner_queue_probes_read_partial_indexes_without_filtering_history() {
             .last()
             .unwrap()
             .version,
-        119
+        120
     );
-    assert!(client.query_one("SELECT count(*)=119 AND min(version)=1 AND max(version)=119 FROM public.schema_migrations", &[]).await.unwrap().get::<_, bool>(0));
-    assert!(client.query_one("SELECT migration_version=119 AND graph_sha256=public.payload_profile_writer_graph() FROM public.payload_profile_writer_catalog WHERE singleton", &[]).await.unwrap().get::<_, bool>(0));
+    assert!(client.query_one("SELECT count(*)=120 AND min(version)=1 AND max(version)=120 FROM public.schema_migrations", &[]).await.unwrap().get::<_, bool>(0));
+    assert!(client.query_one("SELECT migration_version=120 AND graph_sha256=public.payload_profile_writer_graph() FROM public.payload_profile_writer_catalog WHERE singleton", &[]).await.unwrap().get::<_, bool>(0));
     assert!(client.query_one("SELECT count(*)=32400 AND count(*) FILTER(WHERE state='delivered')=30000 AND count(*) FILTER(WHERE state='queued')=1200 AND count(*) FILTER(WHERE state='submitted')=1200 FROM public.messages", &[]).await.unwrap().get::<_, bool>(0));
     verify_owner_queue_indexes(&client).await.unwrap();
     client.batch_execute("ANALYZE messages").await.unwrap();

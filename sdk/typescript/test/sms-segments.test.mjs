@@ -93,6 +93,14 @@ test("template contract: malformed tokens and stray braces are rejected", () => 
   assert.throws(() => validateTemplate("a\ud800b"), /incomplete Unicode/);
 });
 
+test("template scanning preserves token boundaries amid plain text", () => {
+  const maxKey = "a".repeat(32);
+  assert.doesNotThrow(() => validateTemplate(`${"x".repeat(1000)}{{${maxKey}}}{{b}}tail`));
+  assert.throws(() => validateTemplate(`text } before {{valid}}`), /complete variable/);
+  assert.throws(() => validateTemplate(`{{${maxKey}a}}`), /complete variable/);
+  assert.throws(() => validateTemplate(`{{a}} text {`), /complete variable/);
+});
+
 test("template contract: invalid personalization data is rejected", () => {
   assert.throws(() => validateValues(null), /Invalid substitutions/);
   assert.throws(() => validateValues([["a", "b"]]), /Invalid substitutions/);

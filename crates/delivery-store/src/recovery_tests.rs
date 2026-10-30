@@ -45,6 +45,8 @@ impl TestDb {
                             recipient_e164: "+15551234567",
                             synthetic_payload: b"recovery test only",
                             expires_at_ms: expiry,
+                            line_label: None,
+                            no_fallback: false,
                         })
                         .await
                         .unwrap();

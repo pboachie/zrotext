@@ -144,6 +144,7 @@ async fn signed_unsolicited_stop_is_attempt_free_line_bound_and_serialized() {
     for migration in TEST_MIGRATIONS {
         db.batch_execute(migration).await.unwrap();
     }
+    crate::auth::test_schema::apply_line_routing(&db, true).await;
     let account = Uuid::new_v4();
     let device = Uuid::new_v4();
     let line = Uuid::new_v4();
@@ -200,6 +201,8 @@ async fn signed_unsolicited_stop_is_attempt_free_line_bound_and_serialized() {
             )
             .unwrap()
                 + 60_000,
+            line_label: None,
+            no_fallback: false,
         })
         .await
         .unwrap();

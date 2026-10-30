@@ -94,6 +94,23 @@ async fn isolated_database(prefix: &str) -> (tokio_postgres::Client, String, Str
     ] {
         db.batch_execute(sql).await.unwrap();
     }
+    // These tests use an isolated partial schema, so install the production line tables
+    // and message constraint without running the public writer-graph ceremony.
+    for sql in [
+        include_str!("../../../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
+        include_str!(
+            "../../../../../deploy/compose/migrations/098_line_labels_and_not_ready_policy.sql"
+        ),
+        include_str!(
+            "../../../../../deploy/compose/migrations/099_line_readiness_observations.sql"
+        ),
+        include_str!("../../../../../deploy/compose/migrations/120_messages_line.sql")
+            .split_once("-- Writer-graph ceremony")
+            .unwrap()
+            .0,
+    ] {
+        db.batch_execute(sql).await.unwrap();
+    }
     (db, scoped_url, schema)
 }
 
@@ -140,6 +157,8 @@ fn message(account: Uuid, device: Uuid, key: &'static str) -> NewMessage<'static
         recipient_e164: "+15551234567",
         synthetic_payload: b"ZROtext synthetic test: usage plans",
         expires_at_ms: future_expiry_ms(),
+        line_label: None,
+        no_fallback: false,
     }
 }
 
@@ -211,7 +230,7 @@ async fn postgres_enforces_assigned_plan_limits_with_honest_errors() {
     let mut store = DeliveryStore::new(&mut db);
     assert!(
         store
-            .accept_alpha(message(account, device, "plan-key-1"), true)
+            .accept_alpha(message(account, device, "plan-key-1"), true, None)
             .await
             .is_ok()
     );
@@ -226,6 +245,8 @@ async fn postgres_enforces_assigned_plan_limits_with_honest_errors() {
         recipient_e164: first.recipient_e164,
         synthetic_payload: first.synthetic_payload,
         expires_at_ms: first.expires_at_ms,
+        line_label: None,
+        no_fallback: false,
     };
     let changed_expiry = NewMessage {
         account_id: first.account_id,
@@ -235,16 +256,24 @@ async fn postgres_enforces_assigned_plan_limits_with_honest_errors() {
         recipient_e164: first.recipient_e164,
         synthetic_payload: first.synthetic_payload,
         expires_at_ms: first.expires_at_ms + 1,
+        line_label: None,
+        no_fallback: false,
     };
-    assert!(store.accept_alpha(first, true).await.is_ok());
-    assert!(!store.accept_alpha(replay, true).await.unwrap().created);
+    assert!(store.accept_alpha(first, true, None).await.is_ok());
+    assert!(
+        !store
+            .accept_alpha(replay, true, None)
+            .await
+            .unwrap()
+            .created
+    );
     assert!(matches!(
-        store.accept_alpha(changed_expiry, true).await,
+        store.accept_alpha(changed_expiry, true, None).await,
         Err(StoreError::IdempotencyConflict)
     ));
     assert!(matches!(
         store
-            .accept_alpha(message(account, device, "plan-key-3"), true)
+            .accept_alpha(message(account, device, "plan-key-3"), true, None)
             .await,
         Err(StoreError::QuotaExceeded)
     ));
@@ -263,7 +292,11 @@ async fn postgres_enforces_assigned_plan_limits_with_honest_errors() {
     // unmetered while limits are enabled.
     assert!(matches!(
         DeliveryStore::new(&mut db)
-            .accept_alpha(message(unassigned, unassigned_device, "plan-key-4"), true)
+            .accept_alpha(
+                message(unassigned, unassigned_device, "plan-key-4"),
+                true,
+                None
+            )
             .await,
         Err(StoreError::QuotaNotConfigured)
     ));
@@ -332,7 +365,7 @@ async fn postgres_reprojects_skips_billed_and_clears_on_disable() {
     // Reservations survive a catalog downgrade; the period limit follows.
     assert!(
         DeliveryStore::new(&mut db)
-            .accept_alpha(message(account, device, "reproject-key-1"), true)
+            .accept_alpha(message(account, device, "reproject-key-1"), true, None)
             .await
             .is_ok()
     );
@@ -410,7 +443,11 @@ async fn postgres_reprojects_skips_billed_and_clears_on_disable() {
     assert_eq!(policy_limit(&db, billed).await, 77);
     assert!(
         DeliveryStore::new(&mut db)
-            .accept_alpha(message(removed, removed_device, "reproject-key-9"), false)
+            .accept_alpha(
+                message(removed, removed_device, "reproject-key-9"),
+                false,
+                None
+            )
             .await
             .is_ok()
     );
@@ -451,7 +488,7 @@ async fn postgres_assignment_changes_apply_on_every_enabled_startup() {
     assert_eq!(audit_reasons(&db, second).await, vec!["assigned"]);
     assert!(
         DeliveryStore::new(&mut db)
-            .accept_alpha(message(second, second_device, "reassign-key-1"), true)
+            .accept_alpha(message(second, second_device, "reassign-key-1"), true, None)
             .await
             .is_ok()
     );
@@ -471,7 +508,7 @@ async fn postgres_assignment_changes_apply_on_every_enabled_startup() {
     assert_eq!(policy_limit(&db, first).await, 5);
     assert!(
         DeliveryStore::new(&mut db)
-            .accept_alpha(message(first, first_device, "reassign-key-2"), true)
+            .accept_alpha(message(first, first_device, "reassign-key-2"), true, None)
             .await
             .is_ok()
     );
@@ -506,7 +543,7 @@ async fn postgres_concurrent_sends_cannot_exceed_the_plan_limit() {
                 let _ = connection.await;
             });
             DeliveryStore::new(&mut client)
-                .accept_alpha(message(account, device, key), true)
+                .accept_alpha(message(account, device, key), true, None)
                 .await
                 .is_ok()
         }));

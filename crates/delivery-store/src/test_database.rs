@@ -79,8 +79,8 @@ impl Fixture {
         let applied = zrotext_migrator::apply(&mut owner, &directory, false)
             .await
             .unwrap();
-        assert_eq!(applied.last().unwrap().version, 119);
-        assert_eq!(applied.len(), 119);
+        assert_eq!(applied.last().unwrap().version, 120);
+        assert_eq!(applied.len(), 120);
         let fixture_acl = Self::acl_text(&database, &runtime_role);
         owner.batch_execute(&fixture_acl).await.unwrap();
         config.user(&runtime_role).password(&runtime_password);

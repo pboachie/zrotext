@@ -253,6 +253,8 @@ impl Case {
                 recipient_e164: "+15551234567",
                 synthetic_payload: b"synthetic invoice fixture",
                 expires_at_ms: self.end * 1000,
+                line_label: None,
+                no_fallback: false,
             })
             .await
     }

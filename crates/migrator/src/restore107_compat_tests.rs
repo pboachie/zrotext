@@ -593,10 +593,10 @@ async fn restored_107_graph_is_normalized_atomically_without_blessing_unknown_sh
     );
     let applied_tail = apply(&mut owner, &directory, false).await.unwrap();
     assert_eq!(applied_tail.first().unwrap().version, 109);
-    assert_eq!(applied_tail.last().unwrap().version, 119);
+    assert_eq!(applied_tail.last().unwrap().version, 120);
     let after_ledger = ledger(&owner).await;
     assert_eq!(&after_ledger[..107], &before_ledger);
-    assert_eq!(after_ledger.len(), 119);
+    assert_eq!(after_ledger.len(), 120);
     assert_eq!(checks(&owner).await, original_checks);
     assert_eq!(
         owner

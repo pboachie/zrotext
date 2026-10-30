@@ -1189,7 +1189,7 @@
             }
           },
           "409": {
-            "description": "conflict: the client_message_id or idempotency key was already used with different content, or the message state forbids the transition.",
+            "description": "conflict: the client_message_id or idempotency key was already used with different content, the message state forbids the transition, or the addressed line is not ready under its not-ready policy (code line_not_ready_* with line_label).",
             "headers": {
               "Cache-Control": { "$ref": "#/components/headers/NoStore" }
             },
@@ -1935,13 +1935,25 @@
               "billing_pending",
               "payment_hold",
               "recipient_suppressed",
+              "line_not_ready_inactive",
+              "line_not_ready_binding_not_active",
+              "line_not_ready_continuity_pending",
+              "line_not_ready_card_changed",
+              "line_not_ready_offline",
+              "line_not_ready_unknown_no_fallback",
+              "line_not_ready_fallback_forbidden",
+              "line_not_ready_no_eligible_fallback",
               "invalid_webhook_endpoint",
               "endpoint_limit",
               "replay_not_eligible",
               "replay_limit",
               "unavailable"
             ],
-            "description": "Stable machine-readable reason code for the failure."
+            "description": "Stable machine-readable reason code for the failure. The line_not_ready_* codes appear with HTTP 409 on the submit route when the addressed line is not ready under its policy, together with line_label."
+          },
+          "line_label": {
+            "type": "string",
+            "description": "The resolved label of the line the refusal names, when the failure is a line not-ready policy refusal."
           }
         }
       },
@@ -2281,6 +2293,17 @@
           "expires_at_ms": {
             "type": "integer",
             "description": "Unix millisecond deadline after which an undispatched message expires."
+          },
+          "line": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "Owner-named line label (ADR 0004): resolves to the line's immutable identity at admission and applies its configured not-ready policy - ignore refuses before acceptance, queue holds on the addressed line, fallback sends from the owner-named fallback line. The line's approved binding must belong to device_id. Absent keeps line-free routing. Never a SIM slot, subscription identifier, ICCID, IMSI or phone number."
+          },
+          "no_fallback": {
+            "type": "boolean",
+            "default": false,
+            "description": "Declines fallback for this message even when the addressed line's policy names a fallback line; the refusal then carries line_not_ready_fallback_forbidden."
           }
         }
       },
@@ -2294,6 +2317,10 @@
           "created": {
             "type": "boolean",
             "description": "false for an identical idempotent replay of the same Idempotency-Key."
+          },
+          "line_label": {
+            "type": "string",
+            "description": "The resolved label of the line that will actually send (the addressed line, or the fallback line when the policy rerouted the send). Present only when the request addressed a line by label."
           }
         }
       },
@@ -2319,7 +2346,11 @@
             "description": "Monotonic writer version of the state row."
           },
           "created_at_ms": { "type": "integer", "minimum": 0 },
-          "updated_at_ms": { "type": "integer", "minimum": 0 }
+          "updated_at_ms": { "type": "integer", "minimum": 0 },
+          "line_label": {
+            "type": "string",
+            "description": "The sending line's current label (presentation only; a rename is reflected here while the recorded line identity stays immutable). Present only when the message was admitted with a line label."
+          }
         }
       },
       "ReportedPreconditions": {

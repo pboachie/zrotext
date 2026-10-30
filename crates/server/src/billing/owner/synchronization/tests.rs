@@ -48,6 +48,8 @@ async fn forwarding_counts_follow_real_finalized_delivery_without_cross_tenant_r
             recipient_e164: "+15551234567",
             synthetic_payload: b"synthetic only",
             expires_at_ms: now + 60000,
+            line_label: None,
+            no_fallback: false,
         })
         .await
         .unwrap();

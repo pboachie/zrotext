@@ -12,10 +12,12 @@ pub async fn message_status<C: GenericClient + Sync>(
 ) -> Result<Option<MessageSnapshot>, StoreError> {
     let row = db
         .query_opt(
-            "SELECT device_id,state,state_version,
-         (extract(epoch FROM created_at)*1000)::bigint,
-         (extract(epoch FROM updated_at)*1000)::bigint
-         FROM messages WHERE account_id=$1 AND id=$2",
+            "SELECT m.device_id,m.state,m.state_version,
+         (extract(epoch FROM m.created_at)*1000)::bigint,
+         (extract(epoch FROM m.updated_at)*1000)::bigint,
+         (SELECT l.label FROM phone_lines l
+          WHERE l.account_id=m.account_id AND l.id=m.line_id)
+         FROM messages m WHERE m.account_id=$1 AND m.id=$2",
             &[&account_id, &message_id],
         )
         .await?;
@@ -28,6 +30,7 @@ pub async fn message_status<C: GenericClient + Sync>(
             state_version: row.get(2),
             created_at_ms: row.get(3),
             updated_at_ms: row.get(4),
+            line_label: row.get(5),
         })
     })
     .transpose()
