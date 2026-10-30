@@ -28,7 +28,34 @@ async fn schema119_restore_reconstitution_is_atomic_and_replay_safe() {
     cfg.dbname(&db);
     let (mut client, driver) = cfg.connect(NoTls).await.unwrap();
     let db_driver = tokio::spawn(driver);
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
+    let current_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
+    // This fixture exercises the historical schema 119 repair even after newer
+    // migrations are added. Copy the exact numbered source files, then verify
+    // the complete current directory can upgrade the repaired database.
+    let dir = std::env::temp_dir().join(format!(
+        "zt_restore119_migrations_{}",
+        Uuid::new_v4().simple()
+    ));
+    std::fs::create_dir(&dir).unwrap();
+    let historical: Vec<_> = read_migrations(&current_dir)
+        .unwrap()
+        .into_iter()
+        .filter(|migration| migration.version <= 119)
+        .collect();
+    assert_eq!(
+        historical
+            .iter()
+            .map(|migration| migration.version)
+            .collect::<Vec<_>>(),
+        (1..=119).collect::<Vec<_>>()
+    );
+    for migration in historical {
+        std::fs::copy(
+            current_dir.join(&migration.filename),
+            dir.join(&migration.filename),
+        )
+        .unwrap();
+    }
     apply(&mut client, &dir, false).await.unwrap();
     let row=client.query_one("SELECT encode(graph_sha256,'hex') FROM public.payload_profile_writer_catalog WHERE singleton AND migration_version=119",&[]).await.unwrap();
     let stored: String = row.get(0);
@@ -480,6 +507,28 @@ ALTER TABLE public.conversation_profile03_outcomes DROP CONSTRAINT conversation_
     let ledger=client.query("SELECT version,filename,checksum_sha256,kind,applied_at::text FROM public.schema_migrations ORDER BY version",&[]).await.unwrap().into_iter().map(|r|(r.get::<_,i64>(0),r.get::<_,String>(1),r.get::<_,Vec<u8>>(2),r.get::<_,String>(3),r.get::<_,String>(4))).collect::<Vec<_>>();
     assert_eq!(before, ledger);
     assert!(apply(&mut client, &dir, false).await.unwrap().is_empty());
+    let expected_tail: Vec<_> = read_migrations(&current_dir)
+        .unwrap()
+        .into_iter()
+        .filter(|migration| migration.version > 119)
+        .map(|migration| migration.version)
+        .collect();
+    assert_eq!(expected_tail.first(), Some(&120));
+    let upgraded = apply(&mut client, &current_dir, false).await.unwrap();
+    assert_eq!(
+        upgraded
+            .iter()
+            .map(|migration| migration.version)
+            .collect::<Vec<_>>(),
+        expected_tail
+    );
+    assert!(
+        apply(&mut client, &current_dir, false)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
     drop(client);
     db_driver.await.unwrap().unwrap();
     admin
