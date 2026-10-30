@@ -262,9 +262,16 @@ function parse(raw: string): unknown {
   const string = () => {
     const start = at++;
     while (at < raw.length) {
-      const c = raw[at++]; if (c === '"') { try { return JSON.parse(raw.slice(start, at)) as string; } catch { return fail(); } }
-      if (c === '\\') at++;
-    } return fail();
+      const quote = raw.indexOf('"', at);
+      if (quote === -1) return fail();
+      let slashes = 0;
+      for (let i = quote - 1; i >= start && raw[i] === '\\'; i--) slashes++;
+      at = quote + 1;
+      if (slashes % 2 === 0) {
+        try { return JSON.parse(raw.slice(start, at)) as string; } catch { return fail(); }
+      }
+    }
+    return fail();
   };
   function value(depth: number): unknown {
     space(); if (depth > 4) fail();
