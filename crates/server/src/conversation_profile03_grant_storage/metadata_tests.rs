@@ -59,7 +59,7 @@ async fn batch_matches_every_individual_descriptor_under_supported_lookup_paths(
                 function.0
             );
         }
-        functions(&tx, 119).await.unwrap();
+        functions(&tx, 120).await.unwrap();
         require(&tx).await.unwrap();
         tx.rollback().await.unwrap();
     }
@@ -85,7 +85,7 @@ async fn batch_refuses_missing_overloaded_offsetting_and_changed_descriptors() {
         .await
         .unwrap();
         assert!(matches!(
-            functions(&tx, 119).await,
+            functions(&tx, 120).await,
             Err(GrantSchemaError::Invalid)
         ));
         tx.rollback().await.unwrap();
@@ -108,7 +108,7 @@ async fn batch_refuses_missing_overloaded_offsetting_and_changed_descriptors() {
             REQUIRED_FUNCTIONS.len() + usize::from(!missing)
         );
         assert!(matches!(
-            functions(&tx, 119).await,
+            functions(&tx, 120).await,
             Err(GrantSchemaError::Invalid)
         ));
         tx.rollback().await.unwrap();
@@ -125,7 +125,7 @@ async fn batch_refuses_missing_overloaded_offsetting_and_changed_descriptors() {
         let tx = f.owner.transaction().await.unwrap();
         tx.batch_execute(sql).await.unwrap();
         assert!(
-            matches!(functions(&tx, 119).await, Err(GrantSchemaError::Invalid)),
+            matches!(functions(&tx, 120).await, Err(GrantSchemaError::Invalid)),
             "{sql}"
         );
         tx.rollback().await.unwrap();
@@ -156,7 +156,7 @@ async fn batch_refuses_missing_overloaded_offsetting_and_changed_descriptors() {
             .await
             .unwrap();
         assert!(matches!(
-            functions(&tx, 119).await,
+            functions(&tx, 120).await,
             Err(GrantSchemaError::Invalid)
         ));
         tx.rollback().await.unwrap();
