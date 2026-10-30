@@ -90,12 +90,22 @@ async fn schema119_restore_reconstitution_is_atomic_and_replay_safe() {
         (client, result)
     });
     tokio::time::timeout(std::time::Duration::from_secs(10), async { loop { let waiting: bool = ledger_gate.query_one("SELECT EXISTS(SELECT FROM pg_locks WHERE locktype='advisory' AND classid=0 AND objid=119119096 AND NOT granted)", &[]).await.unwrap().get(0); if waiting { break; } tokio::time::sleep(std::time::Duration::from_millis(10)).await; } }).await.unwrap();
-    ledger_gate.batch_execute("UPDATE public.schema_migrations SET checksum_sha256=decode(repeat('00',32),'hex') WHERE version=119; SELECT pg_advisory_unlock(119119096)").await.unwrap();
+    // Commit the changed ledger before releasing the waiting snapshot. A
+    // single multi-statement simple query would release the session advisory
+    // lock before its implicit transaction commits.
+    ledger_gate.batch_execute("UPDATE public.schema_migrations SET checksum_sha256=decode(repeat('00',32),'hex') WHERE version=119").await.unwrap();
+    ledger_gate
+        .batch_execute("SELECT pg_advisory_unlock(119119096)")
+        .await
+        .unwrap();
     let (mut client, result) = ledger_task.await.unwrap();
-    assert!(matches!(
-        result,
-        Err(MigrationError::Restore119Compatibility("ledger mismatch"))
-    ));
+    assert!(
+        matches!(
+            result,
+            Err(MigrationError::Restore119Compatibility("ledger mismatch"))
+        ),
+        "unexpected ledger race result: {result:?}"
+    );
     client
         .batch_execute("RESET zrotext.restore119_snapshot_test_barrier")
         .await
@@ -234,6 +244,12 @@ ALTER TABLE public.conversation_profile03_outcomes DROP CONSTRAINT conversation_
             "unrecognized graph pair"
         ))
     ));
+    assert!(matches!(
+        apply(&mut client, &current_dir, false).await,
+        Err(MigrationError::Restore119Compatibility(
+            "unrecognized graph pair"
+        ))
+    ));
     assert!(client.query_one("SELECT EXISTS(SELECT FROM pg_constraint WHERE conname='synthetic_extra' AND conrelid='public.conversation_profile03_outcomes'::regclass)",&[]).await.unwrap().get::<_,bool>(0));
     client
         .batch_execute(
@@ -243,12 +259,14 @@ ALTER TABLE public.conversation_profile03_outcomes DROP CONSTRAINT conversation_
         .unwrap();
     // Operator annotations are never silently discarded by drop/recreate.
     client.batch_execute("COMMENT ON CONSTRAINT conversation_profile03_outcomes_check ON public.conversation_profile03_outcomes IS 'synthetic annotation'").await.unwrap();
-    assert!(matches!(
-        apply(&mut client, &dir, false).await,
-        Err(MigrationError::Restore119Compatibility(
-            "unsafe CHECK metadata"
-        ))
-    ));
+    let annotation_error = apply(&mut client, &dir, false).await.unwrap_err();
+    assert!(
+        matches!(
+            &annotation_error,
+            MigrationError::Restore119Compatibility("unsafe CHECK metadata")
+        ),
+        "unexpected annotation refusal: {annotation_error:?}"
+    );
     let comment:Option<String>=client.query_one("SELECT obj_description(oid,'pg_constraint') FROM pg_constraint WHERE conname='conversation_profile03_outcomes_check' AND conrelid='public.conversation_profile03_outcomes'::regclass",&[]).await.unwrap().get(0);
     assert_eq!(comment.as_deref(), Some("synthetic annotation"));
     client.batch_execute("COMMENT ON CONSTRAINT conversation_profile03_outcomes_check ON public.conversation_profile03_outcomes IS NULL").await.unwrap();
@@ -514,6 +532,11 @@ ALTER TABLE public.conversation_profile03_outcomes DROP CONSTRAINT conversation_
         .map(|migration| migration.version)
         .collect();
     assert_eq!(expected_tail.first(), Some(&120));
+    // Exercise a restored schema directly against the current directory:
+    // repair must still run before a later migration changes the graph.
+    client.batch_execute(r#"ALTER TABLE public.conversation_profile03_closure_challenges DROP CONSTRAINT conversation_profile03_closure_challenges_check4, ADD CONSTRAINT conversation_profile03_closure_challenges_check4 CHECK (octet_length(proof_site_id)>=1 AND octet_length(proof_site_id)<=256 AND (octet_length(proof_instance_id)>=1 AND octet_length(proof_instance_id)<=256));
+ALTER TABLE public.conversation_profile03_closure_records DROP CONSTRAINT conversation_profile03_closure_records_check, ADD CONSTRAINT conversation_profile03_closure_records_check CHECK (segment_count>=1 AND segment_count<=6 AND closed_from IN(0,1) AND closed_ms>=submit_observed_ms);
+ALTER TABLE public.conversation_profile03_outcomes DROP CONSTRAINT conversation_profile03_outcomes_check, ADD CONSTRAINT conversation_profile03_outcomes_check CHECK (segment_count>=1 AND segment_count<=6 AND (evidence>=0 AND evidence<=5));"#).await.unwrap();
     let upgraded = apply(&mut client, &current_dir, false).await.unwrap();
     assert_eq!(
         upgraded
