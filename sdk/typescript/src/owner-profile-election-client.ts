@@ -145,9 +145,17 @@ function json(raw: string): unknown {
   const whitespace = () => { while (at < raw.length && /[ \r\n\t]/.test(raw[at])) at++; };
   function string(): string {
     const start = at++;
-    while (at < raw.length) { const c = raw[at++]; if (c === '"') {
-      try { return JSON.parse(raw.slice(start, at)); } catch { return fail('response'); }
-    } if (c === '\\') at++; } return fail('response');
+    while (at < raw.length) {
+      const quote = raw.indexOf('"', at);
+      if (quote === -1) return fail('response');
+      let slashes = 0;
+      for (let i = quote - 1; i >= start && raw[i] === '\\'; i--) slashes++;
+      at = quote + 1;
+      if (slashes % 2 === 0) {
+        try { return JSON.parse(raw.slice(start, at)); } catch { return fail('response'); }
+      }
+    }
+    return fail('response');
   }
   function value(depth: number): unknown {
     whitespace(); if (depth > 3) fail('response');

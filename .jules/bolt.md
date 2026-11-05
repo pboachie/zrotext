@@ -14,3 +14,6 @@
 ## 2024-05-19 - Fast template literal parsing
 **Learning:** In Javascript environments (like Node.js or browsers), character-by-character string building within a `for` loop is extremely slow and acts as a significant bottleneck when rendering large text blocks.
 **Action:** Replace single-character iteration and concatenation with `indexOf` to find the next structural boundary, then use `String.prototype.slice` to extract large string segments at once. When parsing token delimiters, always safely bound the `indexOf` lookup with the current index appropriately so an unmatched delimiter doesn't result in an infinite loop.
+## 2024-10-30 - Faster String Parsing with indexOf
+**Learning:** In Javascript/Typescript, parsing string fields manually by reading character by character inside a `while` loop (using `raw[at++]`) can be significantly slower than utilizing built-in functions like `indexOf`. Replacing it with `raw.indexOf('"', at)` allows the engine to use optimized native methods to find the index quickly, especially on larger inputs, providing measurable performance improvements for tokenizers/parsers.
+**Action:** When implementing custom JSON parsing or tokenization logic, prefer built-in methods like `indexOf` over manual character-by-character loops when searching for delimiter characters.
