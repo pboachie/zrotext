@@ -97,6 +97,26 @@ test('reservation responses accept escaped field names and string values without
   state.client.close();
 });
 
+test('bootstrap preserves odd and even backslash runs in scoped string values without retrying', async () => {
+  const state = await setup(), response = await original(state);
+  let requests = 0;
+  try {
+    for (let count = 0; count <= 32; count++) {
+      for (const ending of ['', '"', '"tail', '\\', '\\"']) {
+        const value = 'prefix' + '\\'.repeat(count) + ending;
+        state.handle(() => data({ ...response, site_id: value, instance_id: value }));
+        const result = await state.client.bootstrap(line);
+        assert.equal(result.site_id, value);
+        assert.equal(result.instance_id, value);
+        assert.equal(state.calls.length, ++requests);
+      }
+    }
+    assert.equal(state.saved.length, 0);
+  } finally {
+    state.client.close();
+  }
+});
+
 test('expired closure candidates retain the complete exact ordered chain without renewing an opening', async () => {
   const s = await setup(), r = await recoveredReservation(s);
   s.handle(() => data(r));

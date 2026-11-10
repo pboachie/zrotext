@@ -46,6 +46,24 @@ test("receipt responses accept escaped field names without changing packet reten
   assert.deepEqual(state.saved, [prepared.record]);
 });
 
+test("receipt parser handles odd and even backslash runs before refusing invalid identifiers without retrying", async () => {
+  const prepared = await packet();
+  for (let count = 0; count <= 32; count++) {
+    for (const ending of ['', '"', '"tail', '\\', '\\"']) {
+      const value = 'prefix' + '\\'.repeat(count) + ending;
+      let requests = 0;
+      const state = client(prepared, { fetchImpl: async () => {
+        requests++;
+        return json({ ...prepared.receipt, message_id: value });
+      } });
+      await assert.rejects(state.client.send(prepared.proof), error => error.code === 'invalid');
+      assert.equal(requests, 1);
+      assert.deepEqual(state.saved, [prepared.record]);
+      state.client.close();
+    }
+  }
+});
+
 test("genuine V2 sends exact public packet only after retention with fixed cookie/CSRF transport", async () => {
   const p = await packet(), c = client(p), receipt = await c.client.send(p.proof);
   assert.deepEqual(receipt, p.receipt); assert.deepEqual(c.events, ["saved", "fetch"]);

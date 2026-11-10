@@ -17,6 +17,12 @@ TypeScript SDK and the npm packages keep their own independent versions.
 
 ## [1.0.4] - 2026-11-09
 
+### Added
+
+- Add optional `line` and `no_fallback` fields to public message submissions,
+  eight `line_not_ready_*` HTTP 409 reason codes, and `line_label` response
+  fields for selected-line routing and readiness refusals.
+
 ### Changed
 
 - Retain each queued send's selected line identity and apply current binding,
@@ -37,7 +43,7 @@ TypeScript SDK and the npm packages keep their own independent versions.
 ### Notes
 
 - This release does not change the device protocol, Android app version or
-  independently versioned SDK packages. Automated checks do not establish
+  independently managed SDK package versions. Automated checks do not establish
   physical-device acceptance or carrier SMS delivery.
 
 ## [1.0.3] - 2026-10-29
