@@ -107,7 +107,7 @@ jobs:
               echo "::error::Could not create refs/tags/v$VERSION." >&2
               exit 1
             fi
-            tagged_commit=$(gh api "repos/pbochie/zrotext/commits/v$VERSION" --jq .sha)
+            tagged_commit=$(gh api "repos/pboachie/zrotext/commits/v$VERSION" --jq .sha)
             if [[ "$tagged_commit" != "$GITHUB_SHA" ]]; then
               echo "::error::refs/tags/v$VERSION resolves to $tagged_commit, not this merge commit $GITHUB_SHA." >&2
               exit 1

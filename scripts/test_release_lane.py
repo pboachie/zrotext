@@ -4,8 +4,12 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import shutil
+import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -201,6 +205,55 @@ class AndroidVersionTest(TreeTest):
         self.write("android/app/build.gradle.kts", "plugins {}\n")
         with self.assertRaises(release_lane.LaneError):
             release_lane.android_release_version(self.root)
+
+
+class ReleaseTagWorkflowTest(unittest.TestCase):
+    def run_tag_step(self, tagged_commit: str) -> subprocess.CompletedProcess[str]:
+        workflow = (
+            Path(__file__).resolve().parents[1]
+            / ".github/workflows/release-auto.yml"
+        ).read_text(encoding="utf-8")
+        step = workflow.split("      - name: Create or verify the release tag\n", 1)[1]
+        step = step.split("      - name:", 1)[0]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        stubs = r'''
+gh() {
+  case "$*" in
+    'api repos/pboachie/zrotext/git/ref/tags/v1.2.3') return 1 ;;
+    'api repos/pboachie/zrotext/git/tags '*) printf '%s\n' synthetic-tag-object ;;
+    'api repos/pboachie/zrotext/git/refs '*) return 0 ;;
+    'api repos/pboachie/zrotext/commits/v1.2.3 --jq .sha')
+      printf '%s\n' "$TEST_TAGGED_COMMIT" ;;
+    *) printf 'Unexpected GitHub request: %s\n' "$*" >&2; return 97 ;;
+  esac
+}
+git() { printf 'Unexpected git command\n' >&2; return 98; }
+sleep() { printf 'Unexpected retry\n' >&2; return 99; }
+'''
+        bash = shutil.which("bash")
+        self.assertIsNotNone(bash, "The release workflow regression needs Bash")
+        return subprocess.run(
+            [bash, "-c", stubs + script],
+            env={
+                **os.environ,
+                "VERSION": "1.2.3",
+                "GITHUB_SHA": "synthetic-merge-commit",
+                "TEST_TAGGED_COMMIT": tagged_commit,
+            },
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+
+    def test_new_tag_resolves_in_the_publication_repository(self) -> None:
+        result = self.run_tag_step("synthetic-merge-commit")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_new_tag_must_resolve_to_the_merge_commit(self) -> None:
+        result = self.run_tag_step("another-synthetic-commit")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not this merge commit synthetic-merge-commit", result.stderr)
 
 
 class TagVersionTest(unittest.TestCase):
