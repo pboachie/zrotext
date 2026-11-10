@@ -49,8 +49,11 @@ python3 sdk/tungsten/package-mcp.py --out /tmp/zrotext-guarded-mcp
 
 The command compiles only the maintained runtime modules needed by this adapter,
 packages `@elysra/zrotext-mcp@0.1.0-alpha.1`, removes build/package staging, and
-installs the archive into an isolated consumer. Its published-format shrinkwrap
-pins the existing HPKE dependencies, including integrity hashes. The archive
+installs the archive into an isolated consumer. Its manifest explicitly pins the
+already locked HPKE runtime dependency closure so transitive ranges cannot float
+during installation. Its published-format shrinkwrap retains the reviewed versions
+and integrity hashes, and the installed-consumer gate checks both. Nested runtime
+versions require a separate packaging review rather than silent flattening. The archive
 contains no private paths, source overrides, generated raw server or operator
 credentials. Every included file is checked against a bounded inventory.
 

@@ -15,6 +15,39 @@ TypeScript SDK and the npm packages keep their own independent versions.
 
 - Nothing yet.
 
+## [1.0.4] - 2026-11-09
+
+### Added
+
+- Add optional `line` and `no_fallback` fields to public message submissions,
+  eight `line_not_ready_*` HTTP 409 reason codes, and `line_label` response
+  fields for selected-line routing and readiness refusals.
+
+### Changed
+
+- Retain each queued send's selected line identity and apply current binding,
+  phone-readiness and fallback-line admission checks before dispatch. Include
+  database migration 120 while retaining the schema-119 restore repair.
+- Bound template-parser token scans and skip plain text without changing the
+  accepted template syntax.
+- Use native quote searches in the TypeScript owner-profile, accepted-manifest
+  history and reviewed-send JSON parsers while preserving escaped quotes,
+  decoded duplicate-key rejection and existing response limits.
+- Update Android build tooling, the checksummed Gradle wrapper and the grouped
+  Android dependencies. Keep strict dependency verification enabled.
+- Refresh pinned Gradle wrapper-validation, setup, dependency-submission and
+  Ruby setup CI actions.
+- Keep the guarded local MCP archive's runtime dependencies on their reviewed
+  versions during consumer installation.
+- Refresh the pinned server container base and retain recovery of a tagged
+  release whose initial publication did not complete.
+
+### Notes
+
+- This release does not change the device protocol, Android app version or
+  independently managed SDK package versions. Automated checks do not establish
+  physical-device acceptance or carrier SMS delivery.
+
 ## [1.0.3] - 2026-10-29
 
 ### Fixed

@@ -25,6 +25,18 @@ def replace_once(text, old, new):
     return text.replace(old, new)
 
 
+def runtime_dependencies(lock):
+    dependencies = {}
+    prefix = "node_modules/"
+    for path, entry in lock["packages"].items():
+        if not path or entry.get("dev", False):
+            continue
+        if not path.startswith(prefix) or prefix in path[len(prefix):]:
+            raise ValueError("Review nested runtime dependencies before direct pinning")
+        dependencies[path[len(prefix):]] = entry["version"]
+    return dependencies
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, required=True)
@@ -43,7 +55,7 @@ def main():
     generated = policy.reviewed_files(CONFIG / "generated", json.loads((CONFIG / "generated.lock.json").read_text()))
     catalog = generated["mcp"]["manifest.json"]
     lock = json.loads((ROOT / "sdk/typescript/package-lock.json").read_text())
-    hpke = lock["packages"]["node_modules/@hpke/core"]["version"]
+    dependencies = runtime_dependencies(lock)
     env = {key: value for key, value in os.environ.items()
            if key not in ("NODE_PATH", "NODE_OPTIONS") and not key.startswith("ZROTEXT_")}
     with tempfile.TemporaryDirectory(prefix="zrotext-guarded-mcp-") as directory:
@@ -71,7 +83,7 @@ def main():
                         description="Guarded local ZROtext workflow MCP adapter candidate",
                         license="AGPL-3.0-only", engines={"node": ">=22"},
                         files=["lib", "LICENSE", "README.md", "npm-shrinkwrap.json"],
-                        dependencies={"@hpke/core": hpke},
+                        dependencies=dependencies,
                         bin={"zrotext-mcp": "lib/sdk/tungsten/mcp/server.mjs"},
                         exports={".": "./lib/sdk/tungsten/mcp/adapter.mjs",
                                  "./stdio": "./lib/sdk/tungsten/mcp/server.mjs"})
