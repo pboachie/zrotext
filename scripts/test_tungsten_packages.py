@@ -15,9 +15,28 @@ artifacts = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(artifacts)
 managed = artifacts.load("managed_packages", artifacts.CONFIG / "package-managed.py")
 native = artifacts.load("native_packages", artifacts.CONFIG / "package-native.py")
+mcp = artifacts.load("mcp_packages", artifacts.CONFIG / "package-mcp.py")
 
 
 class PackageTests(unittest.TestCase):
+    def test_guarded_mcp_manifest_pins_transitive_runtime_dependencies(self):
+        lock = {"packages": {
+            "": {"dependencies": {"@example/core": "1.0.0"}},
+            "node_modules/@example/core": {"version": "1.0.0", "dependencies": {"@example/common": "^1.0.0"}},
+            "node_modules/@example/common": {"version": "1.0.1"},
+            "node_modules/compiler": {"version": "2.0.0", "dev": True},
+        }}
+        self.assertEqual(mcp.runtime_dependencies(lock), {"@example/core": "1.0.0", "@example/common": "1.0.1"})
+        self.assertEqual(lock["packages"]["node_modules/@example/core"]["dependencies"], {"@example/common": "^1.0.0"})
+
+    def test_guarded_mcp_refuses_flattening_nested_runtime_versions(self):
+        lock = {"packages": {
+            "node_modules/@example/core": {"version": "1.0.0"},
+            "node_modules/@example/core/node_modules/@example/common": {"version": "1.0.1"},
+        }}
+        with self.assertRaisesRegex(ValueError, "Review nested runtime dependencies"):
+            mcp.runtime_dependencies(lock)
+
     def test_direct_cargo_refuses_mixed_or_wrong_toolchain(self):
         for versions in (("cargo 1.97.1 (test)",), ("cargo 1.88.0 (test)", "rustc 1.97.1 (test)")):
             with patch.object(native, "run", side_effect=[SimpleNamespace(stdout=v) for v in versions]):

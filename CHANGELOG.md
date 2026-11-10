@@ -37,6 +37,8 @@ TypeScript SDK and the npm packages keep their own independent versions.
   Android dependencies. Keep strict dependency verification enabled.
 - Refresh pinned Gradle wrapper-validation, setup, dependency-submission and
   Ruby setup CI actions.
+- Keep the guarded local MCP archive's runtime dependencies on their reviewed
+  versions during consumer installation.
 - Refresh the pinned server container base and retain recovery of a tagged
   release whose initial publication did not complete.
 
