@@ -51,7 +51,7 @@ RUN mkdir -p /tmp/zrotext-notices && \
     } > /tmp/zrotext-notices/THIRD_PARTY_NOTICES && \
     test -s /tmp/zrotext-notices/THIRD_PARTY_NOTICES
 
-FROM docker.io/library/debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
+FROM docker.io/library/debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates perl-base && \
     dpkg --compare-versions "$(dpkg-query -W -f='${Version}' perl-base)" ge '5.36.0-7+deb12u4' && \
     rm -rf /var/lib/apt/lists/* && \
