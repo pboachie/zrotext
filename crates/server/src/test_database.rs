@@ -113,15 +113,15 @@ impl Fixture {
             let applied = zrotext_migrator::apply(&mut owner, &directory, false)
                 .await
                 .unwrap();
-            assert_eq!(applied.last().unwrap().version, 119);
-            assert_eq!(applied.len(), 119 - through);
+            assert_eq!(applied.last().unwrap().version, 120);
+            assert_eq!(applied.len(), 120 - through);
             assert_eq!(
                 owner
                     .query_one("SELECT count(*) FROM schema_migrations", &[])
                     .await
                     .unwrap()
                     .get::<_, i64>(0),
-                119
+                120
             );
             let fixture_acl = Self::acl_text(&database, &runtime_role);
             owner.batch_execute(&fixture_acl).await.unwrap();

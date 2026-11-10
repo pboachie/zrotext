@@ -106,9 +106,12 @@ pub(crate) async fn repair(
     client: &mut Client,
     migrations: &[Migration],
 ) -> Result<(), MigrationError> {
-    if migrations.len() != 119 {
+    // The installed ledger is exactly schema 119. A newer source directory
+    // may contain a tail to apply after the repair; authenticate only the
+    // complete historical prefix against the pinned backup inventory.
+    let Some(migrations) = migrations.get(..119) else {
         return Ok(());
-    }
+    };
     let mut h = Sha256::new();
     for (index, m) in migrations.iter().enumerate() {
         if m.version != (index as i64) + 1 || m.checksum.len() != 32 {

@@ -42,7 +42,9 @@ async fn enqueue(db: &mut Client, account: Uuid, device: Uuid, expiry: i64) -> U
                 idempotency_key: &idempotency,
                 recipient_e164: "+14",
                 synthetic_payload: b"synthetic legacy payload",
-                expires_at_ms: expiry
+                expires_at_ms: expiry,
+                line_label: None,
+                no_fallback: false,
             })
             .await
             .unwrap()

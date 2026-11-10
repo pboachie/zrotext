@@ -363,6 +363,12 @@ pub struct ApiPrincipal {
 }
 
 impl ApiPrincipal {
+    /// The device this key is bound to, when the key is device-scoped. Line
+    /// fallback routing may not move a send onto any other device.
+    pub fn bound_device(&self) -> Option<Uuid> {
+        self.bound_device_id
+    }
+
     pub fn require(&self, scope: Scope, device_id: Option<Uuid>) -> Result<(), AuthError> {
         if !self.scopes.contains(&scope) {
             return Err(AuthError::Forbidden);

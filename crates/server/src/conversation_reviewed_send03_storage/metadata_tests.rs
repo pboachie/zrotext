@@ -25,7 +25,7 @@ fn metadata_fields(row: &tokio_postgres::Row) -> Value {
     ])
 }
 async fn batch<C: GenericClient + Sync>(db: &C) -> Vec<tokio_postgres::Row> {
-    let expected = required_functions(119);
+    let expected = required_functions(120);
     let names = expected.iter().map(|f| f.0).collect::<Vec<_>>();
     let results = expected.iter().map(|f| f.2).collect::<Vec<_>>();
     let signatures = expected
@@ -40,7 +40,7 @@ async fn batch<C: GenericClient + Sync>(db: &C) -> Vec<tokio_postgres::Row> {
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with disposable CREATEDB/CREATEROLE"]
 async fn batch_matches_every_individual_descriptor_under_supported_lookup_paths() {
-    let expected = required_functions(119);
+    let expected = required_functions(120);
     let mut f = test_fixture::new().await;
     for path in ["pg_catalog", "pg_catalog, public", "public"] {
         let tx = f.runtime.transaction().await.unwrap();
@@ -61,7 +61,7 @@ async fn batch_matches_every_individual_descriptor_under_supported_lookup_paths(
                 function.0
             );
         }
-        functions(&tx, 119).await.unwrap();
+        functions(&tx, 120).await.unwrap();
         require_v2(&tx).await.unwrap();
         tx.rollback().await.unwrap();
     }
@@ -71,7 +71,7 @@ async fn batch_matches_every_individual_descriptor_under_supported_lookup_paths(
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with disposable CREATEDB/CREATEROLE"]
 async fn batch_refuses_missing_overloaded_offsetting_and_changed_descriptors() {
-    let expected = required_functions(119);
+    let expected = required_functions(120);
     let mut f = test_fixture::new().await;
     require_v2(&f.runtime).await.unwrap();
     for index in [0, expected.len() / 2, expected.len() - 1] {
@@ -83,7 +83,7 @@ async fn batch_refuses_missing_overloaded_offsetting_and_changed_descriptors() {
         .await
         .unwrap();
         assert!(matches!(
-            functions(&tx, 119).await,
+            functions(&tx, 120).await,
             Err(ReviewedSendSchemaError::Invalid)
         ));
         tx.rollback().await.unwrap();
@@ -106,7 +106,7 @@ async fn batch_refuses_missing_overloaded_offsetting_and_changed_descriptors() {
             expected.len() + usize::from(!missing)
         );
         assert!(matches!(
-            functions(&tx, 119).await,
+            functions(&tx, 120).await,
             Err(ReviewedSendSchemaError::Invalid)
         ));
         tx.rollback().await.unwrap();
@@ -124,7 +124,7 @@ async fn batch_refuses_missing_overloaded_offsetting_and_changed_descriptors() {
         tx.batch_execute(sql).await.unwrap();
         assert!(
             matches!(
-                functions(&tx, 119).await,
+                functions(&tx, 120).await,
                 Err(ReviewedSendSchemaError::Invalid)
             ),
             "{sql}"
@@ -137,7 +137,7 @@ async fn batch_refuses_missing_overloaded_offsetting_and_changed_descriptors() {
 
 #[test]
 fn version_specific_descriptor_membership_is_unchanged() {
-    for version in 114..=119 {
+    for version in 114..=120 {
         let expected = required_functions(version);
         assert_eq!(expected.len(), if version >= 117 { 14 } else { 13 });
         assert_eq!(

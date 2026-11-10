@@ -469,6 +469,8 @@ async fn candidate_queue_counts_alpha_and_candidate_rows_in_the_same_device_cap(
             recipient_e164: "+12",
             synthetic_payload: b"synthetic",
             expires_at_ms: now(&f.db).await + 60_000,
+            line_label: None,
+            no_fallback: false,
         })
         .await
         .unwrap();
@@ -495,7 +497,9 @@ async fn candidate_queue_counts_alpha_and_candidate_rows_in_the_same_device_cap(
                 idempotency_key: "alpha-cap",
                 recipient_e164: "+12",
                 synthetic_payload: b"synthetic",
-                expires_at_ms: now(&f.db).await + 60_000
+                expires_at_ms: now(&f.db).await + 60_000,
+                line_label: None,
+                no_fallback: false,
             })
             .await,
         Err(StoreError::QueueFull)
@@ -586,6 +590,8 @@ async fn candidate_queue_cannot_enter_any_alpha_claim_grant_or_database_effect_p
             recipient_e164: "+12",
             synthetic_payload: b"synthetic",
             expires_at_ms: now(&f.db).await + 60_000,
+            line_label: None,
+            no_fallback: false,
         })
         .await
         .unwrap();

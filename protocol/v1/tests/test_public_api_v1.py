@@ -81,6 +81,14 @@ IMPLEMENTED_ERROR_CODES = {
     "billing_pending",
     "payment_hold",
     "recipient_suppressed",
+    "line_not_ready_inactive",
+    "line_not_ready_binding_not_active",
+    "line_not_ready_continuity_pending",
+    "line_not_ready_card_changed",
+    "line_not_ready_offline",
+    "line_not_ready_unknown_no_fallback",
+    "line_not_ready_fallback_forbidden",
+    "line_not_ready_no_eligible_fallback",
     "invalid_webhook_endpoint",
     "endpoint_limit",
     "replay_not_eligible",
@@ -403,10 +411,17 @@ class PublicApiContractTests(unittest.TestCase):
                     "recipient_e164",
                     "test_case_id",
                     "expires_at_ms",
+                    "line",
+                    "no_fallback",
                 ]
             ),
         )
-        self.assertEqual(sorted(request["required"]), sorted(request["properties"]))
+        # Line addressing and the fallback opt-out are optional; every other
+        # member is required.
+        self.assertEqual(
+            sorted(set(request["properties"]) - set(request["required"])),
+            ["line", "no_fallback"],
+        )
         self.assertFalse(request.get("additionalProperties", True))
         idempotency = [
             parameter
@@ -427,6 +442,7 @@ class PublicApiContractTests(unittest.TestCase):
                     "state_version",
                     "created_at_ms",
                     "updated_at_ms",
+                    "line_label",
                 ]
             ),
         )

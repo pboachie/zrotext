@@ -98,26 +98,31 @@ enum MessageHttpError {
     BillingPending,
     PaymentHold,
     RecipientSuppressed,
+    LineNotReady {
+        code: &'static str,
+        label: Option<String>,
+    },
     Unavailable,
 }
 
 impl IntoResponse for MessageHttpError {
     fn into_response(self) -> Response {
-        let (status, code) = match self {
-            Self::BadRequest => (StatusCode::BAD_REQUEST, "invalid_request"),
-            Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
-            Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
-            Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
-            Self::Conflict => (StatusCode::CONFLICT, "conflict"),
-            Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
-            Self::QueueFull => (StatusCode::TOO_MANY_REQUESTS, "queue_full"),
-            Self::QuotaExceeded => (StatusCode::TOO_MANY_REQUESTS, "quota_exceeded"),
-            Self::BillingPending => (StatusCode::SERVICE_UNAVAILABLE, "billing_pending"),
-            Self::PaymentHold => (StatusCode::PAYMENT_REQUIRED, "payment_hold"),
-            Self::RecipientSuppressed => (StatusCode::FORBIDDEN, "recipient_suppressed"),
-            Self::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+        let (status, code, line_label) = match self {
+            Self::BadRequest => (StatusCode::BAD_REQUEST, "invalid_request", None),
+            Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized", None),
+            Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden", None),
+            Self::NotFound => (StatusCode::NOT_FOUND, "not_found", None),
+            Self::Conflict => (StatusCode::CONFLICT, "conflict", None),
+            Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited", None),
+            Self::QueueFull => (StatusCode::TOO_MANY_REQUESTS, "queue_full", None),
+            Self::QuotaExceeded => (StatusCode::TOO_MANY_REQUESTS, "quota_exceeded", None),
+            Self::BillingPending => (StatusCode::SERVICE_UNAVAILABLE, "billing_pending", None),
+            Self::PaymentHold => (StatusCode::PAYMENT_REQUIRED, "payment_hold", None),
+            Self::RecipientSuppressed => (StatusCode::FORBIDDEN, "recipient_suppressed", None),
+            Self::LineNotReady { code, label } => (StatusCode::CONFLICT, code, label),
+            Self::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable", None),
         };
-        let mut response = (status, Json(ErrorBody { code })).into_response();
+        let mut response = (status, Json(ErrorBody { code, line_label })).into_response();
         if status == StatusCode::TOO_MANY_REQUESTS || code == "billing_pending" {
             response.headers_mut().insert(
                 header::RETRY_AFTER,
@@ -137,6 +142,8 @@ impl IntoResponse for MessageHttpError {
 #[derive(Serialize)]
 struct ErrorBody {
     code: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line_label: Option<String>,
 }
 
 fn map_auth(error: AuthError) -> MessageHttpError {
@@ -173,6 +180,10 @@ fn map_store(error: StoreError) -> MessageHttpError {
         StoreError::RecipientSuppressed => MessageHttpError::RecipientSuppressed,
         StoreError::DeviceBusy | StoreError::EventIdConflict => MessageHttpError::Conflict,
         StoreError::QueueFull => MessageHttpError::QueueFull,
+        // The addressed line's not-ready policy refused before acceptance;
+        // the response names the stable code and the resolved label.
+        StoreError::LineNotReady { code, label } => MessageHttpError::LineNotReady { code, label },
+        StoreError::PolicyCorrupt => MessageHttpError::Unavailable,
     }
 }
 
@@ -221,6 +232,17 @@ fn valid_e164(number: &str) -> bool {
         && number.as_bytes()[1..].iter().all(u8::is_ascii_digit)
 }
 
+/// A line label is an owner-chosen name: short, single-line, printable,
+/// trimmed. It addresses immutable line identity at admission and never
+/// carries a SIM slot, subscription identifier, ICCID, IMSI or phone number.
+fn valid_line_label(label: &str) -> bool {
+    let trimmed = label.trim();
+    (1..=64).contains(&label.chars().count())
+        && !trimmed.is_empty()
+        && label == trimmed
+        && label.chars().all(|c| !c.is_control())
+}
+
 #[cfg(test)]
 fn now_ms() -> Result<i64, MessageHttpError> {
     i64::try_from(
@@ -240,12 +262,21 @@ struct AcceptBody {
     recipient_e164: String,
     test_case_id: String,
     expires_at_ms: i64,
+    /// Owner-named line label (ADR 0004). Absent keeps line-free routing.
+    #[serde(default)]
+    line: Option<String>,
+    /// Decline fallback for this message even when the addressed line's
+    /// policy names a fallback line.
+    #[serde(default)]
+    no_fallback: bool,
 }
 
 #[derive(Serialize)]
 struct AcceptedBody {
     message_id: Uuid,
     created: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line_label: Option<String>,
 }
 
 /// The API key of an accept request, authenticated from headers alone before
@@ -296,6 +327,10 @@ async fn accept(
             .test_case_id
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        || body
+            .line
+            .as_ref()
+            .is_some_and(|label| !valid_line_label(label))
     {
         return Err(MessageHttpError::BadRequest);
     }
@@ -342,10 +377,12 @@ async fn accept(
         recipient_e164: &body.recipient_e164,
         synthetic_payload: synthetic_body.as_bytes(),
         expires_at_ms: body.expires_at_ms,
+        line_label: body.line.as_deref(),
+        no_fallback: body.no_fallback,
     };
     let mut store = client.delivery_store_with_idempotency_days(state.idempotency_days);
     let outcome = store
-        .accept_alpha(input, state.metered)
+        .accept_alpha(input, state.metered, principal.bound_device())
         .await
         .map_err(map_store)?;
     Ok((
@@ -353,6 +390,7 @@ async fn accept(
         Json(AcceptedBody {
             message_id: outcome.message_id,
             created: outcome.created,
+            line_label: outcome.line_label,
         }),
     )
         .into_response())
@@ -366,6 +404,8 @@ struct StatusBody {
     state_version: i64,
     created_at_ms: i64,
     updated_at_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line_label: Option<String>,
 }
 
 async fn status(
@@ -395,6 +435,7 @@ async fn status(
         state_version: snapshot.state_version,
         created_at_ms: snapshot.created_at_ms,
         updated_at_ms: snapshot.updated_at_ms,
+        line_label: snapshot.line_label,
     }))
 }
 

@@ -895,8 +895,8 @@ async fn recurring_ordinal_requires_a_distinct_current_owner_approval() {
         .f
         .db
         .query_one(
-            "SELECT to_char((clock_timestamp() AT TIME ZONE 'UTC')-interval '1 day','YYYY-MM-DD')",
-            &[],
+            "SELECT to_char($1::text::date - 1,'YYYY-MM-DD')",
+            &[&p.first_local_date],
         )
         .await
         .unwrap()

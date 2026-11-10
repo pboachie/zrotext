@@ -1249,3 +1249,128 @@ async fn outbound_budget_expiry_resets_only_the_canonical_account_window() {
     );
     database.finish().await;
 }
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn line_labels_answer_their_resolved_label_and_refuse_with_the_stable_policy_code() {
+    let mut database = crate::test_database::Fixture::for_store("ZT_AUTH_TEST_DATABASE_URL").await;
+    let url = database.runtime_url.clone();
+    let client = &mut database.owner;
+    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(53)).unwrap());
+    let (account, device, send, read, _unbound) = owner(
+        &mut database.runtime,
+        client,
+        &hasher,
+        "line-owner@example.test",
+    )
+    .await;
+    let policy = Arc::new(
+        AlphaPolicy::parse(
+            Some("true"),
+            Some(&account.to_string()),
+            Some("+15555550101"),
+        )
+        .unwrap(),
+    );
+    let app = router(MessagesHttpState::new(url, hasher, policy, false).unwrap());
+    let desk = Uuid::new_v4();
+    let gone = Uuid::new_v4();
+    for (line, label, mode) in [(desk, "desk", "ignore"), (gone, "gone", "ignore")] {
+        client
+            .execute(
+                "INSERT INTO phone_lines(id,account_id,state,approved_at,current_binding_generation,last_issued_generation,label,not_ready_mode) \
+                 VALUES($1,$2,'active',clock_timestamp(),1,1,$3,$4)",
+                &[&line, &account, &label, &mode],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO device_line_bindings(account_id,line_id,device_id,generation,state,purpose,owner_approval_digest,device_confirmation_digest,activated_at) \
+                 VALUES($1,$2,$3,1,'active','sms',$4,$5,clock_timestamp()-interval '1 second')",
+                &[&account, &line, &device, &vec![1_u8; 32], &vec![2_u8; 32]],
+            )
+            .await
+            .unwrap();
+    }
+    client
+        .execute(
+            "INSERT INTO line_readiness_observations \
+             (account_id,line_id,device_id,binding_generation,kind,since_observation_ms,observed_at_ms,digest) \
+             VALUES($1,$2,$3,1,'ready',1200,1700000000000,'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA')",
+            &[&account, &desk, &device],
+        )
+        .await
+        .unwrap();
+    let body = |line: Option<&str>| {
+        serde_json::json!({
+            "client_message_id": Uuid::new_v4(),
+            "device_id": device,
+            "recipient_e164": "+15555550101",
+            "test_case_id": "case_line",
+            "expires_at_ms": now_ms().unwrap() + 600_000,
+            "line": line,
+        })
+    };
+    // A label with control characters is a malformed request.
+    let response = app
+        .clone()
+        .oneshot(post("/messages", &send, "line-bad", body(Some("de\nsk"))))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    // A ready line is accepted and both the accept and the status answers
+    // carry the resolved label only - never a line UUID or SIM identifier.
+    let response = app
+        .clone()
+        .oneshot(post("/messages", &send, "line-ready", body(Some("desk"))))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let data = to_bytes(response.into_body(), 2048).await.unwrap();
+    let accepted: serde_json::Value = serde_json::from_slice(&data).unwrap();
+    assert_eq!(accepted["line_label"], "desk");
+    let message_id = Uuid::parse_str(accepted["message_id"].as_str().unwrap()).unwrap();
+    let response = app
+        .clone()
+        .oneshot(get(&format!("/messages/{message_id}"), &read))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let data = to_bytes(response.into_body(), 2048).await.unwrap();
+    let status: serde_json::Value = serde_json::from_slice(&data).unwrap();
+    assert_eq!(status["line_label"], "desk");
+
+    // A line with no observation fails closed under the default ignore
+    // policy: 409 with the stable code and the resolved label, and no
+    // message is created.
+    let response = app
+        .clone()
+        .oneshot(post("/messages", &send, "line-gone", body(Some("gone"))))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let data = to_bytes(response.into_body(), 2048).await.unwrap();
+    let refusal: serde_json::Value = serde_json::from_slice(&data).unwrap();
+    assert_eq!(refusal["code"], "line_not_ready_offline");
+    assert_eq!(refusal["line_label"], "gone");
+    let refused: i64 = client
+        .query_one(
+            "SELECT count(*) FROM idempotency_keys WHERE key='line-gone'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(refused, 0, "a policy refusal must leave no records");
+
+    // An unknown label resolves to nothing.
+    let response = app
+        .clone()
+        .oneshot(post("/messages", &send, "line-none", body(Some("nope"))))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    database.finish().await;
+}

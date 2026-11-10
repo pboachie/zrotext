@@ -53,6 +53,13 @@ impl TestDb {
             include_str!("../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
             include_str!("../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
             include_str!("../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
+            include_str!("../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
+            include_str!("../../../deploy/compose/migrations/019_line_activation_contract.sql"),
+            include_str!(
+                "../../../deploy/compose/migrations/098_line_labels_and_not_ready_policy.sql"
+            ),
+            include_str!("../../../deploy/compose/migrations/099_line_readiness_observations.sql"),
+            include_str!("../../../deploy/compose/migrations/120_messages_line.sql"),
         ] {
             client.batch_execute(migration).await.unwrap();
         }
@@ -108,6 +115,8 @@ fn message<'a>(
         recipient_e164: "+15551234567",
         synthetic_payload: b"metering test only",
         expires_at_ms: expiry,
+        line_label: None,
+        no_fallback: false,
     }
 }
 

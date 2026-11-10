@@ -124,6 +124,7 @@ impl AccountAdmission<'_, '_> {
             return Ok(AcceptOutcome {
                 message_id: input.message_id,
                 created: false,
+                line_label: None,
             });
         }
         let counts = tx.query_one(
@@ -162,6 +163,7 @@ impl AccountAdmission<'_, '_> {
         Ok(AcceptOutcome {
             message_id: input.message_id,
             created: true,
+            line_label: None,
         })
     }
 }

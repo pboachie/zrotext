@@ -261,7 +261,7 @@ Request body: [AlphaSubmitRequest](#alphasubmitrequest).
 | 402 | payment_hold: the account has an unresolved billing hold. |
 | 403 | forbidden: the credential lacks the required scope or is bound to another device or tenant. recipient_suppressed: the recipient was suppressed by an owner or compliance control. |
 | 404 | not_found: the alpha policy is disabled, the account or recipient is outside the allowlist, or the device is unknown or revoked. |
-| 409 | conflict: the client_message_id or idempotency key was already used with different content, or the message state forbids the transition. |
+| 409 | conflict: the client_message_id or idempotency key was already used with different content, the message state forbids the transition, or the addressed line is not ready under its not-ready policy (code line_not_ready_* with line_label). |
 | 413 | The request body exceeded the router's byte limit (4,096 bytes on POST /v1/webhooks, 1,024 bytes on POST /v1/alpha/messages). The framework's plain-text 413 is kept verbatim; it is not the JSON error envelope. |
 | 429 | rate_limited, queue_full or quota_exceeded. rate_limited is returned both when the account exceeds its per-account abuse budget and when it already holds its cap of four authenticated accept requests in flight in this process (the admission slot taken after the Bearer credential and Idempotency-Key header checks succeed); both carry Retry-After: 60. queue_full: the queue is full. quota_exceeded: the metered quota is exhausted. |
 | 408 | Shared ingress deadline rejection (crates/server/src/ingress.rs): the request body did not finish arriving within ten seconds of admission, or the handler did not produce a response within thirty seconds. Bare status with an empty body. |
@@ -469,7 +469,8 @@ The error body emitted by the implemented routes that return JSON errors. Owner-
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `code` | enum: `invalid_request`, `unauthorized`, `forbidden`, `not_found`, `conflict`, `rate_limited`, `queue_full`, `quota_exceeded`, `billing_pending`, `payment_hold`, `recipient_suppressed`, `invalid_webhook_endpoint`, `endpoint_limit`, `replay_not_eligible`, `replay_limit`, `unavailable` | yes | Stable machine-readable reason code for the failure. |
+| `code` | enum: `invalid_request`, `unauthorized`, `forbidden`, `not_found`, `conflict`, `rate_limited`, `queue_full`, `quota_exceeded`, `billing_pending`, `payment_hold`, `recipient_suppressed`, `line_not_ready_inactive`, `line_not_ready_binding_not_active`, `line_not_ready_continuity_pending`, `line_not_ready_card_changed`, `line_not_ready_offline`, `line_not_ready_unknown_no_fallback`, `line_not_ready_fallback_forbidden`, `line_not_ready_no_eligible_fallback`, `invalid_webhook_endpoint`, `endpoint_limit`, `replay_not_eligible`, `replay_limit`, `unavailable` | yes | Stable machine-readable reason code for the failure. The line_not_ready_* codes appear with HTTP 409 on the submit route when the addressed line is not ready under its policy, together with line_label. |
+| `line_label` | string | no | The resolved label of the line the refusal names, when the failure is a line not-ready policy refusal. |
 
 ### WebhookSealedSelectionRequest
 
@@ -622,6 +623,8 @@ The synthetic-alpha submission body as implemented by crates/server/src/http_mes
 | `recipient_e164` | string | yes | The allowlisted test recipient in E.164 form: a plus sign followed by 2-15 digits with no leading zero. |
 | `test_case_id` | string | yes | Short test-case identifier incorporated into the fixed synthetic body. |
 | `expires_at_ms` | integer | yes | Unix millisecond deadline after which an undispatched message expires. |
+| `line` | string | no | Owner-named line label (ADR 0004): resolves to the line's immutable identity at admission and applies its configured not-ready policy - ignore refuses before acceptance, queue holds on the addressed line, fallback sends from the owner-named fallback line. The line's approved binding must belong to device_id. Absent keeps line-free routing. Never a SIM slot, subscription identifier, ICCID, IMSI or phone number. |
+| `no_fallback` | boolean | no | Declines fallback for this message even when the addressed line's policy names a fallback line; the refusal then carries line_not_ready_fallback_forbidden. |
 
 ### AlphaAccepted
 
@@ -631,6 +634,7 @@ The alpha accept response as implemented by crates/server/src/http_messages.rs.
 |---|---|---|---|
 | `message_id` | string (uuid) | yes |  |
 | `created` | boolean | yes | false for an identical idempotent replay of the same Idempotency-Key. |
+| `line_label` | string | no | The resolved label of the line that will actually send (the addressed line, or the fallback line when the policy rerouted the send). Present only when the request addressed a line by label. |
 
 ### AlphaStatus
 
@@ -644,6 +648,7 @@ The alpha status response as implemented by crates/server/src/http_messages.rs (
 | `state_version` | integer | yes | Monotonic writer version of the state row. |
 | `created_at_ms` | integer | yes |  |
 | `updated_at_ms` | integer | yes |  |
+| `line_label` | string | no | The sending line's current label (presentation only; a rename is reflected here while the recorded line identity stays immutable). Present only when the message was admitted with a line label. |
 
 ### ReportedPreconditions
 

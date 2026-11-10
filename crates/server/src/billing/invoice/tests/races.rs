@@ -19,6 +19,8 @@ async fn concurrent_admission_wins_exactly_one_remaining_invoice_unit() {
         recipient_e164: "+15551234567",
         synthetic_payload: b"synthetic concurrent invoice fixture",
         expires_at_ms: case.end * 1000,
+        line_label: None,
+        no_fallback: false,
     };
     let mut a = DeliveryStore::new(&mut first);
     let mut b = DeliveryStore::new(&mut second);

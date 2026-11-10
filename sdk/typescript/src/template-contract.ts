@@ -45,24 +45,32 @@ export function boundedText(text: string, maximum: number): void {
  */
 export function validateTemplate(template: string): void {
   boundedText(template, templateLimits.template);
-  for (let index = 0; index < template.length; ) {
-    if (template[index] === "{") {
-      const rest = template.slice(index);
-      const match = /^\{\{([A-Za-z_][A-Za-z0-9_]{0,31})\}\}/.exec(rest);
-      if (!match || !validKey(match[1])) {
-        throw new Error(
-          "Use only {{identifier}} variables; braces must form a complete variable.",
-        );
-      }
-      index += match[0].length;
-    } else {
-      if (template[index] === "}") {
-        throw new Error(
-          "Use only {{identifier}} variables; braces must form a complete variable.",
-        );
-      }
-      index += 1;
+
+  // A token contains at most 32 identifier characters and four braces.
+  let index = 0;
+  while (index < template.length) {
+    const nextOpen = template.indexOf("{", index);
+    const nextClose = template.indexOf("}", index);
+
+    if (nextOpen === -1 && nextClose === -1) {
+      break;
     }
+
+    if (nextClose !== -1 && (nextOpen === -1 || nextClose < nextOpen)) {
+      throw new Error(
+        "Use only {{identifier}} variables; braces must form a complete variable.",
+      );
+    }
+
+    index = nextOpen;
+    const rest = template.slice(index, index + 36);
+    const match = /^\{\{([A-Za-z_][A-Za-z0-9_]{0,31})\}\}/.exec(rest);
+    if (!match || !validKey(match[1])) {
+      throw new Error(
+        "Use only {{identifier}} variables; braces must form a complete variable.",
+      );
+    }
+    index += match[0].length;
   }
 }
 

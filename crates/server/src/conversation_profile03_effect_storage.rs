@@ -19,9 +19,27 @@ pub enum EffectSchemaError {
     Database(#[from] tokio_postgres::Error),
 }
 type Result<T> = std::result::Result<T, EffectSchemaError>;
+#[cfg(test)]
 fn body(name: &str) -> Result<&'static str> {
+    body_for(name, 119)
+}
+fn body_for(name: &str, version: i64) -> Result<&'static str> {
+    let source = if version == 120
+        && matches!(
+            name,
+            "payload_profile_writer_version"
+                | "payload_profile_writer_ready"
+                | "hosted_runtime_native_schema_valid"
+                | "hosted_runtime_identity_ready"
+                | "hosted_runtime_scope"
+                | "device_protection_ready"
+        ) {
+        include_str!("../../../deploy/compose/migrations/120_messages_line.sql")
+    } else {
+        MIGRATION
+    };
     zrotext_delivery_store::hosted_runtime_identity::declared_function_body(
-        MIGRATION,
+        source,
         name,
         "$function$",
     )
@@ -665,6 +683,13 @@ const FUNCTIONS: &[Function] = &[
 ];
 const FUNCTION_METADATA: &str = "SELECT p.prosrc,p.proowner=c.relowner,p.prorettype=pg_catalog.to_regtype(($2::text[])[e.ordinal::integer]),l.lanname::text,p.provolatile::text,p.proisstrict,p.prosecdef,p.proretset,p.proconfig,p.proargnames,p.proargmodes::text[],CASE WHEN p.proallargtypes IS NULL THEN NULL ELSE ARRAY(SELECT pg_catalog.format_type(t,NULL) FROM unnest(p.proallargtypes) t) END,p.proparallel='u' AND p.prokind='f' AND p.pronargdefaults=0 AND p.provariadic=0 AND NOT p.proleakproof AND p.proargdefaults IS NULL AND(SELECT count(*) FROM pg_catalog.pg_proc x WHERE x.pronamespace=p.pronamespace AND x.proname=p.proname)=1,e.ordinal FROM pg_catalog.unnest($1::text[]) WITH ORDINALITY AS e(signature,ordinal) JOIN pg_catalog.pg_proc p ON p.oid=pg_catalog.to_regprocedure(e.signature) JOIN pg_catalog.pg_language l ON l.oid=p.prolang JOIN pg_catalog.pg_class c ON c.oid='public.accounts'::pg_catalog.regclass ORDER BY e.ordinal";
 async fn functions<C: GenericClient + Sync>(db: &C) -> Result<()> {
+    let version: i64 = db
+        .query_one(
+            "SELECT migration_version FROM public.payload_profile_writer_catalog WHERE singleton",
+            &[],
+        )
+        .await?
+        .try_get(0)?;
     let signatures = FUNCTIONS.iter().map(|f| f.signature).collect::<Vec<_>>();
     let results = FUNCTIONS.iter().map(|f| f.result).collect::<Vec<_>>();
     // One metadata snapshot per call, never a cached capability. Every expected
@@ -687,7 +712,7 @@ async fn functions<C: GenericClient + Sync>(db: &C) -> Result<()> {
                 Some(strings(xs))
             }
         };
-        if row.try_get::<_, String>(0)? != body(f.name)?
+        if row.try_get::<_, String>(0)? != body_for(f.name, version)?
             || !row.try_get::<_, bool>(1)?
             || !row.try_get::<_, bool>(2)?
             || row.try_get::<_, String>(3)? != f.language
@@ -900,7 +925,19 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
         return Err(EffectSchemaError::Invalid);
     }
     crate::hosted_runtime_identity::require(db).await?;
-    if !crate::payload_profile_writer::optional(db,"public.accounts").await? || db.query_one("SELECT migration_version FROM public.payload_profile_writer_catalog WHERE singleton",&[]).await?.try_get::<_,i64>(0)?!=119 {return Err(EffectSchemaError::Invalid);}
+    if !crate::payload_profile_writer::optional(db, "public.accounts").await? {
+        return Err(EffectSchemaError::Invalid);
+    }
+    let version: i64 = db
+        .query_one(
+            "SELECT migration_version FROM public.payload_profile_writer_catalog WHERE singleton",
+            &[],
+        )
+        .await?
+        .try_get(0)?;
+    if !matches!(version, 119..=120) {
+        return Err(EffectSchemaError::Invalid);
+    }
     functions(db).await?;
     tables(db).await?;
     if !db

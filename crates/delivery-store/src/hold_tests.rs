@@ -44,6 +44,13 @@ impl TestDb {
             include_str!("../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
             include_str!("../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
             include_str!("../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
+            include_str!("../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
+            include_str!("../../../deploy/compose/migrations/019_line_activation_contract.sql"),
+            include_str!(
+                "../../../deploy/compose/migrations/098_line_labels_and_not_ready_policy.sql"
+            ),
+            include_str!("../../../deploy/compose/migrations/099_line_readiness_observations.sql"),
+            include_str!("../../../deploy/compose/migrations/120_messages_line.sql"),
         ] {
             client.batch_execute(migration).await.unwrap();
         }
@@ -116,6 +123,8 @@ fn message(account_id: Uuid, device_id: Uuid, message_id: Uuid, key: &str) -> Ne
         recipient_e164: RECIPIENT,
         synthetic_payload: b"owner hold test only",
         expires_at_ms: expiry_ms(),
+        line_label: None,
+        no_fallback: false,
     }
 }
 

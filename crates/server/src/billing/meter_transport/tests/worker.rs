@@ -80,6 +80,8 @@ impl Db {
             recipient_e164: "+15551234567",
             synthetic_payload: b"synthetic only",
             expires_at_ms: now_ms() + 60_000,
+            line_label: None,
+            no_fallback: false,
         };
         store.accept_metered(input).await.unwrap();
         let session = store

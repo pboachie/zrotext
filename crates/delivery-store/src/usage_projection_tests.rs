@@ -259,6 +259,8 @@ fn metered_message<'a>(
         recipient_e164: "+15551234567",
         synthetic_payload: b"usage projection test only",
         expires_at_ms: expiry,
+        line_label: None,
+        no_fallback: false,
     }
 }
 
