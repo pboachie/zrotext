@@ -45,11 +45,17 @@ function reply(bytes: Uint8Array): unknown {
   const string = (): string => {
     if (raw[at] !== '"') fail('response'); const start = at++;
     while (at < raw.length) {
-      const c = raw[at++];
-      if (c === '"') { const value: unknown = JSON.parse(raw.slice(start, at));
-        if (typeof value !== 'string' || value.length > 128) fail('response'); return value; }
-      if (c === '\\') at++;
-    } return fail('response');
+      const quote = raw.indexOf('"', at);
+      if (quote === -1) return fail('response');
+      let slashes = 0;
+      for (let slashAt = quote - 1; slashAt >= start && raw[slashAt] === '\\'; slashAt--) slashes++;
+      at = quote + 1;
+      if (slashes % 2 === 0) {
+        const value: unknown = JSON.parse(raw.slice(start, at));
+        if (typeof value !== 'string' || value.length > 128) fail('response'); return value;
+      }
+    }
+    return fail('response');
   };
   const out: Record<string, unknown> = Object.create(null), seen = new Set<string>();
   space(); if (raw[at++] !== '{') fail('response'); space();

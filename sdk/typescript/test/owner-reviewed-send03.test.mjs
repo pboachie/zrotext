@@ -36,6 +36,16 @@ function client(p, changes = {}) {
   c.client = new OwnerReviewedSendClient03(c.options); return c;
 }
 
+test("receipt responses accept escaped field names without changing packet retention", async () => {
+  const prepared = await packet();
+  const raw = JSON.stringify(prepared.receipt).replace('"message_id"', '"message_\\u0069d"');
+  const state = client(prepared, { fetchImpl: async () => new Response(raw, {
+    status: 201, headers: { 'content-type': 'application/json' },
+  }) });
+  assert.deepEqual(await state.client.send(prepared.proof), prepared.receipt);
+  assert.deepEqual(state.saved, [prepared.record]);
+});
+
 test("genuine V2 sends exact public packet only after retention with fixed cookie/CSRF transport", async () => {
   const p = await packet(), c = client(p), receipt = await c.client.send(p.proof);
   assert.deepEqual(receipt, p.receipt); assert.deepEqual(c.events, ["saved", "fetch"]);

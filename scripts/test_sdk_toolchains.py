@@ -45,7 +45,7 @@ class SdkToolchainTests(unittest.TestCase):
         text = WORKFLOW.read_text(encoding="utf-8")
         pins = re.findall(r"uses: ruby/setup-ruby@([0-9a-f]{40})", text)
         self.assertTrue(pins)
-        self.assertEqual(set(pins), {"7f797815d8adceb1c412e7abefdd1ab4abc47a5f"})
+        self.assertEqual(set(pins), {"de492cf36cbab201753d720ce4f4e336cd688c94"})
 
     def test_windows_webhook_uses_setup_go_instead_of_a_download_override(self):
         text = WORKFLOW.read_text(encoding="utf-8")

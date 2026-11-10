@@ -46,7 +46,7 @@ jobs:
         run: python scripts/prepare_java_ci_trust.py --major 17 --distribution corretto
       - name: Verify patched Java runtime and trust roots
         run: python scripts/check_java_toolchain.py --major 17 --distribution corretto
-      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
+      - uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1.336.0
         with:
           ruby-version: '3.3.13'
       - name: "Csharp protected candidate composition: Checkout pinned fixtures"
@@ -585,7 +585,7 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           dotnet-version: '10.0.402'
-      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
+      - uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1.336.0
         with:
           ruby-version: '3.3.13'
       - name: "Local Tungsten workflow adapter"
@@ -748,7 +748,7 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           dotnet-version: '8.0.x'
-      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
+      - uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1.336.0
         with:
           ruby-version: '3.3.13'
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
@@ -968,7 +968,7 @@ jobs:
         run: |
           python sdk/native/crypto-envelope/original-current-run.py --language csharp --fixture fixture --producer producer
       - name: "Managed authenticated original current proof [ruby]: Toolchain for ruby"
-        uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
+        uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1.336.0
         with:
           ruby-version: '3.3.13'
       - name: "Managed authenticated original current proof: Checkout pinned fixtures"
@@ -1519,7 +1519,7 @@ jobs:
         run: |
           python sdk/native/crypto-envelope/template-authoring-run.py --language csharp --fixture fixture --producer producer --authoring-oracle authoring-oracle
       - name: "Managed reviewed template authoring interoperability [ruby]: Toolchain for ruby"
-        uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
+        uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1.336.0
         with:
           ruby-version: '3.3.13'
       - name: "Managed reviewed template authoring interoperability: Checkout pinned fixtures"
@@ -1925,7 +1925,7 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           dotnet-version: '10.0.402'
-      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
+      - uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1.336.0
         with:
           ruby-version: '3.3.13'
       - name: "Managed contact statement and field interoperability: Checkout pinned fixtures"
@@ -4291,7 +4291,7 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           dotnet-version: '8.0.x'
-      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
+      - uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1.336.0
         with:
           ruby-version: '3.3.13'
       - name: "Native body text parity"
@@ -4976,7 +4976,7 @@ jobs:
         run: |
           python sdk/native/crypto-envelope/contact-mutation-run.py --language csharp --fixture fixture --producer producer --origin-asset "$env:RUNNER_TEMP/contact-origin-mutation-csharp"
       - name: "Managed contact mutation and transition interoperability [ruby]: Toolchain for ruby"
-        uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
+        uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1.336.0
         with:
           ruby-version: '3.3.13'
       - name: "Managed contact mutation and transition interoperability: Checkout pinned fixtures"

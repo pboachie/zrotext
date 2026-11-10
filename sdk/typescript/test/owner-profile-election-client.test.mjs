@@ -87,6 +87,16 @@ async function recoveredReservation(s) {
   return r;
 }
 
+test('reservation responses accept escaped field names and string values without retrying', async () => {
+  const state = await setup(), response = await reservation(state);
+  const raw = JSON.stringify(response).replace('"status"', '"st\\u0061tus"').replace('"reserved"', '"res\\u0065rved"');
+  state.handle(() => new Response(raw, { headers: { 'content-type': 'application/json' } }));
+  const result = await state.client.reserve(state.opening, factor);
+  assert.equal(result.openingId, state.opening.opening_id);
+  assert.equal(state.calls.length, 1);
+  state.client.close();
+});
+
 test('expired closure candidates retain the complete exact ordered chain without renewing an opening', async () => {
   const s = await setup(), r = await recoveredReservation(s);
   s.handle(() => data(r));
