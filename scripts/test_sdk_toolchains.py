@@ -41,11 +41,11 @@ class SdkToolchainTests(unittest.TestCase):
                 self.assertEqual(set(versions), expected)
 
     def test_ruby_action_catalog_includes_the_patched_runtime_on_windows(self):
-        # v1.335.0 adds Ruby 3.3.13 to both the builder and Windows catalogs.
+        # v1.338.0 retains Ruby 3.3.13 in both the builder and Windows catalogs.
         text = WORKFLOW.read_text(encoding="utf-8")
         pins = re.findall(r"uses: ruby/setup-ruby@([0-9a-f]{40})", text)
         self.assertTrue(pins)
-        self.assertEqual(set(pins), {"de492cf36cbab201753d720ce4f4e336cd688c94"})
+        self.assertEqual(set(pins), {"b3aaceaef7e0ee231b499e7b5f49c03fc1d32199"})
 
     def test_windows_webhook_uses_setup_go_instead_of_a_download_override(self):
         text = WORKFLOW.read_text(encoding="utf-8")

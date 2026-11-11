@@ -319,7 +319,7 @@ jobs:
           printf 'Source commit: %s\nSource tree: %s\n' "$source_commit" "$source_tree"
       - name: Validate Gradle wrapper JAR
         uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
-      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         with:
           distribution: temurin
           java-version: '21.0.13+9'
@@ -398,7 +398,7 @@ jobs:
           if ((Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant() -ne 'abd264a79e07c64e19aaa705e5b8ea8db01d5213877b8ac0b855a94541a4b0fd') {
             throw 'Corretto archive checksum mismatch'
           }
-      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         with:
           distribution: jdkfile
           java-version: '21.0.13+10'
