@@ -73,7 +73,10 @@ def parse(text, reused, expected=None):
         elif line.startswith("> Task "):
             match = OUTCOME.fullmatch(line)
             if match and match[1] in TASKS:
-                require(match[1] not in outcomes, "Duplicate task outcome")
+                # Plain-console grouping can repeat the same header when a
+                # task's output resumes. Execution receipts remain unique.
+                if match[1] in outcomes:
+                    require(outcomes[match[1]] == match[2], "Conflicting task outcomes")
                 outcomes[match[1]] = match[2]
             elif ":ksp" in line:
                 raise ValueError("Unrecognized KSP task outcome")
@@ -85,15 +88,19 @@ def parse(text, reused, expected=None):
         require(set(configuration) == TASKS, "Incomplete KSP task inventory")
         active = frozenset(task for task, processing in configuration.items() if processing)
         require(REQUIRED_ACTIVE <= active, "Debug and release processors must execute")
-    require(set(intervals) == active, "Missing or unexpected KSP execution")
+    require(active <= set(intervals) <= TASKS, "Missing or unexpected KSP execution")
     require(set(outcomes) == TASKS, "Missing KSP task outcome")
     ordered = []
     for task in TASKS:
-        if task not in active:
-            require(outcomes[task] in ("SKIPPED", "NO-SOURCE"),
-                    "Empty-processor task did not skip explicitly")
+        if outcomes[task] in ("SKIPPED", "NO-SOURCE"):
+            require(task not in active, "KSP task did not execute fresh work")
+            require(task not in intervals, "Skipped task has execution receipts")
             continue
         require(outcomes[task] is None, "KSP task did not execute fresh work")
+        # An explicitly inventoried zero-processor task may still execute a
+        # no-op action. Validate its complete interval and shared-gate exclusion
+        # exactly like a processing task; never count it as main processing.
+        require(task in intervals, "Missing KSP execution interval")
         require(set(intervals[task]) == {"start", "end"}, "Incomplete KSP interval")
         start, end = intervals[task]["start"], intervals[task]["end"]
         require(start < end, "Invalid KSP execution interval")

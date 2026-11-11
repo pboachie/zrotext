@@ -42,7 +42,7 @@ class AndroidCiBudgetTests(unittest.TestCase):
             "--parallel", "--max-workers=4", "--no-build-cache", "--no-daemon", "--console=plain",
             "-PzrotextSourceCommit=$source_commit",
         ])
-        self.assertEqual(self.job.count('timeout 35m ./gradlew "${args[@]}"'), 2)
+        self.assertEqual(self.job.count('./gradlew "${args[@]}"'), 2)
         self.assertIn('set -euo pipefail', self.job)
         self.assertIn('export GRADLE_USER_HOME="$RUNNER_TEMP/ksp-gradle-home"', self.job)
         self.assertIn('mkdir "$GRADLE_USER_HOME" "$RUNNER_TEMP/ksp-project-cache"', self.job)
@@ -51,6 +51,19 @@ class AndroidCiBudgetTests(unittest.TestCase):
         self.assertIn('python3 tools/ksp_execution_trace.py verify', self.job)
         self.assertIn('--cold-log "$RUNNER_TEMP/ksp-cold.log" --reuse-log "$RUNNER_TEMP/ksp-reuse.log"', self.job)
         self.assertNotRegex(self.job, r"(?m)^\s*continue-on-error:")
+
+    def test_cold_then_reuse_phase_caps_fit_the_unchanged_job_budget(self):
+        phases = re.findall(
+            r'^\s*timeout (\d+)m \./gradlew "\$\{args\[@\]\}" 2>&1 '
+            r'\| tee "\$RUNNER_TEMP/ksp-(cold|reuse)\.log"$',
+            self.job, re.MULTILINE,
+        )
+        self.assertEqual(phases, [("38", "cold"), ("5", "reuse")])
+        allocated = sum(int(minutes) for minutes, _ in phases)
+        self.assertEqual(allocated, 43)
+        job_caps = re.findall(r"^    timeout-minutes: (\d+)\s*$", self.job, re.MULTILINE)
+        self.assertEqual(job_caps, ["45"])
+        self.assertEqual(int(job_caps[0]) - allocated, 2)
 
     def test_jvm_isolation_and_strict_dependency_verification_remain_enabled(self):
         app = (ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")

@@ -89,12 +89,47 @@ class KspExecutionTraceTests(unittest.TestCase):
             with self.subTest(changed=changed), self.assertRaises(ValueError):
                 trace.verify(log(), log(True, changed))
 
-    def test_inactive_task_must_not_emit_execution_receipt(self):
+    def test_executed_zero_processor_task_requires_complete_interval(self):
+        outcomes = {task: "" if task in trace.REQUIRED_ACTIVE else " SKIPPED" for task in trace.TASKS}
+        outcomes[":app:kspDebugUnitTestKotlin"] = ""
         changed = records(True)
         changed.extend((record("start", ":app:kspDebugUnitTestKotlin", nano=50),
                         record("end", ":app:kspDebugUnitTestKotlin", nano=60)))
-        with self.assertRaisesRegex(ValueError, "unexpected KSP execution"):
+        self.assertEqual(trace.verify(log(), log(True, changed, outcomes=outcomes)), trace.REQUIRED_ACTIVE)
+        for incomplete in (changed[:-1], changed[:-2], changed + changed[-1:]):
+            with self.subTest(incomplete=incomplete), self.assertRaises(ValueError):
+                trace.verify(log(), log(True, incomplete, outcomes=outcomes))
+
+    def test_zero_processor_noops_are_accounted_for_in_both_passes(self):
+        outcomes = {task: "" for task in trace.TASKS}
+        passes = []
+        for reused in (False, True):
+            changed = records(reused)
+            changed.extend((record("start", ":app:kspDebugUnitTestKotlin", nano=50),
+                            record("end", ":app:kspDebugUnitTestKotlin", nano=60),
+                            record("start", ":app:kspDebugAndroidTestKotlin", nano=70),
+                            record("end", ":app:kspDebugAndroidTestKotlin", nano=80)))
+            passes.append(log(reused, changed, outcomes=outcomes) +
+                          "> Task :app:kspDebugKotlin\n> Task :app:kspReleaseKotlin\n")
+        self.assertEqual(trace.verify(*passes), trace.REQUIRED_ACTIVE)
+
+    def test_skipped_zero_processor_task_must_not_emit_execution_receipt(self):
+        changed = records(True)
+        changed.extend((record("start", ":app:kspDebugUnitTestKotlin", nano=50),
+                        record("end", ":app:kspDebugUnitTestKotlin", nano=60)))
+        with self.assertRaisesRegex(ValueError, "Skipped task has execution receipts"):
             trace.verify(log(), log(True, changed))
+
+    def test_zero_processor_intervals_cannot_overlap_any_executed_task(self):
+        outcomes = {task: "" for task in trace.TASKS}
+        for start, end in ((5, 15), (45, 65)):
+            changed = records(True)
+            changed.extend((record("start", ":app:kspDebugUnitTestKotlin", nano=start),
+                            record("end", ":app:kspDebugUnitTestKotlin", nano=end),
+                            record("start", ":app:kspDebugAndroidTestKotlin", nano=50),
+                            record("end", ":app:kspDebugAndroidTestKotlin", nano=60)))
+            with self.subTest(start=start), self.assertRaisesRegex(ValueError, "Concurrent KSP"):
+                trace.verify(log(), log(True, changed, outcomes=outcomes))
 
     def test_inverted_empty_invalid_or_overlapping_intervals_fail(self):
         original = records(True)
@@ -118,9 +153,19 @@ class KspExecutionTraceTests(unittest.TestCase):
             with self.subTest(suffix=suffix), self.assertRaises(ValueError):
                 trace.verify(log(), log(True, outcomes=changed))
 
-    def test_missing_duplicate_or_unrecognized_task_outcome_fails(self):
+    def test_repeated_identical_plain_console_headers_are_not_duplicate_work(self):
+        cold = log() + "> Task :app:kspDebugKotlin\n> Task :app:kspReleaseKotlin\n"
+        warm = log(True) + "> Task :app:kspDebugKotlin\n> Task :app:kspDebugUnitTestKotlin SKIPPED\n"
+        self.assertEqual(trace.verify(cold, warm), trace.REQUIRED_ACTIVE)
+        # Headers may repeat, but a second start or end is still rejected.
+        for item in records(True)[:2]:
+            with self.subTest(item=item), self.assertRaisesRegex(ValueError, "Duplicate task interval"):
+                trace.verify(cold, warm + trace.PREFIX + json.dumps(item) + "\n")
+
+    def test_missing_conflicting_or_unrecognized_task_outcome_fails(self):
         for changed in (log(True).replace("> Task :app:kspDebugKotlin\n", ""),
-                        log(True) + "> Task :app:kspDebugKotlin\n",
+                        log(True) + "> Task :app:kspDebugKotlin UP-TO-DATE\n",
+                        log(True) + "> Task :app:kspDebugUnitTestKotlin\n",
                         log(True) + "> Task :app:kspFutureKotlin\n",
                         log(True).replace("> Task :app:kspDebugKotlin", "> Task :app:kspDebugKotlin ???")):
             with self.subTest(changed=changed), self.assertRaises(ValueError):
@@ -129,7 +174,7 @@ class KspExecutionTraceTests(unittest.TestCase):
     def test_empty_processor_skip_requires_explicit_supported_outcome(self):
         self.assertEqual(trace.verify(log(), log(True).replace(" SKIPPED", " NO-SOURCE")),
                          trace.REQUIRED_ACTIVE)
-        with self.assertRaisesRegex(ValueError, "Empty-processor"):
+        with self.assertRaisesRegex(ValueError, "did not execute fresh work"):
             trace.verify(log(), log(True).replace(" SKIPPED", " UP-TO-DATE"))
 
     def test_cache_receipts_and_single_success_are_mandatory(self):

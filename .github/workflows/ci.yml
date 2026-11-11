@@ -563,8 +563,10 @@ jobs:
           )
           # Identical graphs and per-task --rerun preserve configuration-cache
           # reuse while forcing KSP processing, not unrelated compilation.
-          timeout 35m ./gradlew "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/ksp-cold.log"
-          timeout 35m ./gradlew "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/ksp-reuse.log"
+          # Allocate 43 minutes across both phases within the unchanged
+          # 45-minute job cap. A timeout remains a failure, even after a banner.
+          timeout 38m ./gradlew "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/ksp-cold.log"
+          timeout 5m ./gradlew "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/ksp-reuse.log"
           python3 tools/ksp_execution_trace.py verify \
             --cold-log "$RUNNER_TEMP/ksp-cold.log" --reuse-log "$RUNNER_TEMP/ksp-reuse.log"
       - name: Record emulator candidate identity

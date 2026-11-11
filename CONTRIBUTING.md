@@ -80,8 +80,9 @@ passes while other tasks can remain incremental. A CI-only init script records
 the shared-service coverage, processor classpath sizes and execution intervals.
 The verifier requires actual debug and release processing, nonoverlapping
 intervals, and configuration-cache storage followed by reuse. Empty test
-processor configurations must skip explicitly. Missing, ambiguous or stale
-execution evidence fails the job; synthetic fixture success alone is insufficient.
+processor configurations must skip explicitly or provide validated no-op
+execution intervals. Missing, ambiguous or stale execution evidence fails the
+job; synthetic fixture success alone is insufficient.
 
 ### CI toolchain qualification
 
