@@ -80,6 +80,9 @@ and SHA-256, using the inherited Gradle user home. It refuses before launch
 unless that exact distribution is already installed in the wrapper cache;
 `--offline` alone would not prevent a wrapper bootstrap download. Linked cache
 entries, unexpected extracted versions and conflicting cache overrides refuse.
+The selected Gradle user home must be absolute and canonical, without linked
+ancestors or reparse points; resolved cache entries must remain beneath it.
+Canonical custom absolute cache locations remain supported.
 An available retained distribution ZIP must match the pinned checksum. The
 normal extracted cache is trusted as same-user build tooling: its completion
 marker is not a cryptographic attestation or protection against concurrent

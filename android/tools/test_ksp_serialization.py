@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import stat
 import sys
 import tempfile
 import unittest
@@ -148,12 +149,30 @@ def require(condition, detail):
         raise AssertionError(detail)
 
 
+def resolved_path(path):
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError, ValueError):
+        raise AssertionError("Cannot resolve wrapper path") from None
+
+
+def reparse_attributes(path):
+    try:
+        return getattr(path.lstat(), "st_file_attributes", 0)
+    except (OSError, RuntimeError, ValueError):
+        raise AssertionError("Cannot inspect wrapper path") from None
+
+
 def reject_links(path, boundary):
     """Reject links/junctions within the selected cache or repository subtree."""
-    path, boundary = path.absolute(), boundary.absolute()
+    require(path.is_absolute() and boundary.is_absolute(), "Invalid wrapper boundary")
     require(path.is_relative_to(boundary), "Wrapper path escapes its boundary")
+    require(resolved_path(path).is_relative_to(resolved_path(boundary)), "Resolved wrapper path escapes its boundary")
     while True:
         require(not path.is_symlink() and not path.is_junction(), "Linked wrapper path refused")
+        if path.exists():
+            require(not reparse_attributes(path) &
+                    getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400), "Reparse wrapper path refused")
         if path == boundary:
             break
         path = path.parent
@@ -193,7 +212,10 @@ def wrapper_command():
                               os.environ.get(key, "")), "Conflicting Gradle cache override")
     configured_home = os.environ.get("GRADLE_USER_HOME")
     require(configured_home is None or configured_home.strip(), "Empty Gradle user home")
-    home = Path(os.path.abspath(configured_home if configured_home is not None else Path.home() / ".gradle"))
+    home = Path(configured_home) if configured_home is not None else Path.home() / ".gradle"
+    require(home.is_absolute(), "Gradle user home must be absolute")
+    require(home == resolved_path(home), "Gradle user home must be canonical")
+    reject_links(home, Path(home.anchor))
     # Match Gradle's BigInteger(1, MD5(url)).toString(36).
     number = int.from_bytes(hashlib.md5(url.encode("utf-8"), usedforsecurity=False).digest(), "big")
     encoded = ""

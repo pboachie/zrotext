@@ -13,7 +13,7 @@ class PinnedWrapperTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="zrotext-wrapper-test-")
         self.addCleanup(self.temp.cleanup)
-        root = Path(self.temp.name)
+        root = Path(self.temp.name).resolve()
         self.android = root / "android"
         self.home = root / "cache"
         self.cwd = root / "fixture"
@@ -53,6 +53,82 @@ class PinnedWrapperTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             fixture.run_fixture(self.cwd)
         self.launch.assert_not_called()
+
+    def link_directory(self, target, link):
+        if os.name == "nt":
+            import _winapi
+            _winapi.CreateJunction(str(target), str(link))
+        else:
+            link.symlink_to(target, target_is_directory=True)
+        self.addCleanup(link.rmdir if os.name == "nt" else link.unlink)
+
+    def test_relative_existing_home_refuses_before_launch(self):
+        previous = Path.cwd()
+        try:
+            os.chdir(self.home.parent)
+            with patch.dict(os.environ, {"GRADLE_USER_HOME": "cache"}):
+                self.refusal()
+        finally:
+            os.chdir(previous)
+
+    def test_actual_ancestor_link_alias_refuses_before_launch(self):
+        alias = self.home.parent / "alias"
+        self.link_directory(self.home.parent, alias)
+        with patch.dict(os.environ, {"GRADLE_USER_HOME": str(alias / "cache")}):
+            self.refusal()
+
+    def test_actual_linked_home_refuses_before_launch(self):
+        alias = self.home.parent / "alias"
+        self.link_directory(self.home, alias)
+        with patch.dict(os.environ, {"GRADLE_USER_HOME": str(alias)}):
+            self.refusal()
+
+    def test_actual_descendant_escape_refuses_before_launch(self):
+        outside = self.home.parent / "outside"
+        self.dist.rename(outside)
+        self.link_directory(outside, self.dist)
+        self.refusal()
+
+    def test_resolved_descendant_escape_refuses_before_launch(self):
+        original = Path.resolve
+        outside = self.home.parent / "outside"
+        with patch.object(Path, "resolve", autospec=True,
+                          side_effect=lambda path, *args, **kwargs:
+                          outside if path == self.launcher else original(path, *args, **kwargs)):
+            self.refusal()
+
+    def test_unresolvable_home_refuses_with_generic_error(self):
+        self.check_generic_resolution_failure(self.home)
+
+    def test_unresolvable_descendant_refuses_with_generic_error(self):
+        self.check_generic_resolution_failure(self.launcher)
+
+    def check_generic_resolution_failure(self, target):
+        original = Path.resolve
+        for error in (OSError("private-path"), RuntimeError("private-path")):
+            with self.subTest(error=type(error).__name__):
+                def resolve(path, *args, **kwargs):
+                    if path == target:
+                        raise error
+                    return original(path, *args, **kwargs)
+                with patch.object(Path, "resolve", autospec=True, side_effect=resolve):
+                    with self.assertRaisesRegex(AssertionError, "^Cannot resolve wrapper path$"):
+                        fixture.run_fixture(self.cwd)
+                self.launch.assert_not_called()
+
+    def test_uninspectable_path_refuses_with_generic_error(self):
+        with patch.object(Path, "lstat", side_effect=OSError("private-path")):
+            with self.assertRaisesRegex(AssertionError, "^Cannot inspect wrapper path$"):
+                fixture.reparse_attributes(self.home)
+        self.launch.assert_not_called()
+
+    def test_canonical_custom_absolute_home_is_allowed(self):
+        custom = self.home.parent / "custom-cache"
+        self.home.rename(custom)
+        with patch.dict(os.environ, {"GRADLE_USER_HOME": str(custom)}):
+            fixture.run_fixture(self.cwd)
+        self.assertEqual(self.launch.call_args.args[0][1:3],
+                         ["--gradle-user-home", str(custom)])
 
     def test_missing_marker_refuses_before_launch(self):
         self.marker.unlink()
