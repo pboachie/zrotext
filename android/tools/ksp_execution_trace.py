@@ -3,8 +3,10 @@
 
 import argparse
 import json
+import os
 from pathlib import Path
 import re
+import stat
 
 
 PREFIX = "ZROTEXT_KSP_TRACE "
@@ -14,6 +16,8 @@ TASKS = frozenset({
 })
 REQUIRED_ACTIVE = frozenset({":app:kspDebugKotlin", ":app:kspReleaseKotlin"})
 MAX_LOG_BYTES = 64 * 1024 * 1024
+LOG_DIRECTORY = "ksp-qualification"
+LOG_FILENAMES = {"cold": "cold.log", "reuse": "reuse.log"}
 OUTCOME = re.compile(r"^> Task (:[^\s]+)(?: ([A-Z-]+))?$")
 
 
@@ -111,10 +115,65 @@ def parse(text, reused, expected=None):
     return active
 
 
-def read_log(path):
-    path = Path(path)
-    require(path.is_file() and path.stat().st_size <= MAX_LOG_BYTES, "Missing or oversized Gradle log")
-    return path.read_text(encoding="utf-8", errors="strict")
+def not_link(info):
+    return not stat.S_ISLNK(info.st_mode) and not (
+        getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+
+
+def regular_log(info):
+    return not_link(info) and stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+
+
+def checked_log_path(role):
+    require(role in LOG_FILENAMES, "Unknown log role")
+    # RUNNER_TEMP is the job's trusted temporary root, not a caller-selected
+    # filename. The command-line interface accepts neither roots nor paths.
+    location = os.environ.get("RUNNER_TEMP")
+    require(bool(location), "Job temporary directory is required")
+    root = Path(location)
+    require(root.is_absolute(), "Job temporary directory must be absolute")
+    root_info = root.lstat()
+    require(not_link(root_info) and stat.S_ISDIR(root_info.st_mode), "Invalid job temporary directory")
+    require(root.resolve(strict=True) == root, "Job temporary directory must be canonical")
+    directory = root / LOG_DIRECTORY
+    info = directory.lstat()
+    require(not_link(info) and stat.S_ISDIR(info.st_mode), "Invalid log directory")
+    resolved_directory = directory.resolve(strict=True)
+    require(resolved_directory.parent == root and resolved_directory == directory,
+            "Log directory escaped job temporary directory")
+    path = directory / LOG_FILENAMES[role]
+    before = path.lstat()
+    require(regular_log(before), "Log must be a single-link regular file")
+    resolved = path.resolve(strict=True)
+    require(resolved.parent == directory and resolved == path, "Log escaped its directory")
+    return path, before
+
+
+def read_log(role):
+    try:
+        path, before = checked_log_path(role)
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        flags |= getattr(os, "O_NONBLOCK", 0)
+        with os.fdopen(os.open(path, flags), "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            require(regular_log(opened) and (opened.st_dev, opened.st_ino) ==
+                    (before.st_dev, before.st_ino), "Log changed before opening")
+            require(opened.st_size <= MAX_LOG_BYTES, "Log exceeds size limit")
+            raw = stream.read(MAX_LOG_BYTES + 1)
+            require(len(raw) <= MAX_LOG_BYTES, "Log exceeds size limit")
+            after = os.fstat(stream.fileno())
+            require(regular_log(after) and (after.st_size, after.st_mtime_ns) ==
+                    (opened.st_size, opened.st_mtime_ns) and len(raw) == opened.st_size,
+                    "Log changed while reading")
+            named = path.lstat()
+            require(regular_log(named) and (named.st_dev, named.st_ino) ==
+                    (opened.st_dev, opened.st_ino), "Log name changed while reading")
+        try:
+            return raw.decode("utf-8", errors="strict").replace("\r\n", "\n")
+        except UnicodeError:
+            raise ValueError("Log must contain valid UTF-8") from None
+    except OSError:
+        raise ValueError("Cannot read job-local log") from None
 
 
 def verify(cold, reuse):
@@ -126,12 +185,10 @@ def verify(cold, reuse):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    check = commands.add_parser("verify")
-    check.add_argument("--cold-log", required=True)
-    check.add_argument("--reuse-log", required=True)
-    args = parser.parse_args()
+    commands.add_parser("verify")
+    parser.parse_args()
     try:
-        active = verify(read_log(args.cold_log), read_log(args.reuse_log))
+        active = verify(read_log("cold"), read_log("reuse"))
     except (ValueError, OSError) as exc:
         parser.exit(1, f"KSP execution qualification failed: {exc}\n")
     print(f"KSP execution qualification passed: {len(active)} active tasks serialized in both passes; "

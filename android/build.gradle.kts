@@ -47,7 +47,7 @@ val verifyKspSerialization = tasks.register<Exec>("verifyKspSerialization") {
     description = "Exercise the KSP execution gate with parallel Gradle workers and configuration cache"
     val python = if (System.getProperty("os.name").startsWith("Windows")) "python" else "python3"
     commandLine(python, layout.projectDirectory.file("tools/test_ksp_serialization.py").asFile,
-        "--integration", "--gradle-home", requireNotNull(gradle.gradleHomeDir).absolutePath)
+        "--integration")
 }
 allprojects {
     tasks.withType<Test>().configureEach {

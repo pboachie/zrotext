@@ -3,9 +3,11 @@
 
 import copy
 import json
+import os
 import tempfile
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 import ksp_execution_trace as trace
 
@@ -203,15 +205,18 @@ class KspExecutionTraceTests(unittest.TestCase):
 
     def test_missing_or_oversized_log_is_rejected_before_parsing(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "trace.log"
-            with self.assertRaises(ValueError):
-                trace.read_log(path)
-            path.write_text(log(), encoding="utf-8")
-            self.assertEqual(trace.read_log(path), log())
-            with path.open("wb") as stream:
-                stream.truncate(trace.MAX_LOG_BYTES + 1)
-            with self.assertRaises(ValueError):
-                trace.read_log(path)
+            with patch.dict(os.environ, RUNNER_TEMP=str(Path(directory).resolve())):
+                folder = Path(directory) / trace.LOG_DIRECTORY
+                folder.mkdir()
+                path = folder / "cold.log"
+                with self.assertRaises(ValueError):
+                    trace.read_log("cold")
+                path.write_text(log(), encoding="utf-8")
+                self.assertEqual(trace.read_log("cold"), log())
+                with path.open("wb") as stream:
+                    stream.truncate(trace.MAX_LOG_BYTES + 1)
+                with self.assertRaises(ValueError):
+                    trace.read_log("cold")
 
 
 if __name__ == "__main__":

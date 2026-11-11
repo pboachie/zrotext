@@ -45,17 +45,18 @@ class AndroidCiBudgetTests(unittest.TestCase):
         self.assertEqual(self.job.count('./gradlew "${args[@]}"'), 2)
         self.assertIn('set -euo pipefail', self.job)
         self.assertIn('export GRADLE_USER_HOME="$RUNNER_TEMP/ksp-gradle-home"', self.job)
-        self.assertIn('mkdir "$GRADLE_USER_HOME" "$RUNNER_TEMP/ksp-project-cache"', self.job)
+        self.assertIn('mkdir "$GRADLE_USER_HOME" "$RUNNER_TEMP/ksp-project-cache" "$RUNNER_TEMP/ksp-qualification"', self.job)
         self.assertIn('source_commit="$(git rev-parse HEAD)"', self.job)
         self.assertIn('test "$source_commit" = "$GITHUB_SHA"', self.job)
         self.assertIn('python3 tools/ksp_execution_trace.py verify', self.job)
-        self.assertIn('--cold-log "$RUNNER_TEMP/ksp-cold.log" --reuse-log "$RUNNER_TEMP/ksp-reuse.log"', self.job)
+        self.assertNotIn('--cold-log', self.job)
+        self.assertNotIn('--reuse-log', self.job)
         self.assertNotRegex(self.job, r"(?m)^\s*continue-on-error:")
 
     def test_cold_then_reuse_phase_caps_fit_the_unchanged_job_budget(self):
         phases = re.findall(
             r'^\s*timeout (\d+)m \./gradlew "\$\{args\[@\]\}" 2>&1 '
-            r'\| tee "\$RUNNER_TEMP/ksp-(cold|reuse)\.log"$',
+            r'\| tee "\$RUNNER_TEMP/ksp-qualification/(cold|reuse)\.log"$',
             self.job, re.MULTILINE,
         )
         self.assertEqual(phases, [("38", "cold"), ("5", "reuse")])

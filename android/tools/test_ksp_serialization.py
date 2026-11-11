@@ -1,13 +1,15 @@
 """Fast wiring checks plus an offline, executable Gradle concurrency regression.
 
-The Android JVM test lifecycle invokes --integration with its own distribution.
+The Android JVM test lifecycle invokes --integration through the pinned wrapper.
 Ordinary unittest discovery does not download or start Gradle.
 """
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -40,7 +42,8 @@ class WiringTests(unittest.TestCase):
         source = BUILD.read_text(encoding="utf-8")
         self.assertIn('tasks.withType<Test>().configureEach', source)
         self.assertIn('dependsOn(verifyKspSerialization)', source)
-        self.assertIn('"--integration", "--gradle-home"', source)
+        self.assertIn('"--integration")', source)
+        self.assertNotIn('--gradle-home', source)
 
 
 # A synthetic KSP-shaped task deliberately submits asynchronous no-isolation
@@ -137,8 +140,90 @@ def require(condition, detail):
         raise AssertionError(detail)
 
 
-def integration(gradle_home):
-    executable = Path(gradle_home) / "bin" / ("gradle.bat" if os.name == "nt" else "gradle")
+def reject_links(path, boundary):
+    """Reject links/junctions within the selected cache or repository subtree."""
+    path, boundary = path.absolute(), boundary.absolute()
+    require(path.is_relative_to(boundary), "Wrapper path escapes its boundary")
+    while True:
+        require(not path.is_symlink() and not path.is_junction(), "Linked wrapper path refused")
+        if path == boundary:
+            break
+        path = path.parent
+
+
+def wrapper_command():
+    """Select only the repository wrapper, refusing an uninstalled distribution.
+
+    Gradle PathAssembler hashes the distribution URL with MD5 and renders the
+    positive integer in base 36. This is a cache key, NOT an integrity hash.
+    Install's completed-cache fast path requires its .ok marker, one extracted
+    directory and a launcher JAR. Check these before allowing wrapper startup.
+    """
+    executable = ANDROID / ("gradlew.bat" if os.name == "nt" else "gradlew")
+    properties = ANDROID / "gradle/wrapper/gradle-wrapper.properties"
+    for file in (executable, properties, ANDROID / "gradle/wrapper/gradle-wrapper.jar"):
+        reject_links(file, ANDROID)
+        require(file.is_file() and file.stat().st_size > 0, "Missing repository wrapper file")
+    values = {}
+    for line in properties.read_text(encoding="ascii").splitlines():
+        if not line.strip() or line.lstrip().startswith(("#", "!")):
+            continue
+        key, separator, value = line.partition("=")
+        require(separator and key not in values, "Ambiguous wrapper properties")
+        values[key] = value.replace(r"\:", ":")
+    url = values.get("distributionUrl", "")
+    match = re.fullmatch(r"https://services\.gradle\.org/distributions/gradle-(\d+\.\d+(?:\.\d+)?)-bin\.zip", url)
+    require(match is not None, "Unsupported pinned wrapper distribution")
+    checksum = values.get("distributionSha256Sum", "")
+    require(re.fullmatch(r"[0-9a-f]{64}", checksum), "Missing pinned wrapper checksum")
+    require(all(values.get(key) == value for key, value in {
+        "distributionBase": "GRADLE_USER_HOME", "distributionPath": "wrapper/dists",
+        "zipStoreBase": "GRADLE_USER_HOME", "zipStorePath": "wrapper/dists",
+    }.items()), "Unsupported wrapper cache layout")
+    for key in ("JAVA_OPTS", "GRADLE_OPTS", "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS"):
+        require(not re.search(r'''(?:^|\s|["'])-Dgradle\.user\.home(?:=|\s|$)''',
+                              os.environ.get(key, "")), "Conflicting Gradle cache override")
+    configured_home = os.environ.get("GRADLE_USER_HOME")
+    require(configured_home is None or configured_home.strip(), "Empty Gradle user home")
+    home = Path(os.path.abspath(configured_home if configured_home is not None else Path.home() / ".gradle"))
+    # Match Gradle's BigInteger(1, MD5(url)).toString(36).
+    number = int.from_bytes(hashlib.md5(url.encode("utf-8"), usedforsecurity=False).digest(), "big")
+    encoded = ""
+    while number:
+        number, digit = divmod(number, 36)
+        encoded = "0123456789abcdefghijklmnopqrstuvwxyz"[digit] + encoded
+    archive_name = url.rsplit("/", 1)[1]
+    cache = home / "wrapper/dists" / archive_name.removesuffix(".zip") / (encoded or "0")
+    distribution = cache / ("gradle-" + match[1])
+    marker = cache / (archive_name + ".ok")
+    launcher = distribution / "lib" / ("gradle-launcher-" + match[1] + ".jar")
+    for path in (cache, marker, distribution, launcher):
+        reject_links(path, home)
+    require(cache.is_dir() and marker.is_file(), "Pinned wrapper distribution is not already cached")
+    require([item for item in cache.iterdir() if item.is_dir()] == [distribution],
+            "Unexpected extracted wrapper distribution")
+    require(launcher.is_file() and launcher.stat().st_size > 0, "Missing pinned Gradle launcher")
+    archive = cache / archive_name
+    reject_links(archive, home)
+    if archive.exists():
+        require(archive.is_file(), "Invalid cached wrapper archive")
+        with archive.open("rb") as stream:
+            require(hashlib.file_digest(stream, "sha256").hexdigest() == checksum,
+                    "Cached wrapper archive checksum mismatch")
+    return [str(executable), "--gradle-user-home", str(home)]
+
+
+def run_fixture(root):
+    return subprocess.run(
+        wrapper_command() + [":first:probe", "--rerun", ":second:probe", "--rerun", ":ordinary:probe",
+            "--init-script", str(ANDROID / "gradle/ksp-execution-trace.init.gradle"),
+            "--parallel", "--max-workers=4", "--configuration-cache",
+            "--configuration-cache-problems=fail", "--offline", "--no-daemon", "--console=plain"],
+        cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=240,
+    )
+
+
+def integration():
     with tempfile.TemporaryDirectory(prefix="zrotext-ksp-gate-") as temp:
         root = Path(temp)
         write(root / "settings.gradle.kts", 'rootProject.name = "gate-fixture"\ninclude("first", "second", "ordinary")\n')
@@ -177,13 +262,7 @@ subprojects {
                 write(root / "build.gradle.kts", imports + (gate_source() if guarded else "") + tasks)
             if not guarded:
                 write(trace / "require-ksp-overlap", "")
-            result = subprocess.run(
-                [str(executable), ":first:probe", "--rerun", ":second:probe", "--rerun", ":ordinary:probe",
-                 "--init-script", str(ANDROID / "gradle/ksp-execution-trace.init.gradle"),
-                 "--parallel", "--max-workers=4", "--configuration-cache",
-                 "--configuration-cache-problems=fail", "--offline", "--no-daemon", "--console=plain"],
-                cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=240,
-            )
+            result = run_fixture(root)
             if result.returncode:
                 raise AssertionError(result.stdout)
             expected = "Configuration cache entry reused" if reuse else "Configuration cache entry stored"
@@ -235,8 +314,7 @@ if __name__ == "__main__":
     if "--integration" in sys.argv:
         parser = argparse.ArgumentParser()
         parser.add_argument("--integration", action="store_true")
-        parser.add_argument("--gradle-home", required=True)
         args = parser.parse_args()
-        integration(args.gradle_home)
+        integration()
     else:
         unittest.main()

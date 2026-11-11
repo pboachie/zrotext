@@ -70,7 +70,18 @@ configuration-cache runs must serialize those workers while ordinary work
 overlaps; removing the gate must produce overlapping KSP workers. This tests
 Gradle scheduling, not Room generation or actual KSP processing. The normal
 Android lint, tests and APK build remain necessary. Python test discovery
-checks wiring without downloading or launching Gradle.
+checks wiring without downloading or launching Gradle. These tooling tests
+require Python 3.12 or later, including the junction checks on Windows.
+
+The fixture invokes only the checked-in Android wrapper, with its pinned URL
+and SHA-256, using the inherited Gradle user home. It refuses before launch
+unless that exact distribution is already installed in the wrapper cache;
+`--offline` alone would not prevent a wrapper bootstrap download. Linked cache
+entries, unexpected extracted versions and conflicting cache overrides refuse.
+An available retained distribution ZIP must match the pinned checksum. The
+normal extracted cache is trusted as same-user build tooling: its completion
+marker is not a cryptographic attestation or protection against concurrent
+same-user tampering. No arbitrary Gradle executable path is accepted.
 
 The existing Android CI job also runs its debug gates and the release-candidate
 task set together twice, within the same 45-minute job budget. It starts with a
@@ -83,6 +94,12 @@ intervals, and configuration-cache storage followed by reuse. Empty test
 processor configurations must skip explicitly or provide validated no-op
 execution intervals. Missing, ambiguous or stale execution evidence fails the
 job; synthetic fixture success alone is insufficient.
+
+The verifier accepts no log paths on its command line. It reads only `cold.log`
+and `reuse.log` in `RUNNER_TEMP/ksp-qualification`, a freshly created job-local
+directory. Linked or nonregular files, paths outside that directory, changed
+files, oversized input and invalid UTF-8 are rejected. Reads are bounded and
+validated using the same open file handle.
 
 ### CI toolchain qualification
 

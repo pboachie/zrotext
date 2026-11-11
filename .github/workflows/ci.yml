@@ -547,7 +547,7 @@ jobs:
         run: |
           set -euo pipefail
           export GRADLE_USER_HOME="$RUNNER_TEMP/ksp-gradle-home"
-          mkdir "$GRADLE_USER_HOME" "$RUNNER_TEMP/ksp-project-cache"
+          mkdir "$GRADLE_USER_HOME" "$RUNNER_TEMP/ksp-project-cache" "$RUNNER_TEMP/ksp-qualification"
           source_commit="$(git rev-parse HEAD)"
           test "$source_commit" = "$GITHUB_SHA"
           args=(
@@ -565,10 +565,9 @@ jobs:
           # reuse while forcing KSP processing, not unrelated compilation.
           # Allocate 43 minutes across both phases within the unchanged
           # 45-minute job cap. A timeout remains a failure, even after a banner.
-          timeout 38m ./gradlew "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/ksp-cold.log"
-          timeout 5m ./gradlew "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/ksp-reuse.log"
-          python3 tools/ksp_execution_trace.py verify \
-            --cold-log "$RUNNER_TEMP/ksp-cold.log" --reuse-log "$RUNNER_TEMP/ksp-reuse.log"
+          timeout 38m ./gradlew "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/ksp-qualification/cold.log"
+          timeout 5m ./gradlew "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/ksp-qualification/reuse.log"
+          python3 tools/ksp_execution_trace.py verify
       - name: Record emulator candidate identity
         if: env.RUN_ANDROID == 'true'
         run: |
