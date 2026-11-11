@@ -234,6 +234,44 @@ kotlin {
     }
 }
 
+// Guava is used by build tooling and tests, not the shipped app. Keep the
+// mitigation scoped to the configurations that actually select the full JAR.
+val guavaToolingConfigurations = setOf(
+    "_agp_internal_debug_kspClasspath",
+    "_agp_internal_javaPreCompileDebug_kspClasspath",
+    "_agp_internal_javaPreCompileRelease_kspClasspath",
+    "_agp_internal_release_kspClasspath",
+    "_internal-unified-test-platform-android-device-provider-ddmlib",
+    "_internal-unified-test-platform-android-driver-instrumentation",
+    "_internal-unified-test-platform-android-test-plugin",
+    "_internal-unified-test-platform-android-test-plugin-host-additional-test-output",
+    "_internal-unified-test-platform-android-test-plugin-host-apk-installer",
+    "_internal-unified-test-platform-android-test-plugin-host-coverage",
+    "_internal-unified-test-platform-android-test-plugin-host-device-info",
+    "_internal-unified-test-platform-android-test-plugin-host-emulator-control",
+    "_internal-unified-test-platform-android-test-plugin-host-logcat",
+    "_internal-unified-test-platform-android-test-plugin-result-listener-gradle",
+    "_internal-unified-test-platform-core",
+    "_internal-unified-test-platform-launcher",
+    "androidLintTool",
+    "debugUnitTestCompileClasspath",
+    "debugUnitTestLintChecksClasspath",
+    "debugUnitTestRuntimeClasspath",
+    "kspDebugKotlinProcessorClasspath",
+    "kspReleaseKotlinProcessorClasspath",
+    "kspReleaseUnitTestKotlinProcessorClasspath",
+    "releaseUnitTestCompileClasspath",
+    "releaseUnitTestLintChecksClasspath",
+    "releaseUnitTestRuntimeClasspath",
+)
+configurations.configureEach {
+    if (name in guavaToolingConfigurations) {
+        project.dependencies.constraints.add(name, "com.google.guava:guava:33.7.2-jre") {
+            because("CVE-2026-102554 is fixed in 33.7.2")
+        }
+    }
+}
+
 dependencyLocking {
     lockAllConfigurations()
 }

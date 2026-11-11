@@ -1,6 +1,10 @@
 buildscript {
     dependencies {
         constraints {
+            // Android build tooling only, never an application dependency.
+            classpath("com.google.guava:guava:33.7.2-jre") {
+                because("CVE-2026-102554 is fixed in 33.7.2")
+            }
             // Build tooling only: the CycloneDX plugin (cyclonedx-core-java) pulls
             // jackson-databind onto this classpath. It is not in any :app configuration.
             classpath("com.fasterxml.jackson.core:jackson-databind:2.23.0") {
