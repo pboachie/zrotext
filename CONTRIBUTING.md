@@ -50,6 +50,39 @@ The schema test requires `jsonschema==4.25.1`, as installed in a separate virtua
 
 On Windows, use `gradlew.bat` and `python` where appropriate. Return to the repository root after the `sdk/typescript` or `android` commands before running the next check.
 
+### Android KSP execution isolation
+
+The pinned KSP 2.3.13 can clear a shared compiler archive cache while another
+KSP execution is using it ([upstream issue](https://github.com/google/ksp/issues/3286)).
+The Android root build attaches one shared service, with a single usage permit,
+to every `KspAATask` across its projects. This includes lazy debug, release and
+test variants. Gradle retains the permit until the task's asynchronous workers
+finish. Other tasks remain eligible for parallel execution; configuration cache
+stays enabled. The gate is scoped to one Gradle build, not separate invocations
+or included builds. Revisit it after a pinned KSP release incorporates the
+[upstream fix](https://github.com/google/ksp/pull/3294).
+
+Android JVM test tasks depend on `verifyKspSerialization`, which can also run
+directly with `./gradlew verifyKspSerialization`. It runs the production gate
+verbatim in a temporary, offline Gradle fixture with four workers. Synthetic
+KSP-shaped tasks submit asynchronous no-isolation work. Cold and reused
+configuration-cache runs must serialize those workers while ordinary work
+overlaps; removing the gate must produce overlapping KSP workers. This tests
+Gradle scheduling, not Room generation or actual KSP processing. The normal
+Android lint, tests and APK build remain necessary. Python test discovery
+checks wiring without downloading or launching Gradle.
+
+The existing Android CI job also runs its debug gates and the release-candidate
+task set together twice, within the same 45-minute job budget. It starts with a
+fresh job-local Gradle home and project cache, keeps strict dependency
+verification, and uses four workers. Per-task `--rerun` forces KSP work on both
+passes while other tasks can remain incremental. A CI-only init script records
+the shared-service coverage, processor classpath sizes and execution intervals.
+The verifier requires actual debug and release processing, nonoverlapping
+intervals, and configuration-cache storage followed by reuse. Empty test
+processor configurations must skip explicitly. Missing, ambiguous or stale
+execution evidence fails the job; synthetic fixture success alone is insufficient.
+
 ### CI toolchain qualification
 
 Java CI keeps the existing JDK 17 and 21 major lines. Linux selects Temurin

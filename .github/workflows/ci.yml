@@ -538,12 +538,35 @@ jobs:
             -DZT_HOST_KAT=ON -DCMAKE_BUILD_TYPE=Release
           cmake --build "$RUNNER_TEMP/zt-hpke-kat"
           ctest --test-dir "$RUNNER_TEMP/zt-hpke-kat" --output-on-failure
-      - name: Lint, test and build debug APK
+      - name: Verify combined Android builds and serialized KSP executions
         if: env.RUN_ANDROID == 'true'
         working-directory: android
         # assembleDebugAndroidTest compiles src/androidTest against the debug APK. It does not
         # run those tests (no device in CI) but it does catch a broken instrumented test file.
-        run: ./gradlew :app:lintDebug :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GRADLE_USER_HOME="$RUNNER_TEMP/ksp-gradle-home"
+          mkdir "$GRADLE_USER_HOME" "$RUNNER_TEMP/ksp-project-cache"
+          source_commit="$(git rev-parse HEAD)"
+          test "$source_commit" = "$GITHUB_SHA"
+          args=(
+            :app:lintDebug :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest
+            :app:lintRelease :app:assembleRelease :app:cyclonedxDirectBom
+            :app:kspDebugKotlin --rerun :app:kspReleaseKotlin --rerun
+            :app:kspDebugUnitTestKotlin --rerun :app:kspDebugAndroidTestKotlin --rerun
+            --init-script gradle/ksp-execution-trace.init.gradle
+            --project-cache-dir "$RUNNER_TEMP/ksp-project-cache"
+            --configuration-cache --configuration-cache-problems=fail
+            --parallel --max-workers=4 --no-build-cache --no-daemon --console=plain
+            "-PzrotextSourceCommit=$source_commit"
+          )
+          # Identical graphs and per-task --rerun preserve configuration-cache
+          # reuse while forcing KSP processing, not unrelated compilation.
+          timeout 35m ./gradlew "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/ksp-cold.log"
+          timeout 35m ./gradlew "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/ksp-reuse.log"
+          python3 tools/ksp_execution_trace.py verify \
+            --cold-log "$RUNNER_TEMP/ksp-cold.log" --reuse-log "$RUNNER_TEMP/ksp-reuse.log"
       - name: Record emulator candidate identity
         if: env.RUN_ANDROID == 'true'
         run: |

@@ -28,12 +28,28 @@ class AndroidCiBudgetTests(unittest.TestCase):
         )
 
     def test_all_four_gradle_gates_remain_mandatory_without_error_suppression(self):
-        commands = re.findall(r"^        run: (\./gradlew .+)$", self.job, re.MULTILINE)
-        self.assertEqual(len(commands), 1)
-        self.assertEqual(shlex.split(commands[0]), [
-            "./gradlew", ":app:lintDebug", ":app:testDebugUnitTest",
-            ":app:assembleDebug", ":app:assembleDebugAndroidTest", "--no-daemon",
+        arguments = re.search(r"args=\(\n([\s\S]*?)\n\s*\)", self.job)
+        self.assertIsNotNone(arguments)
+        self.assertEqual(shlex.split(arguments.group(1)), [
+            ":app:lintDebug", ":app:testDebugUnitTest",
+            ":app:assembleDebug", ":app:assembleDebugAndroidTest",
+            ":app:lintRelease", ":app:assembleRelease", ":app:cyclonedxDirectBom",
+            ":app:kspDebugKotlin", "--rerun", ":app:kspReleaseKotlin", "--rerun",
+            ":app:kspDebugUnitTestKotlin", "--rerun", ":app:kspDebugAndroidTestKotlin", "--rerun",
+            "--init-script", "gradle/ksp-execution-trace.init.gradle",
+            "--project-cache-dir", "$RUNNER_TEMP/ksp-project-cache",
+            "--configuration-cache", "--configuration-cache-problems=fail",
+            "--parallel", "--max-workers=4", "--no-build-cache", "--no-daemon", "--console=plain",
+            "-PzrotextSourceCommit=$source_commit",
         ])
+        self.assertEqual(self.job.count('timeout 35m ./gradlew "${args[@]}"'), 2)
+        self.assertIn('set -euo pipefail', self.job)
+        self.assertIn('export GRADLE_USER_HOME="$RUNNER_TEMP/ksp-gradle-home"', self.job)
+        self.assertIn('mkdir "$GRADLE_USER_HOME" "$RUNNER_TEMP/ksp-project-cache"', self.job)
+        self.assertIn('source_commit="$(git rev-parse HEAD)"', self.job)
+        self.assertIn('test "$source_commit" = "$GITHUB_SHA"', self.job)
+        self.assertIn('python3 tools/ksp_execution_trace.py verify', self.job)
+        self.assertIn('--cold-log "$RUNNER_TEMP/ksp-cold.log" --reuse-log "$RUNNER_TEMP/ksp-reuse.log"', self.job)
         self.assertNotRegex(self.job, r"(?m)^\s*continue-on-error:")
 
     def test_jvm_isolation_and_strict_dependency_verification_remain_enabled(self):
