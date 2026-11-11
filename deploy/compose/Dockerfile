@@ -3,7 +3,7 @@
 # stage checks this, and rustup auto-install is off, so a mismatch fails the
 # build instead of downloading a second toolchain. Move both together.
 # Use the canonical Official Images origin and retain the complete manifest pins.
-FROM docker.io/library/rust:1.99.1-bookworm@sha256:48b7f435b8fc6378ce43b44f15e3a47fd8919b2825f835c39bd4bd3da50af5b8 AS rust-base
+FROM docker.io/library/rust:1.99.1-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c AS rust-base
 ENV RUSTUP_AUTO_INSTALL=0
 
 # cargo-about is built from its pinned crates.io release with its own lockfile.
@@ -51,7 +51,7 @@ RUN mkdir -p /tmp/zrotext-notices && \
     } > /tmp/zrotext-notices/THIRD_PARTY_NOTICES && \
     test -s /tmp/zrotext-notices/THIRD_PARTY_NOTICES
 
-FROM docker.io/library/debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
+FROM docker.io/library/debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates perl-base && \
     dpkg --compare-versions "$(dpkg-query -W -f='${Version}' perl-base)" ge '5.36.0-7+deb12u4' && \
     rm -rf /var/lib/apt/lists/* && \

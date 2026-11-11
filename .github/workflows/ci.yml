@@ -176,7 +176,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: python3 scripts/check_dco.py
       - name: Spelling
-        uses: crate-ci/typos@7f9d0819ca1c008ade73f4b41fa9d258d48f605b # v1.51.1
+        uses: crate-ci/typos@4c8b7f51ca60df14e3c5ca82770dfbbe6c3dae85 # v1.52.0
   rust-workspace:
     needs: changes
     # Runs even if the change filter failed; its steps then run in full.
@@ -276,10 +276,13 @@ jobs:
         run: |
           # This graph-fence test needs its own cluster: owner names are part of
           # the signed graph and unrelated transactions must not overlap.
+          # Background catalog maintenance conflicts with the same NOWAIT fence.
+          # Disable routine autovacuum only in this fresh, short-lived fixture;
+          # production and shared test services retain their normal settings.
           restore_container_id="$(docker run -d --rm --memory=1g --cpus=2 --pids-limit=128 \
             -e POSTGRES_USER=zrotext -e POSTGRES_DB=postgres -e POSTGRES_HOST_AUTH_METHOD=trust \
             -p 127.0.0.1::5432 docker.io/library/postgres:18.6-bookworm@sha256:afc7e2d441324c0388fa80c3d24f733b4194a4eb7f47dd8ee2b08eb1a24a647c \
-            -c max_prepared_transactions=5 -c max_locks_per_transaction=256)"
+            -c max_prepared_transactions=5 -c max_locks_per_transaction=256 -c autovacuum=off)"
           trap 'docker rm -f "$restore_container_id" >/dev/null 2>&1 || true' EXIT
           for attempt in {1..30}; do
             if docker exec "$restore_container_id" pg_isready -U zrotext; then break; fi
@@ -287,6 +290,7 @@ jobs:
           done
           docker exec "$restore_container_id" pg_isready -U zrotext
           test "$(docker exec "$restore_container_id" psql -U zrotext -d postgres -Atc 'SHOW max_prepared_transactions')" = '5'
+          test "$(docker exec "$restore_container_id" psql -U zrotext -d postgres -Atc 'SHOW autovacuum')" = 'off'
           restore_port="$(docker port "$restore_container_id" 5432/tcp)"
           restore_port="${restore_port##*:}"
           [[ "$restore_port" =~ ^[0-9]+$ ]]
@@ -493,7 +497,7 @@ jobs:
       - name: Test Android release and native inventory boundaries
         if: env.RUN_ANDROID == 'true'
         run: python3 -m unittest discover -s android/tools -p 'test_*.py'
-      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         if: env.RUN_ANDROID == 'true'
         with:
           distribution: temurin
