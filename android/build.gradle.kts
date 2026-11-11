@@ -49,8 +49,3 @@ val verifyKspSerialization = tasks.register<Exec>("verifyKspSerialization") {
     commandLine(python, layout.projectDirectory.file("tools/test_ksp_serialization.py").asFile,
         "--integration")
 }
-allprojects {
-    tasks.withType<Test>().configureEach {
-        dependsOn(verifyKspSerialization)
-    }
-}

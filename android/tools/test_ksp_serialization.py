@@ -1,6 +1,6 @@
 """Fast wiring checks plus an offline, executable Gradle concurrency regression.
 
-The Android JVM test lifecycle invokes --integration through the pinned wrapper.
+The explicit Android CI verification task invokes --integration through the pinned wrapper.
 Ordinary unittest discovery does not download or start Gradle.
 """
 
@@ -38,12 +38,20 @@ class WiringTests(unittest.TestCase):
         self.assertIn("usesService(kspExecutionGate)", guard)
         self.assertIn("maxParallelUsages.set(1)", guard)
 
-    def test_existing_jvm_test_lifecycle_runs_executable_regression(self):
+    def test_full_ci_explicitly_runs_regression_without_changing_other_test_graphs(self):
         source = BUILD.read_text(encoding="utf-8")
-        self.assertIn('tasks.withType<Test>().configureEach', source)
-        self.assertIn('dependsOn(verifyKspSerialization)', source)
+        self.assertNotIn('tasks.withType<Test>()', source)
+        self.assertNotIn('dependsOn(verifyKspSerialization)', source)
+        self.assertIn('tasks.register<Exec>("verifyKspSerialization")', source)
         self.assertIn('"--integration")', source)
         self.assertNotIn('--gradle-home', source)
+        workflow = (ANDROID.parent / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        full = re.search(r"^          args=\(\n([\s\S]*?)^          \)", workflow, re.MULTILINE)
+        narrow = re.search(r"^          ksp_args=\(\n([\s\S]*?)^          \)", workflow, re.MULTILINE)
+        self.assertIsNotNone(full)
+        self.assertIsNotNone(narrow)
+        self.assertIn(':verifyKspSerialization', full[1].split())
+        self.assertNotIn(':verifyKspSerialization', narrow[1].split())
 
 
 # A synthetic KSP-shaped task deliberately submits asynchronous no-isolation

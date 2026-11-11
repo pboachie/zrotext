@@ -17,7 +17,8 @@ TASKS = frozenset({
 REQUIRED_ACTIVE = frozenset({":app:kspDebugKotlin", ":app:kspReleaseKotlin"})
 MAX_LOG_BYTES = 64 * 1024 * 1024
 LOG_DIRECTORY = "ksp-qualification"
-LOG_FILENAMES = {"cold": "cold.log", "reuse": "reuse.log"}
+LOG_FILENAMES = {"cold": "cold.log", "store": "ksp-store.log", "reuse": "reuse.log"}
+PHASE_PREFIX = "ZROTEXT_KSP_PASS "
 OUTCOME = re.compile(r"^> Task (:[^\s]+)(?: ([A-Z-]+))?$")
 
 
@@ -34,8 +35,8 @@ def unique_object(pairs):
     return result
 
 
-def parse(text, reused, expected=None):
-    """Return the configured active task set, rejecting incomplete evidence."""
+def parse_receipt(text, reused, expected=None):
+    """Validate one build and retain counts and intervals for cross-pass checks."""
     require("BUILD FAILED" not in text, "Gradle build failed")
     require(len(re.findall(r"^BUILD SUCCESSFUL in .+$", text, re.M)) == 1,
             "Missing or ambiguous successful build")
@@ -65,7 +66,7 @@ def parse(text, reused, expected=None):
                 require(type(record["processors"]) is int and record["processors"] >= 0,
                         "Invalid processor count")
                 require(record["gated"] is True, "KSP task lacks shared gate")
-                configuration[task] = record["processors"] > 0
+                configuration[task] = record["processors"]
             else:
                 require(kind in ("start", "end"), "Unknown trace event")
                 require(set(record) == {"event", "task", "nano"}, "Unexpected interval fields")
@@ -112,7 +113,12 @@ def parse(text, reused, expected=None):
     ordered.sort()
     for previous, current in zip(ordered, ordered[1:]):
         require(previous[1] <= current[0], "Concurrent KSP worker executions")
-    return active
+    return {"active": active, "processors": configuration, "intervals": intervals}
+
+
+def parse(text, reused, expected=None):
+    """Lower-level single-build validation, also used by the offline fixture."""
+    return parse_receipt(text, reused, expected)["active"]
 
 
 def not_link(info):
@@ -177,9 +183,33 @@ def read_log(role):
 
 
 def verify(cold, reuse):
+    """Verify the offline fixture's two identical graphs, without CI role markers."""
     active = parse(cold, reused=False)
     parse(reuse, reused=True, expected=active)
     return active
+
+
+def qualify(cold, store, reuse):
+    """Require one full build followed by narrow graph storage and genuine reuse."""
+    for text, phase in ((cold, "full"), (store, "store"), (reuse, "reuse")):
+        lines = text.splitlines()
+        marker = PHASE_PREFIX + phase
+        require(bool(lines) and lines[0] == marker, "Missing or incorrect qualification phase")
+        require([line for line in lines if line.lstrip().startswith(PHASE_PREFIX.rstrip())] == [marker],
+                "Duplicate or malformed qualification phase")
+    full = parse_receipt(cold, reused=False)
+    narrow = parse_receipt(store, reused=False)
+    require(full["processors"] == narrow["processors"], "Full and narrow processor inventories differ")
+    cached = parse_receipt(reuse, reused=True, expected=narrow["active"])
+    # Do not compare clock ordering between JVMs: nanoTime has an arbitrary
+    # origin. Exact replay of an execution receipt is nevertheless invalid.
+    seen = set()
+    for receipt in (full, narrow, cached):
+        for task, interval in receipt["intervals"].items():
+            identity = (task, interval["start"], interval["end"])
+            require(identity not in seen, "Replayed execution receipt across qualification phases")
+            seen.add(identity)
+    return narrow["active"]
 
 
 def main():
@@ -188,11 +218,11 @@ def main():
     commands.add_parser("verify")
     parser.parse_args()
     try:
-        active = verify(read_log("cold"), read_log("reuse"))
+        active = qualify(read_log("cold"), read_log("store"), read_log("reuse"))
     except (ValueError, OSError) as exc:
         parser.exit(1, f"KSP execution qualification failed: {exc}\n")
-    print(f"KSP execution qualification passed: {len(active)} active tasks serialized in both passes; "
-          "configuration cache stored then reused")
+    print(f"KSP execution qualification passed: {len(active)} active tasks serialized in all three passes; "
+          "full build succeeded and narrow configuration cache stored then reused")
 
 
 if __name__ == "__main__":

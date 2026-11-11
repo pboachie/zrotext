@@ -219,5 +219,108 @@ class KspExecutionTraceTests(unittest.TestCase):
                     trace.read_log("cold")
 
 
+def phase_log(phase):
+    reused = phase == "reuse"
+    entries = records(reused)
+    offset = {"full": 0, "store": 100, "reuse": 200}[phase]
+    for entry in entries:
+        if "nano" in entry:
+            entry["nano"] += offset
+    return trace.PHASE_PREFIX + phase + "\n" + log(reused, entries)
+
+
+class ThreePhaseQualificationTests(unittest.TestCase):
+    def setUp(self):
+        self.logs = [phase_log(phase) for phase in ("full", "store", "reuse")]
+
+    def test_complete_full_build_and_two_narrow_graphs_qualify(self):
+        self.assertEqual(trace.qualify(*self.logs), trace.REQUIRED_ACTIVE)
+
+    def test_every_role_marker_must_be_unique_correct_and_first(self):
+        for index, phase in enumerate(("full", "store", "reuse")):
+            marker = trace.PHASE_PREFIX + phase + "\n"
+            for changed in (self.logs[index].replace(marker, ""),
+                            self.logs[index] + marker,
+                            self.logs[index].replace(marker, trace.PHASE_PREFIX + "wrong\n"),
+                            "banner\n" + self.logs[index],
+                            self.logs[index] + " " + marker,
+                            self.logs[index] + "ZROTEXT_KSP_PASSother\n"):
+                logs = self.logs.copy()
+                logs[index] = changed
+                with self.subTest(index=index, changed=changed), self.assertRaises(ValueError):
+                    trace.qualify(*logs)
+
+    def test_phase_files_cannot_be_swapped_or_reused(self):
+        for order in ((1, 0, 2), (0, 2, 1), (0, 0, 2), (0, 1, 1)):
+            with self.subTest(order=order), self.assertRaises(ValueError):
+                trace.qualify(*(self.logs[index] for index in order))
+
+    def test_relabeling_a_copied_build_does_not_make_new_execution_evidence(self):
+        logs = self.logs.copy()
+        logs[1] = logs[0].replace(trace.PHASE_PREFIX + "full", trace.PHASE_PREFIX + "store")
+        with self.assertRaisesRegex(ValueError, "Replayed execution receipt"):
+            trace.qualify(*logs)
+        logs = self.logs.copy()
+        logs[2] = logs[1].replace(trace.PHASE_PREFIX + "store", trace.PHASE_PREFIX + "reuse")
+        logs[2] = "\n".join(line for line in logs[2].splitlines() if '"event": "config"' not in line)
+        logs[2] = logs[2].replace("cache entry stored.", "cache entry reused.")
+        with self.assertRaisesRegex(ValueError, "Replayed execution receipt"):
+            trace.qualify(*logs)
+
+    def test_each_phase_requires_success_and_its_own_cache_receipt(self):
+        for index in range(3):
+            original = self.logs[index]
+            expected = "reused." if index == 2 else "stored."
+            wrong = "stored." if index == 2 else "reused."
+            for changed in (original.replace("BUILD SUCCESSFUL in 3s", "BUILD FAILED in 3s"),
+                            original.replace("BUILD SUCCESSFUL in 3s\n", ""),
+                            original + "BUILD SUCCESSFUL in 4s\n",
+                            original.replace("Configuration cache entry " + expected + "\n", ""),
+                            original.replace("cache entry " + expected, "cache entry " + wrong)):
+                logs = self.logs.copy()
+                logs[index] = changed
+                with self.subTest(index=index), self.assertRaises(ValueError):
+                    trace.qualify(*logs)
+
+    def test_each_phase_requires_fresh_processing_and_all_receipts(self):
+        for index in range(3):
+            for changed in (self.logs[index].replace("> Task :app:kspDebugKotlin\n",
+                                                    "> Task :app:kspDebugKotlin UP-TO-DATE\n"),
+                            "\n".join(line for line in self.logs[index].splitlines()
+                                      if not ('"event": "end"' in line and
+                                              ':app:kspDebugKotlin' in line))):
+                logs = self.logs.copy()
+                logs[index] = changed
+                with self.subTest(index=index), self.assertRaises(ValueError):
+                    trace.qualify(*logs)
+
+    def test_full_and_narrow_counts_must_match_not_merely_remain_positive(self):
+        for index in (0, 1):
+            logs = self.logs.copy()
+            logs[index] = logs[index].replace('"processors": 1', '"processors": 2', 1)
+            with self.subTest(index=index), self.assertRaisesRegex(ValueError, "inventories differ"):
+                trace.qualify(*logs)
+
+    def test_every_phase_preserves_mutual_exclusion(self):
+        for index, phase in enumerate(("full", "store", "reuse")):
+            offset = index * 100
+            entries = records(phase == "reuse")
+            for entry in entries:
+                if "nano" in entry:
+                    entry["nano"] += offset
+            [entry for entry in entries if entry["event"] == "start"][1]["nano"] = offset + 5
+            logs = self.logs.copy()
+            logs[index] = trace.PHASE_PREFIX + phase + "\n" + log(phase == "reuse", entries)
+            with self.subTest(index=index), self.assertRaisesRegex(ValueError, "Concurrent KSP"):
+                trace.qualify(*logs)
+
+    def test_cross_jvm_clocks_need_not_be_chronologically_ordered(self):
+        logs = self.logs.copy()
+        logs[2] = logs[2].replace('"nano": 201', '"nano": -199').replace(
+            '"nano": 211', '"nano": -189').replace('"nano": 221', '"nano": -179').replace(
+            '"nano": 231', '"nano": -169')
+        self.assertEqual(trace.qualify(*logs), trace.REQUIRED_ACTIVE)
+
+
 if __name__ == "__main__":
     unittest.main()

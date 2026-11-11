@@ -62,9 +62,11 @@ stays enabled. The gate is scoped to one Gradle build, not separate invocations
 or included builds. Revisit it after a pinned KSP release incorporates the
 [upstream fix](https://github.com/google/ksp/pull/3294).
 
-Android JVM test tasks depend on `verifyKspSerialization`, which can also run
-directly with `./gradlew verifyKspSerialization`. It runs the production gate
-verbatim in a temporary, offline Gradle fixture with four workers. Synthetic
+The full Android CI graph explicitly requires `verifyKspSerialization`.
+Developers can run it directly with `./gradlew verifyKspSerialization`. Ordinary
+JVM test tasks do not implicitly launch this nested build regression, so focused
+consumer tests retain their own execution budget. The regression runs the
+production gate verbatim in a temporary, offline Gradle fixture with four workers. Synthetic
 KSP-shaped tasks submit asynchronous no-isolation work. Cold and reused
 configuration-cache runs must serialize those workers while ordinary work
 overlaps; removing the gate must produce overlapping KSP workers. This tests
@@ -83,23 +85,37 @@ normal extracted cache is trusted as same-user build tooling: its completion
 marker is not a cryptographic attestation or protection against concurrent
 same-user tampering. No arbitrary Gradle executable path is accepted.
 
-The existing Android CI job also runs its debug gates and the release-candidate
-task set together twice, within the same 45-minute job budget. It starts with a
-fresh job-local Gradle home and project cache, keeps strict dependency
-verification, and uses four workers. Per-task `--rerun` forces KSP work on both
-passes while other tasks can remain incremental. A CI-only init script records
-the shared-service coverage, processor classpath sizes and execution intervals.
-The verifier requires actual debug and release processing, nonoverlapping
-intervals, and configuration-cache storage followed by reuse. Empty test
-processor configurations must skip explicitly or provide validated no-op
-execution intervals. Missing, ambiguous or stale execution evidence fails the
-job; synthetic fixture success alone is insufficient.
+The existing Android CI job first runs every debug gate and the complete
+release-candidate task set, including `cyclonedxDirectBom`, with a 38-minute cap.
+It starts with a fresh job-local Gradle home and project cache, keeps strict
+dependency verification, and uses four workers. CycloneDX 3.5.1's Maven metadata
+reader captures all JVM system properties, including values initialized by cold
+Kotlin DSL compilation. This pre-existing input capture prevents reliable reuse
+of that full graph across fresh JVMs; CI does not claim full SBOM-graph reuse or
+ignore those inputs.
 
-The verifier accepts no log paths on its command line. It reads only `cold.log`
-and `reuse.log` in `RUNNER_TEMP/ksp-qualification`, a freshly created job-local
-directory. Linked or nonregular files, paths outside that directory, changed
-files, oversized input and invalid UTF-8 are rejected. Reads are bounded and
-validated using the same open file handle.
+Two subsequent, identical graphs explicitly select all four debug, release and
+test KSP tasks, with per-task `--rerun`, under one shared five-minute deadline.
+They omit the BOM task's metadata reader while retaining strict verification,
+four workers and separate `--no-daemon` JVMs. The first must store its
+configuration cache and the second must reuse it. The complete build, tests and
+SBOM remain mandatory in the first phase. Both phase budgets together remain
+43 minutes within the unchanged 45-minute job budget.
+
+A CI-only init script records shared-service coverage, processor classpath sizes
+and execution intervals. All three passes must succeed, with actual debug and
+release processing and nonoverlapping intervals for every executed KSP task.
+Full-build and narrow-graph processor inventories must match. Empty test
+processor configurations must skip explicitly or provide validated no-op
+execution intervals. Missing, ambiguous, misassigned or stale execution evidence
+fails the job; synthetic fixture success alone is insufficient.
+
+The verifier accepts no log paths on its command line. It reads only `cold.log`,
+`ksp-store.log` and `reuse.log` in `RUNNER_TEMP/ksp-qualification`, a freshly
+created job-local directory. Each file must contain its distinct pass marker.
+Linked or nonregular files, paths outside that directory, changed files,
+oversized input and invalid UTF-8 are rejected. Reads are bounded and validated
+using the same open file handle.
 
 ### CI toolchain qualification
 

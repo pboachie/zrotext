@@ -28,8 +28,12 @@ class KspLogBoundaryTests(unittest.TestCase):
         self.addCleanup(self.environment.stop)
 
     def test_only_fixed_role_names_select_log_files(self):
+        (self.folder / "ksp-store.log").write_bytes(b"stored")
         (self.folder / "reuse.log").write_bytes(b"warm")
+        self.assertEqual(trace.LOG_FILENAMES,
+                         {"cold": "cold.log", "store": "ksp-store.log", "reuse": "reuse.log"})
         self.assertEqual(trace.read_log("cold"), "original")
+        self.assertEqual(trace.read_log("store"), "stored")
         self.assertEqual(trace.read_log("reuse"), "warm")
         for role in ("", "../cold.log", "cold.log", str(self.path), "other"):
             with self.subTest(role=role), patch.object(trace.os, "open") as opened:
@@ -168,13 +172,34 @@ class KspLogBoundaryTests(unittest.TestCase):
         self.assertEqual(trace.read_log("cold"), "first\nsecond\n")
 
     def test_cli_no_longer_accepts_paths_or_a_root(self):
-        for option in ("--cold-log", "--reuse-log", "--log-directory"):
+        for option in ("--cold-log", "--store-log", "--reuse-log", "--log-directory"):
             with self.subTest(option=option), patch("sys.argv", ["trace", "verify", option, "other"]), \
                  patch("sys.stderr", new_callable=io.StringIO), patch.object(trace, "read_log") as reader:
                 with self.assertRaises(SystemExit) as exc:
                     trace.main()
                 self.assertEqual(exc.exception.code, 2)
                 reader.assert_not_called()
+
+    def test_cli_reads_all_three_fixed_roles_in_order(self):
+        with patch("sys.argv", ["trace", "verify"]), \
+             patch.object(trace, "read_log", side_effect=["full", "stored", "reused"]) as reader, \
+             patch.object(trace, "qualify", return_value=trace.REQUIRED_ACTIVE) as qualify, \
+             patch("sys.stdout", new_callable=io.StringIO):
+            trace.main()
+        self.assertEqual([call.args for call in reader.call_args_list], [("cold",), ("store",), ("reuse",)])
+        qualify.assert_called_once_with("full", "stored", "reused")
+
+    def test_new_store_role_retains_regular_file_and_size_boundaries(self):
+        store = self.folder / "ksp-store.log"
+        with self.assertRaises(ValueError):
+            trace.read_log("store")
+        store.mkdir()
+        with self.assertRaises(ValueError):
+            trace.read_log("store")
+        store.rmdir()
+        store.write_bytes(b"too large")
+        with patch.object(trace, "MAX_LOG_BYTES", 3), self.assertRaises(ValueError):
+            trace.read_log("store")
 
 
 if __name__ == "__main__":
