@@ -176,7 +176,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: python3 scripts/check_dco.py
       - name: Spelling
-        uses: crate-ci/typos@7f9d0819ca1c008ade73f4b41fa9d258d48f605b # v1.51.1
+        uses: crate-ci/typos@4c8b7f51ca60df14e3c5ca82770dfbbe6c3dae85 # v1.52.0
   rust-workspace:
     needs: changes
     # Runs even if the change filter failed; its steps then run in full.
@@ -493,7 +493,7 @@ jobs:
       - name: Test Android release and native inventory boundaries
         if: env.RUN_ANDROID == 'true'
         run: python3 -m unittest discover -s android/tools -p 'test_*.py'
-      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         if: env.RUN_ANDROID == 'true'
         with:
           distribution: temurin
