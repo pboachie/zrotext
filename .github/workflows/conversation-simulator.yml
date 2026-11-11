@@ -224,10 +224,13 @@ jobs:
           if [[ "${{ matrix.lane }}" == "remaining" ]]; then
             # This graph-fence test needs its own cluster: owner names are part of
             # the signed graph and unrelated transactions must not overlap.
+            # Background catalog maintenance conflicts with the same NOWAIT fence.
+            # Disable routine autovacuum only in this fresh, short-lived fixture;
+            # production and shared test services retain their normal settings.
             restore_container_id="$(docker run -d --rm --memory=1g --cpus=2 --pids-limit=128 \
               -e POSTGRES_USER=zrotext -e POSTGRES_DB=postgres -e POSTGRES_HOST_AUTH_METHOD=trust \
               -p 127.0.0.1::5432 docker.io/library/postgres:18.6-bookworm@sha256:afc7e2d441324c0388fa80c3d24f733b4194a4eb7f47dd8ee2b08eb1a24a647c \
-              -c max_prepared_transactions=5 -c max_locks_per_transaction=256)"
+              -c max_prepared_transactions=5 -c max_locks_per_transaction=256 -c autovacuum=off)"
             trap 'docker rm -f "$restore_container_id" >/dev/null 2>&1 || true' EXIT
             for attempt in {1..30}; do
               if docker exec "$restore_container_id" pg_isready -U zrotext; then break; fi
@@ -235,6 +238,7 @@ jobs:
             done
             docker exec "$restore_container_id" pg_isready -U zrotext
             test "$(docker exec "$restore_container_id" psql -U zrotext -d postgres -Atc 'SHOW max_prepared_transactions')" = '5'
+            test "$(docker exec "$restore_container_id" psql -U zrotext -d postgres -Atc 'SHOW autovacuum')" = 'off'
             restore_port="$(docker port "$restore_container_id" 5432/tcp)"
             restore_port="${restore_port##*:}"
             [[ "$restore_port" =~ ^[0-9]+$ ]]
