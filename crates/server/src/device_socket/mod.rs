@@ -46,6 +46,7 @@ use uuid::Uuid;
 use zrotext_delivery_store::{GrantRecord, RadioEvent, SessionRecord, StoreError};
 use zrotext_domain::{Evidence, MessageState};
 
+mod activation_wake;
 mod actor;
 pub(crate) use actor::SocketActor;
 #[cfg(test)]
@@ -106,10 +107,8 @@ const MAX_SMS_LINE_ACKS_PER_CONNECTION: usize = 64;
 /// Process-wide wake for sockets idling between activation polls; the owner
 /// side calls wake_sms_line_activation after opening or approving a challenge.
 /// Other hub instances are covered by the idle poll.
-static SMS_LINE_CHALLENGE_WAKE: LazyLock<Notify> = LazyLock::new(Notify::new);
-/// Latches wakes raised while a socket loop is executing another select
-/// branch: notify_waiters alone cannot reach a dropped notified() future.
-static SMS_LINE_WAKE_PENDING: AtomicBool = AtomicBool::new(false);
+static SMS_LINE_CHALLENGE_WAKE: LazyLock<activation_wake::ActivationWake> =
+    LazyLock::new(activation_wake::ActivationWake::new);
 
 /// Poll spacing for the activation loop: fast while the previous poll pushed
 /// a frame (an exchange is open), slow while the device has nothing pending.
@@ -126,13 +125,7 @@ fn sms_line_poll_delay(pushed: bool) -> Duration {
 /// poll. Called by the activation exchange layer; writes from other hub
 /// instances are covered by the idle poll.
 pub fn wake_sms_line_activation() {
-    SMS_LINE_WAKE_PENDING.store(true, Ordering::Release);
-    SMS_LINE_CHALLENGE_WAKE.notify_waiters();
-}
-/// Consumes a wake that may have been raised while this loop was busy; every
-/// loop iteration checks before parking so a wake is never dropped.
-fn take_sms_line_wake() -> bool {
-    SMS_LINE_WAKE_PENDING.swap(false, Ordering::AcqRel)
+    SMS_LINE_CHALLENGE_WAKE.wake();
 }
 static DEVICE_SOCKET_ADMISSION: LazyLock<SocketAdmission> = LazyLock::new(|| {
     SocketAdmission::new(
@@ -1349,6 +1342,9 @@ async fn run_socket(
     let mut dispatch_checks = interval(Duration::from_secs(DISPATCH_POLL_SECONDS));
     dispatch_checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     dispatch_checks.tick().await;
+    // Subscribe before the initial immediate poll: older work is in the
+    // database, and later wakes remain unread even while a poll is running.
+    let mut activation_wakes = SMS_LINE_CHALLENGE_WAKE.subscribe();
     let mut sms_line_next_poll = tokio::time::Instant::now();
     let mut sealed_line_next_poll = tokio::time::Instant::now();
     let mut sms_line_last_retire: Option<Instant> = None;
@@ -1373,10 +1369,6 @@ async fn run_socket(
     let mut close_with_code = None;
     let mut conversation_session = None;
     loop {
-        if take_sms_line_wake() {
-            sms_line_next_poll = tokio::time::Instant::now();
-            sealed_line_next_poll = tokio::time::Instant::now();
-        }
         tokio::select! {
             message = receive_frame(&mut socket, &mut frame_budget) => {
                 match message {
@@ -2052,11 +2044,9 @@ async fn run_socket(
             },
             // The owner just opened or approved a challenge: poll now instead
             // of waiting for the idle cadence.
-            _ = SMS_LINE_CHALLENGE_WAKE.notified(), if state.sms_line_activation_enabled || sealed_setup_enabled => {
-                if take_sms_line_wake() {
-                    sms_line_next_poll = tokio::time::Instant::now();
-                    sealed_line_next_poll = tokio::time::Instant::now();
-                }
+            _ = activation_wakes.changed(), if state.sms_line_activation_enabled || sealed_setup_enabled => {
+                sms_line_next_poll = tokio::time::Instant::now();
+                sealed_line_next_poll = tokio::time::Instant::now();
             },
             _ = tokio::time::sleep_until(profile_next_poll), if profile03_negotiated && profile_clock.is_sampled() => {
                 if payload_profile03::push(&mut socket,&state,session,profile03_origin.expect("negotiated configured origin")).await.is_none() {close_with_code=Some(RETRY_LATER);break;}
@@ -2639,37 +2629,6 @@ mod sms_line_cadence_tests {
     fn idle_activation_polls_are_ten_times_slower_than_active_ones() {
         assert_eq!(sms_line_poll_delay(true), Duration::from_secs(3));
         assert_eq!(sms_line_poll_delay(false), Duration::from_secs(30));
-    }
-
-    #[tokio::test]
-    async fn a_new_owner_challenge_wakes_waiting_device_sockets() {
-        let woke = tokio::sync::oneshot::channel();
-        let (sender, receiver) = woke;
-        tokio::spawn(async move {
-            SMS_LINE_CHALLENGE_WAKE.notified().await;
-            let _ = sender.send(());
-        });
-        // The spawned task must register its waiter before the wake fires.
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        wake_sms_line_activation();
-        tokio::time::timeout(Duration::from_secs(1), receiver)
-            .await
-            .expect("waiting socket was not woken")
-            .expect("wake sender dropped");
-    }
-
-    #[test]
-    fn a_wake_raised_while_every_socket_loop_is_busy_is_still_observed() {
-        // notify_waiters alone cannot reach a notified() future that is not
-        // parked: a wake raised while a loop is executing another select
-        // branch would be dropped. The pending flag preserves it for the next
-        // loop iteration.
-        wake_sms_line_activation();
-        assert!(
-            take_sms_line_wake(),
-            "a wake raised while the socket loop was busy must still be observed"
-        );
-        assert!(!take_sms_line_wake());
     }
 }
 
