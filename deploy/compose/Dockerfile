@@ -3,7 +3,7 @@
 # stage checks this, and rustup auto-install is off, so a mismatch fails the
 # build instead of downloading a second toolchain. Move both together.
 # Use the canonical Official Images origin and retain the complete manifest pins.
-FROM docker.io/library/rust:1.99.1-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c AS rust-base
+FROM docker.io/library/rust:1.100.0-bookworm@sha256:ade39a710ef85f3506cffcfec3e8a24ba090badef1dff2fb798f71d878833fea AS rust-base
 ENV RUSTUP_AUTO_INSTALL=0
 
 # cargo-about is built from its pinned crates.io release with its own lockfile.
