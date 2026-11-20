@@ -1,0 +1,49 @@
+import groovy.json.JsonOutput
+
+// CI-only observations. These actions do not add ordering or acquire a lock.
+// Gradle waits for asynchronous work submitted by each task action before the
+// following action, so END follows completion of KSP's no-isolation workers.
+class KspTraceStart implements Action<Task> {
+    void execute(Task task) {
+        task.logger.lifecycle('ZROTEXT_KSP_TRACE ' + JsonOutput.toJson(
+            [event: 'start', task: task.path, nano: System.nanoTime()]))
+    }
+}
+class KspTraceEnd implements Action<Task> {
+    void execute(Task task) {
+        task.logger.lifecycle('ZROTEXT_KSP_TRACE ' + JsonOutput.toJson(
+            [event: 'end', task: task.path, nano: System.nanoTime()]))
+    }
+}
+gradle.afterProject { project ->
+    project.tasks.configureEach { task ->
+        Class type = task.class
+        while (type != null && type.name != 'com.google.devtools.ksp.gradle.KspAATask') {
+            type = type.superclass
+        }
+        def services = task.requiredServices.elements.collect { it.name }
+        boolean gated = services.contains('zrotextKspExecutionGate')
+        if (type == null && gated) {
+            throw new GradleException('KSP gate attached to a non-KSP task')
+        }
+        if (type != null) {
+            // KSP sets its nested task properties in a later lazy action.
+            // Inspect its already configured processor configuration here,
+            // while Gradle holds this project's configuration lock.
+            def processorFiles = project.configurations.getByName(task.name + 'ProcessorClasspath')
+            println('ZROTEXT_KSP_TRACE ' + JsonOutput.toJson([
+                event: 'config', task: task.path,
+                processors: processorFiles.files.size(), gated: gated]))
+            task.doFirst(new KspTraceStart())
+            task.doLast(new KspTraceEnd())
+        }
+    }
+    def plugin = project.plugins.findPlugin('com.google.devtools.ksp')
+    if (plugin != null) {
+        // Audit already registered KSP tasks without realizing unrelated tasks.
+        // Graph selection realizes later registrations; CI explicitly selects
+        // all four KSP variants present in this build.
+        def type = plugin.class.classLoader.loadClass('com.google.devtools.ksp.gradle.KspAATask')
+        project.tasks.withType(type).each { }
+    }
+}

@@ -538,12 +538,52 @@ jobs:
             -DZT_HOST_KAT=ON -DCMAKE_BUILD_TYPE=Release
           cmake --build "$RUNNER_TEMP/zt-hpke-kat"
           ctest --test-dir "$RUNNER_TEMP/zt-hpke-kat" --output-on-failure
-      - name: Lint, test and build debug APK
+      - name: Verify combined Android builds and serialized KSP executions
         if: env.RUN_ANDROID == 'true'
         working-directory: android
         # assembleDebugAndroidTest compiles src/androidTest against the debug APK. It does not
         # run those tests (no device in CI) but it does catch a broken instrumented test file.
-        run: ./gradlew :app:lintDebug :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GRADLE_USER_HOME="$RUNNER_TEMP/ksp-gradle-home"
+          mkdir "$GRADLE_USER_HOME" "$RUNNER_TEMP/ksp-project-cache" "$RUNNER_TEMP/ksp-qualification"
+          source_commit="$(git rev-parse HEAD)"
+          test "$source_commit" = "$GITHUB_SHA"
+          args=(
+            :app:lintDebug :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest
+            :app:lintRelease :app:assembleRelease :app:cyclonedxDirectBom :verifyKspSerialization
+            :app:kspDebugKotlin --rerun :app:kspReleaseKotlin --rerun
+            :app:kspDebugUnitTestKotlin --rerun :app:kspDebugAndroidTestKotlin --rerun
+            --init-script gradle/ksp-execution-trace.init.gradle
+            --project-cache-dir "$RUNNER_TEMP/ksp-project-cache"
+            --configuration-cache --configuration-cache-problems=fail
+            --parallel --max-workers=4 --no-build-cache --no-daemon --console=plain
+            "-PzrotextSourceCommit=$source_commit"
+          )
+          ksp_args=(
+            :app:kspDebugKotlin --rerun :app:kspReleaseKotlin --rerun
+            :app:kspDebugUnitTestKotlin --rerun :app:kspDebugAndroidTestKotlin --rerun
+            --init-script gradle/ksp-execution-trace.init.gradle
+            --project-cache-dir "$RUNNER_TEMP/ksp-project-cache"
+            --configuration-cache --configuration-cache-problems=fail
+            --parallel --max-workers=4 --no-build-cache --no-daemon --console=plain
+            "-PzrotextSourceCommit=$source_commit"
+          )
+          # Qualify every build/test/SBOM gate first. CycloneDX's Maven metadata
+          # reader snapshots all JVM properties, including Kotlin DSL bootstrap
+          # values, so the full graph is not the cache-reuse qualification.
+          # Two identical real KSP graphs then share ONE five-minute deadline.
+          # Allocate 43 minutes total within the unchanged 45-minute job cap.
+          printf '%s\n' 'ZROTEXT_KSP_PASS full' > "$RUNNER_TEMP/ksp-qualification/cold.log"
+          timeout 38m ./gradlew "${args[@]}" 2>&1 | tee -a "$RUNNER_TEMP/ksp-qualification/cold.log"
+          timeout 5m bash -euo pipefail -c '
+            printf "%s\n" "ZROTEXT_KSP_PASS store" > "$RUNNER_TEMP/ksp-qualification/ksp-store.log"
+            ./gradlew "$@" 2>&1 | tee -a "$RUNNER_TEMP/ksp-qualification/ksp-store.log"
+            printf "%s\n" "ZROTEXT_KSP_PASS reuse" > "$RUNNER_TEMP/ksp-qualification/reuse.log"
+            ./gradlew "$@" 2>&1 | tee -a "$RUNNER_TEMP/ksp-qualification/reuse.log"
+          ' _ "${ksp_args[@]}"
+          python3 tools/ksp_execution_trace.py verify
       - name: Record emulator candidate identity
         if: env.RUN_ANDROID == 'true'
         run: |
