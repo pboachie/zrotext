@@ -2966,6 +2966,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Cache Rust build artifacts
+        # Dependency cache for the native hpke workspace; main writes and PR runs only read it.
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: sdk/native/hpke-candidate/rust
+          shared-key: native-cargo-deps
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.22.1'
@@ -3631,6 +3638,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Cache Rust build artifacts
+        # Dependency cache for the native hpke workspace; main writes and PR runs only read it.
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: sdk/native/hpke-candidate/rust
+          shared-key: native-cargo-deps
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Stage hash-verified pip for offline interpreter setup
         run: python -I scripts/bootstrap_python_pip.py --fetch-only --wheel-dir "${{ runner.temp }}/python-pip-bootstrap"
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
@@ -4259,6 +4273,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Cache Rust build artifacts
+        # Dependency cache for the native hpke workspace; main writes and PR runs only read it.
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: sdk/native/hpke-candidate/rust
+          shared-key: native-cargo-deps
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version: '1.26.10'
@@ -4735,6 +4756,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Cache Rust build artifacts
+        # Dependency cache for the native hpke workspace; main writes and PR runs only read it.
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: sdk/native/hpke-candidate/rust
+          shared-key: native-cargo-deps
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.22.1'
@@ -4850,6 +4878,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Cache Rust build artifacts
+        # Dependency cache for the native hpke workspace; main writes and PR runs only read it.
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: sdk/native/hpke-candidate/rust
+          shared-key: native-cargo-deps
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.22.1'
