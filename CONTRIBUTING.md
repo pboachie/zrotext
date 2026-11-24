@@ -114,8 +114,10 @@ execution intervals. Missing, ambiguous, misassigned or stale execution evidence
 fails the job; synthetic fixture success alone is insufficient.
 
 The verifier accepts no log paths on its command line. It reads only `cold.log`,
-`ksp-store.log` and `reuse.log` in `RUNNER_TEMP/ksp-qualification`, a freshly
-created job-local directory. Each file must contain its distinct pass marker.
+`ksp-store.log` and `reuse.log` in `android/build/ksp-qualification`, a freshly
+created directory in the ignored Android build output. The verifier derives that
+location from its own path; it never takes a root from the environment or the
+command line. Each file must contain its distinct pass marker.
 Linked or nonregular files, paths outside that directory, changed files,
 oversized input and invalid UTF-8 are rejected. Reads are bounded and validated
 using the same open file handle.

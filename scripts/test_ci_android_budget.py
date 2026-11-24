@@ -53,7 +53,10 @@ class AndroidCiBudgetTests(unittest.TestCase):
         self.assertEqual(self.job.count('./gradlew "$@"'), 2)
         self.assertIn('set -euo pipefail', self.job)
         self.assertIn('export GRADLE_USER_HOME="$RUNNER_TEMP/ksp-gradle-home"', self.job)
-        self.assertIn('mkdir "$GRADLE_USER_HOME" "$RUNNER_TEMP/ksp-project-cache" "$RUNNER_TEMP/ksp-qualification"', self.job)
+        self.assertIn('mkdir "$GRADLE_USER_HOME" "$RUNNER_TEMP/ksp-project-cache"\n', self.job)
+        # The verifier reads a fixed directory beside its script, never a root from the environment.
+        self.assertIn('mkdir -p build\n          mkdir build/ksp-qualification\n', self.job)
+        self.assertNotIn('$RUNNER_TEMP/ksp-qualification', self.job)
         self.assertIn('source_commit="$(git rev-parse HEAD)"', self.job)
         self.assertIn('test "$source_commit" = "$GITHUB_SHA"', self.job)
         self.assertIn('python3 tools/ksp_execution_trace.py verify', self.job)
@@ -77,19 +80,19 @@ class AndroidCiBudgetTests(unittest.TestCase):
         self.assertEqual(job_caps, ["45"])
         self.assertEqual(int(job_caps[0]) - sum(phases), 2)
         self.assertIn('timeout 38m ./gradlew "${args[@]}" 2>&1 | tee -a '
-                      '"$RUNNER_TEMP/ksp-qualification/cold.log"', job)
+                      '"build/ksp-qualification/cold.log"', job)
         body = self.shared_phase_body(job)
         self.assertEqual([line.strip() for line in body.splitlines()], [
-            'printf "%s\\n" "ZROTEXT_KSP_PASS store" > "$RUNNER_TEMP/ksp-qualification/ksp-store.log"',
-            './gradlew "$@" 2>&1 | tee -a "$RUNNER_TEMP/ksp-qualification/ksp-store.log"',
-            'printf "%s\\n" "ZROTEXT_KSP_PASS reuse" > "$RUNNER_TEMP/ksp-qualification/reuse.log"',
-            './gradlew "$@" 2>&1 | tee -a "$RUNNER_TEMP/ksp-qualification/reuse.log"',
+            'printf "%s\\n" "ZROTEXT_KSP_PASS store" > "build/ksp-qualification/ksp-store.log"',
+            './gradlew "$@" 2>&1 | tee -a "build/ksp-qualification/ksp-store.log"',
+            'printf "%s\\n" "ZROTEXT_KSP_PASS reuse" > "build/ksp-qualification/reuse.log"',
+            './gradlew "$@" 2>&1 | tee -a "build/ksp-qualification/reuse.log"',
         ])
 
     def test_two_narrow_graphs_share_one_deadline_within_the_unchanged_job_budget(self):
         self.assert_shared_budget(self.job)
         self.assertIn("printf '%s\\n' 'ZROTEXT_KSP_PASS full' > "
-                      '"$RUNNER_TEMP/ksp-qualification/cold.log"', self.job)
+                      '"build/ksp-qualification/cold.log"', self.job)
 
     def test_budget_guard_rejects_unbounded_individual_or_expanded_phase_limits(self):
         changes = [
@@ -109,8 +112,8 @@ class AndroidCiBudgetTests(unittest.TestCase):
         for failed_call in (0, 1, 2):
             with self.subTest(failed_call=failed_call), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
-                logs = root / "ksp-qualification"
-                logs.mkdir()
+                logs = root / "build" / "ksp-qualification"
+                logs.mkdir(parents=True)
                 wrapper = root / "gradlew"
                 wrapper.write_text("""#!/bin/sh
 set -eu

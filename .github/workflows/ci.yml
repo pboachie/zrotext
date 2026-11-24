@@ -547,7 +547,9 @@ jobs:
         run: |
           set -euo pipefail
           export GRADLE_USER_HOME="$RUNNER_TEMP/ksp-gradle-home"
-          mkdir "$GRADLE_USER_HOME" "$RUNNER_TEMP/ksp-project-cache" "$RUNNER_TEMP/ksp-qualification"
+          mkdir "$GRADLE_USER_HOME" "$RUNNER_TEMP/ksp-project-cache"
+          mkdir -p build
+          mkdir build/ksp-qualification
           source_commit="$(git rev-parse HEAD)"
           test "$source_commit" = "$GITHUB_SHA"
           args=(
@@ -575,13 +577,13 @@ jobs:
           # values, so the full graph is not the cache-reuse qualification.
           # Two identical real KSP graphs then share ONE five-minute deadline.
           # Allocate 43 minutes total within the unchanged 45-minute job cap.
-          printf '%s\n' 'ZROTEXT_KSP_PASS full' > "$RUNNER_TEMP/ksp-qualification/cold.log"
-          timeout 38m ./gradlew "${args[@]}" 2>&1 | tee -a "$RUNNER_TEMP/ksp-qualification/cold.log"
+          printf '%s\n' 'ZROTEXT_KSP_PASS full' > "build/ksp-qualification/cold.log"
+          timeout 38m ./gradlew "${args[@]}" 2>&1 | tee -a "build/ksp-qualification/cold.log"
           timeout 5m bash -euo pipefail -c '
-            printf "%s\n" "ZROTEXT_KSP_PASS store" > "$RUNNER_TEMP/ksp-qualification/ksp-store.log"
-            ./gradlew "$@" 2>&1 | tee -a "$RUNNER_TEMP/ksp-qualification/ksp-store.log"
-            printf "%s\n" "ZROTEXT_KSP_PASS reuse" > "$RUNNER_TEMP/ksp-qualification/reuse.log"
-            ./gradlew "$@" 2>&1 | tee -a "$RUNNER_TEMP/ksp-qualification/reuse.log"
+            printf "%s\n" "ZROTEXT_KSP_PASS store" > "build/ksp-qualification/ksp-store.log"
+            ./gradlew "$@" 2>&1 | tee -a "build/ksp-qualification/ksp-store.log"
+            printf "%s\n" "ZROTEXT_KSP_PASS reuse" > "build/ksp-qualification/reuse.log"
+            ./gradlew "$@" 2>&1 | tee -a "build/ksp-qualification/reuse.log"
           ' _ "${ksp_args[@]}"
           python3 tools/ksp_execution_trace.py verify
       - name: Record emulator candidate identity

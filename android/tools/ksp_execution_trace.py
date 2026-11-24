@@ -16,6 +16,8 @@ TASKS = frozenset({
 })
 REQUIRED_ACTIVE = frozenset({":app:kspDebugKotlin", ":app:kspReleaseKotlin"})
 MAX_LOG_BYTES = 64 * 1024 * 1024
+# CI writes the three logs to android/build/ksp-qualification, which Git ignores.
+LOG_ROOT = Path(__file__).resolve().parents[1] / "build"
 LOG_DIRECTORY = "ksp-qualification"
 LOG_FILENAMES = {"cold": "cold.log", "store": "ksp-store.log", "reuse": "reuse.log"}
 PHASE_PREFIX = "ZROTEXT_KSP_PASS "
@@ -132,21 +134,19 @@ def regular_log(info):
 
 def checked_log_path(role):
     require(role in LOG_FILENAMES, "Unknown log role")
-    # RUNNER_TEMP is the job's trusted temporary root, not a caller-selected
-    # filename. The command-line interface accepts neither roots nor paths.
-    location = os.environ.get("RUNNER_TEMP")
-    require(bool(location), "Job temporary directory is required")
-    root = Path(location)
-    require(root.is_absolute(), "Job temporary directory must be absolute")
+    # The root is fixed relative to this checked-in script. Neither the
+    # environment nor the command line can select a root or a path.
+    root = LOG_ROOT
+    require(root.is_absolute(), "Log root must be absolute")
     root_info = root.lstat()
-    require(not_link(root_info) and stat.S_ISDIR(root_info.st_mode), "Invalid job temporary directory")
-    require(root.resolve(strict=True) == root, "Job temporary directory must be canonical")
+    require(not_link(root_info) and stat.S_ISDIR(root_info.st_mode), "Invalid log root")
+    require(root.resolve(strict=True) == root, "Log root must be canonical")
     directory = root / LOG_DIRECTORY
     info = directory.lstat()
     require(not_link(info) and stat.S_ISDIR(info.st_mode), "Invalid log directory")
     resolved_directory = directory.resolve(strict=True)
     require(resolved_directory.parent == root and resolved_directory == directory,
-            "Log directory escaped job temporary directory")
+            "Log directory escaped its root")
     path = directory / LOG_FILENAMES[role]
     before = path.lstat()
     require(regular_log(before), "Log must be a single-link regular file")
@@ -179,7 +179,7 @@ def read_log(role):
         except UnicodeError:
             raise ValueError("Log must contain valid UTF-8") from None
     except OSError:
-        raise ValueError("Cannot read job-local log") from None
+        raise ValueError("Cannot read qualification log") from None
 
 
 def verify(cold, reuse):

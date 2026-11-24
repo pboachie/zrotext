@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Only fixed, bounded job-local log files are accepted by the verifier."""
+"""Only fixed, bounded log files under the script-relative root are accepted."""
 
 from contextlib import contextmanager
 import io
@@ -23,9 +23,9 @@ class KspLogBoundaryTests(unittest.TestCase):
         self.folder.mkdir()
         self.path = self.folder / "cold.log"
         self.path.write_bytes(b"original")
-        self.environment = patch.dict(os.environ, RUNNER_TEMP=str(self.root))
-        self.environment.start()
-        self.addCleanup(self.environment.stop)
+        self.log_root = patch.object(trace, "LOG_ROOT", self.root)
+        self.log_root.start()
+        self.addCleanup(self.log_root.stop)
 
     def test_only_fixed_role_names_select_log_files(self):
         (self.folder / "ksp-store.log").write_bytes(b"stored")
@@ -41,16 +41,23 @@ class KspLogBoundaryTests(unittest.TestCase):
                     trace.read_log(role)
                 opened.assert_not_called()
 
-    def test_job_root_must_exist_be_absolute_and_canonical(self):
-        for root in ("", "relative", str(self.root / "missing"),
-                     str(self.folder / "..")):
-            with self.subTest(root=root), patch.dict(os.environ, RUNNER_TEMP=root), \
+    def test_log_root_must_exist_be_absolute_and_canonical(self):
+        for root in (Path("relative"), self.root / "missing", self.folder / ".."):
+            with self.subTest(root=root), patch.object(trace, "LOG_ROOT", root), \
                  patch.object(trace.os, "open") as opened:
                 with self.assertRaises(ValueError):
                     trace.read_log("cold")
                 opened.assert_not_called()
-        with patch.dict(os.environ, {}, clear=True), self.assertRaises(ValueError):
-            trace.read_log("cold")
+
+    def test_log_root_is_fixed_beside_the_script_and_ignores_the_environment(self):
+        self.assertEqual(self.log_root.temp_original,
+                         Path(trace.__file__).resolve().parents[1] / "build")
+        with tempfile.TemporaryDirectory() as other:
+            decoy = Path(other).resolve() / trace.LOG_DIRECTORY
+            decoy.mkdir()
+            (decoy / "cold.log").write_bytes(b"decoy")
+            with patch.dict(os.environ, RUNNER_TEMP=str(decoy.parent)):
+                self.assertEqual(trace.read_log("cold"), "original")
 
     def test_parent_or_file_link_and_reparse_metadata_is_rejected(self):
         original = Path.lstat
@@ -164,7 +171,7 @@ class KspLogBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "^Log must contain valid UTF-8$"):
             trace.read_log("cold")
         with patch.object(trace.os, "open", side_effect=OSError("private-marker")):
-            with self.assertRaisesRegex(ValueError, "^Cannot read job-local log$"):
+            with self.assertRaisesRegex(ValueError, "^Cannot read qualification log$"):
                 trace.read_log("cold")
 
     def test_windows_line_endings_preserve_logical_receipt_lines(self):

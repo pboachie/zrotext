@@ -3,7 +3,6 @@
 
 import copy
 import json
-import os
 import tempfile
 from pathlib import Path
 import unittest
@@ -205,7 +204,7 @@ class KspExecutionTraceTests(unittest.TestCase):
 
     def test_missing_or_oversized_log_is_rejected_before_parsing(self):
         with tempfile.TemporaryDirectory() as directory:
-            with patch.dict(os.environ, RUNNER_TEMP=str(Path(directory).resolve())):
+            with patch.object(trace, "LOG_ROOT", Path(directory).resolve()):
                 folder = Path(directory) / trace.LOG_DIRECTORY
                 folder.mkdir()
                 path = folder / "cold.log"
