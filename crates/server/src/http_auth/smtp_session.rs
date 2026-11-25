@@ -43,9 +43,8 @@ const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 #[derive(Debug)]
 pub(super) enum SessionError {
     Smtp(Error),
-    /// The server answered the end of the message with a positive reply that
-    /// is not a completion (for example `354`), so the transaction state is
-    /// unknown.
+    /// The server sent a malformed reply or a reply that did not complete
+    /// the transaction, so the session state is unknown.
     UnexpectedReply,
 }
 
@@ -73,11 +72,15 @@ impl SmtpSessions {
     /// message; only then may the session carry another message.
     pub(super) async fn send(&self, message: Message) -> Result<(), SessionError> {
         let lease = self.lease();
-        let response = lease
-            .transport()
-            .send(message)
-            .await
-            .map_err(SessionError::Smtp)?;
+        let response = lease.transport().send(message).await.map_err(|error| {
+            // lettre 0.11.24 reports unexpected reply classes as response
+            // errors rather than returning the non-completion reply.
+            if error.is_response() {
+                SessionError::UnexpectedReply
+            } else {
+                SessionError::Smtp(error)
+            }
+        })?;
         if response.code().severity != Severity::PositiveCompletion {
             return Err(SessionError::UnexpectedReply);
         }
