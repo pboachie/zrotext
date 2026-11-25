@@ -46,7 +46,7 @@ jobs:
         run: python scripts/prepare_java_ci_trust.py --major 17 --distribution corretto
       - name: Verify patched Java runtime and trust roots
         run: python scripts/check_java_toolchain.py --major 17 --distribution corretto
-      - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
+      - uses: ruby/setup-ruby@be3c7df29b3349ec6bcfc6b4792f1cf9f5237d18 # v1.343.0
         with:
           ruby-version: '3.3.13'
       - name: "Csharp protected candidate composition: Checkout pinned fixtures"
@@ -177,7 +177,7 @@ jobs:
           check-latest: true
       - name: Qualify pip before network package operations
         run: python -I scripts/bootstrap_python_pip.py
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5
         with:
           go-version: '1.26.10'
           cache: false
@@ -585,7 +585,7 @@ jobs:
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73
         with:
           dotnet-version: '10.0.402'
-      - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
+      - uses: ruby/setup-ruby@be3c7df29b3349ec6bcfc6b4792f1cf9f5237d18 # v1.343.0
         with:
           ruby-version: '3.3.13'
       - name: "Local Tungsten workflow adapter"
@@ -748,7 +748,7 @@ jobs:
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73
         with:
           dotnet-version: '8.0.x'
-      - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
+      - uses: ruby/setup-ruby@be3c7df29b3349ec6bcfc6b4792f1cf9f5237d18 # v1.343.0
         with:
           ruby-version: '3.3.13'
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
@@ -968,7 +968,7 @@ jobs:
         run: |
           python sdk/native/crypto-envelope/original-current-run.py --language csharp --fixture fixture --producer producer
       - name: "Managed authenticated original current proof [ruby]: Toolchain for ruby"
-        uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
+        uses: ruby/setup-ruby@be3c7df29b3349ec6bcfc6b4792f1cf9f5237d18 # v1.343.0
         with:
           ruby-version: '3.3.13'
       - name: "Managed authenticated original current proof: Checkout pinned fixtures"
@@ -1519,7 +1519,7 @@ jobs:
         run: |
           python sdk/native/crypto-envelope/template-authoring-run.py --language csharp --fixture fixture --producer producer --authoring-oracle authoring-oracle
       - name: "Managed reviewed template authoring interoperability [ruby]: Toolchain for ruby"
-        uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
+        uses: ruby/setup-ruby@be3c7df29b3349ec6bcfc6b4792f1cf9f5237d18 # v1.343.0
         with:
           ruby-version: '3.3.13'
       - name: "Managed reviewed template authoring interoperability: Checkout pinned fixtures"
@@ -1925,7 +1925,7 @@ jobs:
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73
         with:
           dotnet-version: '10.0.402'
-      - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
+      - uses: ruby/setup-ruby@be3c7df29b3349ec6bcfc6b4792f1cf9f5237d18 # v1.343.0
         with:
           ruby-version: '3.3.13'
       - name: "Managed contact statement and field interoperability: Checkout pinned fixtures"
@@ -2989,7 +2989,7 @@ jobs:
           check-latest: true
       - name: Qualify pip before network package operations
         run: python -I scripts/bootstrap_python_pip.py
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5
         with:
           go-version: '1.26.10'
           cache: false
@@ -3659,7 +3659,7 @@ jobs:
           check-latest: true
       - name: Qualify pip before network package operations
         run: python -I scripts/bootstrap_python_pip.py
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5
         with:
           go-version: '1.26.10'
           cache: false
@@ -4280,7 +4280,7 @@ jobs:
           workspaces: sdk/native/hpke-candidate/rust
           shared-key: native-cargo-deps
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5
         with:
           go-version: '1.26.10'
           cache: false
@@ -4312,7 +4312,7 @@ jobs:
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73
         with:
           dotnet-version: '8.0.x'
-      - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
+      - uses: ruby/setup-ruby@be3c7df29b3349ec6bcfc6b4792f1cf9f5237d18 # v1.343.0
         with:
           ruby-version: '3.3.13'
       - name: "Native body text parity"
@@ -4766,7 +4766,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.22.1'
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5
         with:
           go-version: '1.26.10'
           cache: false
@@ -4902,7 +4902,7 @@ jobs:
           check-latest: true
       - name: Qualify pip before network package operations
         run: python -I scripts/bootstrap_python_pip.py
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5
         with:
           go-version: '1.26.10'
           cache: false
@@ -5011,7 +5011,7 @@ jobs:
         run: |
           python sdk/native/crypto-envelope/contact-mutation-run.py --language csharp --fixture fixture --producer producer --origin-asset "$env:RUNNER_TEMP/contact-origin-mutation-csharp"
       - name: "Managed contact mutation and transition interoperability [ruby]: Toolchain for ruby"
-        uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
+        uses: ruby/setup-ruby@be3c7df29b3349ec6bcfc6b4792f1cf9f5237d18 # v1.343.0
         with:
           ruby-version: '3.3.13'
       - name: "Managed contact mutation and transition interoperability: Checkout pinned fixtures"
