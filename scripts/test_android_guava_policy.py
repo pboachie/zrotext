@@ -46,7 +46,12 @@ class AndroidGuavaPolicyTests(unittest.TestCase):
             (ROOT / 'android/app/gradle.lockfile').read_text())))
         self.assertTrue(selected <= allowed, selected - allowed)
         self.assertIn('if (name in guavaToolingConfigurations)', source)
-        self.assertIn('project.dependencies.constraints.add(name, "com.google.guava:guava:33.7.2-jre")', source)
+        versions = re.findall(
+            r'project\.dependencies\.constraints\.add\(name, "com\.google\.guava:guava:([^"\n]+)"\)',
+            source,
+        )
+        self.assertEqual(len(versions), 1)
+        self.assertTrue(patched(versions[0]), versions[0])
         self.assertNotIn('resolutionStrategy.force', source)
         self.assertNotIn('releaseRuntimeClasspath', allowed)
         self.assertNotIn('debugRuntimeClasspath', allowed)
