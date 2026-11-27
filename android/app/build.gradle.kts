@@ -266,7 +266,7 @@ val guavaToolingConfigurations = setOf(
 )
 configurations.configureEach {
     if (name in guavaToolingConfigurations) {
-        project.dependencies.constraints.add(name, "com.google.guava:guava:33.8.0-jre") {
+        project.dependencies.constraints.add(name, "com.google.guava:guava:33.7.2-jre") {
             because("CVE-2026-102554 is fixed in 33.7.2")
         }
     }
@@ -277,7 +277,7 @@ dependencyLocking {
 }
 
 dependencies {
-    implementation(platform("androidx.compose:compose-bom:2026.11.01"))
+    implementation(platform("androidx.compose:compose-bom:2026.09.00"))
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
@@ -294,7 +294,7 @@ dependencies {
     // Drives Compose frames reliably for navigation and permission-dialog regression tests.
     testDebugImplementation("androidx.compose.ui:ui-test-junit4")
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.robolectric:robolectric:4.18.1")
+    testImplementation("org.robolectric:robolectric:4.17")
     androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     // Dormant draft-02 provider probe only; no Tink code enters the release runtime.
@@ -303,11 +303,11 @@ dependencies {
     // These constraints affect local unit tests and AGP's lint tools. None of
     // these libraries is present in the app's release runtime classpath.
     constraints {
-        testImplementation("org.bouncycastle:bcprov-jdk18on:1.87")
-        add("androidLintTool", "org.bouncycastle:bcprov-jdk18on:1.87")
-        add("androidLintTool", "org.bouncycastle:bcpkix-jdk18on:1.87")
-        add("androidLintTool", "org.bouncycastle:bcutil-jdk18on:1.87")
-        add("androidLintTool", "org.apache.commons:commons-lang3:3.22.0")
+        testImplementation("org.bouncycastle:bcprov-jdk18on:1.86")
+        add("androidLintTool", "org.bouncycastle:bcprov-jdk18on:1.86")
+        add("androidLintTool", "org.bouncycastle:bcpkix-jdk18on:1.86")
+        add("androidLintTool", "org.bouncycastle:bcutil-jdk18on:1.86")
+        add("androidLintTool", "org.apache.commons:commons-lang3:3.21.0")
         add("androidLintTool", "org.apache.httpcomponents:httpclient:4.5.14")
     }
 }

@@ -2,7 +2,7 @@ buildscript {
     dependencies {
         constraints {
             // Android build tooling only, never an application dependency.
-            classpath("com.google.guava:guava:33.8.0-jre") {
+            classpath("com.google.guava:guava:33.7.2-jre") {
                 because("CVE-2026-102554 is fixed in 33.7.2")
             }
             // Build tooling only: the CycloneDX plugin (cyclonedx-core-java) pulls
@@ -14,9 +14,9 @@ buildscript {
     }
 }
 plugins {
-    id("com.android.application") version "9.5.3" apply false
+    id("com.android.application") version "9.5.1" apply false
     id("org.jetbrains.kotlin.android") version "2.4.21" apply false
     id("org.jetbrains.kotlin.plugin.compose") version "2.4.21" apply false
-    id("com.google.devtools.ksp") version "2.3.14" apply false
-    id("org.cyclonedx.bom") version "3.6.1" apply false
+    id("com.google.devtools.ksp") version "2.3.13" apply false
+    id("org.cyclonedx.bom") version "3.5.1" apply false
 }
